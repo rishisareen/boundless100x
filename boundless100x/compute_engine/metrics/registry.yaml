@@ -1,0 +1,16 @@
+# metrics/registry.yaml — Master configuration
+# Metric definitions live in elements/*.yaml (auto-discovered)
+# Custom metrics live in custom/*.yaml (auto-discovered)
+
+element_weights:
+  size: 0.10
+  quality_business: 0.20
+  quality_management: 0.10
+  growth: 0.25
+  longevity: 0.20
+  price: 0.15
+
+scoring_defaults:
+  scale: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  missing_data_score: null
+  min_data_years: 3

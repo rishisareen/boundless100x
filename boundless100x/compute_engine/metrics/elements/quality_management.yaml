@@ -1,0 +1,60 @@
+# Reference: QGLP Checklist Q11-Q19 (Motilal Oswal Dec 2025)
+# "3 key aspects: Integrity, Competence, Growth mindset"
+element: quality_management
+
+metrics:
+  promoter_holding_trend:
+    name: "Promoter Holding Trend (5yr)"
+    module: "builtin.size"
+    function: "compute_promoter_trend"
+    inputs: ["shareholding"]
+    params: { quarters: 20 }
+    scoring: { mode: "trend_direction", direction: "stable_or_rising_is_better", weight: 0.20 }
+    display: { format: "{:.1f}%", section: "management_assessment", peer_compare: true }
+
+  promoter_pledge:
+    name: "Promoter Pledge %"
+    module: "builtin.size"
+    function: "compute_promoter_pledge"
+    inputs: ["shareholding"]
+    scoring: { thresholds: [50, 30, 20, 10, 5, 0], direction: "lower_is_better", weight: 0.20 }
+    display: { format: "{:.1f}%", section: "management_assessment", peer_compare: true }
+
+  owner_operator_signal:
+    name: "Owner-Operator Signal"
+    module: "builtin.size"
+    function: "compute_owner_operator"
+    inputs: ["shareholding"]
+    params: { min_promoter_holding: 40 }
+    scoring:
+      mode: "categorical"
+      categories: { "founder_led_high_holding": 10, "founder_led_moderate": 7, "professional_mgmt": 5, "low_promoter": 3 }
+      weight: 0.15
+    display: { format: "{}", section: "management_assessment", peer_compare: true }
+
+  equity_dilution:
+    name: "Shares Outstanding Growth (10yr)"
+    module: "builtin.growth"
+    function: "compute_share_dilution"
+    inputs: ["balance_sheet"]
+    params: { years: 10 }
+    scoring: { thresholds: [50, 30, 20, 10, 5, 0], direction: "lower_is_better", weight: 0.15 }
+    display: { format: "{:.1f}%", section: "management_assessment", peer_compare: true }
+
+  dividend_consistency:
+    name: "Dividend Payout Consistency"
+    module: "builtin.longevity"
+    function: "compute_dividend_consistency"
+    inputs: ["financials"]
+    params: { years: 10 }
+    scoring: { thresholds: [2, 4, 5, 6, 8, 9], direction: "higher_is_better", weight: 0.15 }
+    display: { format: "{}/10 years", section: "management_assessment" }
+
+  effective_tax_rate_variance:
+    name: "Tax Rate Consistency (StdDev)"
+    module: "builtin.profitability"
+    function: "compute_tax_rate_variance"
+    inputs: ["financials"]
+    params: { years: 5 }
+    scoring: { thresholds: [15, 10, 8, 5, 3, 1], direction: "lower_is_better", weight: 0.15 }
+    display: { format: "σ = {:.1f}pp", section: "management_assessment" }

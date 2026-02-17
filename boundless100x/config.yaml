@@ -1,0 +1,57 @@
+# Boundless100x — SQGLP Research Pipeline Configuration
+
+# ── Target Company ──
+target:
+  ticker: "ASTRAL"
+  bse_code: "532830"
+  nse_symbol: "ASTRAL"
+
+# ── Peer Discovery ──
+peer_discovery:
+  enabled: true
+  use_llm_validation: true
+  peer_validation_model: "claude-haiku-4-5-20251001"
+  max_llm_suggestions: 5
+  max_peers: 5
+  size_band_multiplier: 3.0
+  revenue_band_multiplier: 5.0
+  sector_source: "screener"
+  include_financial_peers: true
+  min_listing_years: 5
+
+# ── Analysis Period ──
+analysis_period:
+  financials_years: 10
+  price_history_years: 10
+  shareholding_quarters: 20
+
+# ── Data Fetching ──
+fetching:
+  rate_limit_seconds: 2
+  cache_ttl_hours: 24
+  screener_base_url: "https://www.screener.in"
+  retry_count: 3
+  retry_delay_seconds: 5
+
+# ── LLM Configuration ──
+llm:
+  provider: "anthropic"
+  pass1_model: "claude-sonnet-4-5-20250929"
+  pass2_model: "claude-sonnet-4-5-20250929"
+  pass3_model: "claude-haiku-4-5-20251001"
+  max_tokens: 2000
+  enabled: true
+  skip_pass1_if_no_ar: true
+
+# ── Annual Reports ──
+annual_reports:
+  enabled: true
+  max_reports: 1          # Only need the most recent report
+  max_pages: 30           # Extract text from first N pages
+  max_text_chars: 5000    # Cap extracted text length
+
+# ── Output ──
+output:
+  formats: ["html", "md", "json"]
+  report_dir: "output/reports"
+  include_raw_data: true

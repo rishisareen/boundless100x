@@ -1,0 +1,48 @@
+You are a senior investment analyst. Given the pre-computed SQGLP metrics and qualitative assessment below, synthesize an investment thesis. Focus on:
+1. Is this a potential long-term compounder (10yr+)?
+2. What could go wrong? (kill-the-thesis risks)
+3. What is the market missing? (if anything)
+4. Does the growth quality justify the valuation?
+
+## Company: {company_name} ({ticker})
+Sector: {sector}
+
+## SQGLP Scores (0-10 scale)
+{scores_summary}
+
+## Key Metrics
+{key_metrics}
+
+## Computed Flags
+{flags}
+
+## Quality-Growth Matrix Position
+{qg_quadrant}
+
+## Qualitative Assessment (from prior analysis)
+{pass1_output}
+
+## Instructions
+
+Synthesize an investment thesis weighing:
+- Growth quality (4-lever decomposition: volume × price × operating leverage × financial leverage)
+- Valuation reasonableness (PE, PEG, trailing PEG relative to growth)
+- Longevity evidence (RoCE consistency, margin stability, reinvestment rate)
+- Management alignment (promoter stake trends, capital allocation history)
+- Risk/reward asymmetry
+
+Respond ONLY with valid JSON matching this exact schema:
+```json
+{{
+  "thesis": "<one paragraph investment thesis>",
+  "conviction_level": "<high|medium|low>",
+  "bull_case": "<best case scenario in 2-3 sentences>",
+  "bear_case": "<worst case scenario in 2-3 sentences>",
+  "kill_the_thesis": ["<scenario that would invalidate thesis>", "..."],
+  "key_monitorables": ["<metric or event to track quarterly>", "..."],
+  "suggested_action": "<strong_buy|buy|hold|watchlist|avoid>",
+  "target_holding_period": "<3-5yr|5-10yr|10yr+>",
+  "what_market_is_missing": "<insight or nothing>",
+  "reasoning": "<3-4 paragraph detailed reasoning citing specific SQGLP metrics>"
+}}
+```

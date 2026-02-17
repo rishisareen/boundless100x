@@ -1,0 +1,39 @@
+# Sector tailwind classification
+# Based on Motilal Oswal Dec 2025 Wealth Creation Study NTD era analysis
+
+mtd_consideration_sectors:
+  strong_tailwind:
+    - "Banks - Private Sector"
+    - "Capital Market"
+    - "Finance"
+    - "Insurance"
+    - "Autos - Cars/UVs"
+    - "Autos - 2-3 Wheelers"
+    - "Capital Goods / Engg"
+    - "Consumer - Durables"
+    - "Healthcare"
+    - "Realty"
+    - "Telecom"
+    - "E-commerce"
+  moderate_tailwind:
+    - "IT"
+    - "Pharma"
+    - "Cables"
+    - "Airlines"
+  non_consideration:
+    - "Fertilizers"
+    - "Oil & Gas"
+    - "Metals & Mining"
+    - "Power Generation"
+    - "Sugar"
+    - "Chemicals"
+
+business_type_preference:
+  # Dec 2025 finding: 60% of compounders were B2C
+  preferred: "B2C"
+  acceptable: "B2B"
+  caution: "B2G"
+
+market_leadership:
+  # Dec 2025 finding: 77% of compounders were market leaders (top 3)
+  preferred_rank: 3

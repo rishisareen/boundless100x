@@ -1,0 +1,12 @@
+# Based on Motilal Oswal Dec 2025 compounder identification methodology
+name: "Compounders (MOSL Dec 2025)"
+description: |
+  Top 500 → RoE > 12% → PAT CAGR 3yr > 20% → Trailing PEG < 2x
+  In the NTD era, only 7% of top 500 stocks qualified as compounders.
+filters:
+  roe_5yr_avg: { min: 12 }
+  pat_cagr_3yr: { min: 20 }
+  trailing_peg: { max: 2.0 }
+rankings:
+  primary: "trailing_peg"
+  secondary: "roe_5yr_avg"

@@ -1,0 +1,46 @@
+element: size
+
+metrics:
+  market_cap:
+    name: "Market Cap (₹ Cr)"
+    module: "builtin.size"
+    function: "compute_market_cap"
+    inputs: ["price", "financials"]
+    scoring:
+      thresholds: [200000, 100000, 50000, 20000, 5000, 1000]
+      direction: "lower_is_better"
+      weight: 0.25
+    display: { format: "₹{:,.0f} Cr", section: "size_analysis", peer_compare: true }
+
+  institutional_holding:
+    name: "FII + DII Holding (%)"
+    module: "builtin.size"
+    function: "compute_institutional_holding"
+    inputs: ["shareholding"]
+    scoring:
+      mode: "range_optimal"
+      optimal_range: [1, 10]
+      weight: 0.25
+    display: { format: "{:.1f}%", section: "size_analysis", peer_compare: true }
+
+  analyst_coverage:
+    name: "Analyst Coverage Count"
+    module: "builtin.size"
+    function: "compute_analyst_count"
+    inputs: ["analyst_coverage"]
+    scoring:
+      thresholds: [20, 15, 10, 5, 3, 1]
+      direction: "lower_is_better"
+      weight: 0.25
+    display: { format: "{:.0f} analysts", section: "size_analysis" }
+
+  daily_turnover_ratio:
+    name: "Daily Turnover Ratio (%)"
+    module: "builtin.size"
+    function: "compute_turnover_ratio"
+    inputs: ["price"]
+    scoring:
+      mode: "range_optimal"
+      optimal_range: [0.02, 0.1]
+      weight: 0.25
+    display: { format: "{:.3f}%", section: "size_analysis" }

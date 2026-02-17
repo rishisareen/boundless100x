@@ -1,0 +1,78 @@
+# Reference: "4 dimensions of earnings growth" (Motilal Oswal 2014 Study)
+element: growth
+
+metrics:
+  revenue_cagr_5yr:
+    name: "Revenue CAGR (5yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "revenue", years: 5 }
+    scoring: { thresholds: [3, 8, 12, 18, 25, 35], direction: "higher_is_better", weight: 0.12 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  pat_cagr_5yr:
+    name: "PAT CAGR (5yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "pat", years: 5 }
+    scoring: { thresholds: [3, 8, 15, 20, 28, 40], direction: "higher_is_better", weight: 0.12 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  eps_cagr_5yr:
+    name: "EPS CAGR (5yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "eps", years: 5 }
+    scoring: { thresholds: [3, 8, 15, 20, 28, 40], direction: "higher_is_better", weight: 0.12 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  pat_cagr_3yr:
+    name: "PAT CAGR (3yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "pat", years: 3 }
+    scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.08 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  operating_leverage:
+    name: "Operating Leverage (avg)"
+    module: "builtin.growth"
+    function: "compute_operating_leverage"
+    inputs: ["financials"]
+    params: { years: 5 }
+    scoring: { thresholds: [0.5, 0.8, 1.0, 1.3, 1.5, 2.0], direction: "higher_is_better", weight: 0.12 }
+    display: { format: "{:.2f}x", section: "growth_decomposition", peer_compare: true }
+
+  financial_leverage_ratio:
+    name: "Financial Leverage (avg)"
+    module: "builtin.growth"
+    function: "compute_financial_leverage"
+    inputs: ["financials"]
+    params: { years: 5 }
+    scoring: { mode: "range_optimal", optimal_range: [0.8, 1.3], weight: 0.08 }
+    display: { format: "{:.2f}x", section: "growth_decomposition", peer_compare: true }
+
+  growth_quality_grade:
+    name: "Growth Quality Grade"
+    module: "builtin.growth"
+    function: "compute_growth_quality"
+    inputs: ["financials"]
+    params: { years: 5 }
+    scoring:
+      mode: "categorical"
+      categories: { "high_quality": 10, "moderate": 6, "low_quality": 3, "risky": 1 }
+      weight: 0.20
+    display: { format: "{}", section: "growth_decomposition", peer_compare: true }
+
+  revenue_growth_consistency:
+    name: "Revenue Growth Consistency"
+    module: "builtin.growth"
+    function: "compute_growth_consistency"
+    inputs: ["financials"]
+    params: { field: "revenue", years: 10 }
+    scoring: { thresholds: [30, 25, 20, 15, 10, 5], direction: "lower_is_better", weight: 0.08 }
+    display: { format: "σ = {:.1f}%", section: "growth_decomposition", peer_compare: true }

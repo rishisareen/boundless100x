@@ -1,0 +1,44 @@
+Compare the target company against its sector peers using the pre-computed metrics below. Identify where it has a clear edge and where it lags. Be quantitative — reference specific numbers.
+
+## Target: {ticker}
+Sector: {sector}
+
+## Peer Relevance Assessment
+{peer_quality_context}
+
+NOTE: The above assessment indicates how relevant these peers are for comparison. If peers are from a different business model (tangential/irrelevant), weight your comparative analysis accordingly and note where direct metric comparison may be misleading due to structural business model differences.
+
+## Peer Comparison Table
+{peer_comparison_table}
+
+## Target Investment Thesis
+{pass2_thesis}
+
+## Peer Discovery Metadata
+Candidates evaluated: {candidates_evaluated}
+Size-filtered: {size_filtered}
+Similarity scores: {similarity_scores}
+
+## Instructions
+
+Analyze the target's competitive positioning relative to peers:
+1. Where does the target clearly outperform? (cite specific metrics and values)
+2. Where does it lag? (cite specific metrics and values)
+3. Which company in this peer group represents the best overall investment? Why?
+4. Is the target's valuation justified relative to peer valuations?
+5. If the peer relevance assessment flags issues, note which comparisons should be taken with caveats.
+
+Respond ONLY with valid JSON matching this exact schema:
+```json
+{{
+  "competitive_advantages": ["<specific advantage with evidence>", "..."],
+  "competitive_disadvantages": ["<specific weakness with evidence>", "..."],
+  "best_in_class_metrics": ["<metric_name>", "..."],
+  "worst_in_class_metrics": ["<metric_name>", "..."],
+  "preferred_pick_in_sector": "<TICKER>",
+  "preferred_pick_reasoning": "<why this company over target>",
+  "valuation_relative_assessment": "<overvalued|fair|undervalued vs peers>",
+  "peer_comparison_caveats": ["<any caveats about peer comparability>"],
+  "reasoning": "<2-3 paragraph comparative analysis with specific numbers>"
+}}
+```

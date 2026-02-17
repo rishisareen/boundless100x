@@ -1,0 +1,143 @@
+# {{ ticker }} — SQGLP Analysis
+
+**{{ metadata.get('name', ticker) }}** | {{ metadata.get('sector', 'N/A') }} | Market Cap: ₹{{ "{:,.0f}".format(metadata.get('Market Cap', 0)|float) }} Cr
+Generated: {{ generation_date }}
+
+---
+
+## SQGLP Composite Score: {{ scores.get('composite', 'N/A') }}/10
+
+{% set element_names = {'size': 'Size (S)', 'quality_business': 'Quality - Business (Q)', 'quality_management': 'Quality - Mgmt (Q)', 'growth': 'Growth (G)', 'longevity': 'Longevity (L)', 'price': 'Price (P)'} %}
+{% set element_weights = {'size': '10%', 'quality_business': '20%', 'quality_management': '10%', 'growth': '25%', 'longevity': '20%', 'price': '15%'} %}
+| Element | Score | Weight |
+|---------|-------|--------|
+{% for el_key, el_name in element_names.items() %}
+{% set score = scores.get('elements', {}).get(el_key) %}
+| {{ el_name }} | {% if score is not none %}{{ "%.1f"|format(score) }}/10{% else %}N/A{% endif %} | {{ element_weights[el_key] }} |
+{% endfor %}
+
+---
+
+## Key Metrics
+
+### Quality
+| Metric | Value | Flags |
+|--------|-------|-------|
+{% for mid, label, unit in [('roce_5yr_avg', 'RoCE 5yr Avg', '%'), ('roe_5yr_avg', 'ROE 5yr Avg', '%'), ('operating_margin_5yr', 'OPM 5yr', '%'), ('cash_conversion', 'Cash Conversion', '%'), ('fcf_yield', 'FCF Yield', '%'), ('debt_equity', 'Debt/Equity', 'x'), ('interest_coverage', 'Interest Coverage', 'x')] %}
+{% set m = metrics.get(mid, {}) %}
+| {{ label }} | {% if m.get('value') is not none %}{{ "%.2f"|format(m.value) if m.value is number else m.value }}{{ unit }}{% else %}N/A{% endif %} | {{ m.get('flags', [])|join(', ') }} |
+{% endfor %}
+
+### Growth
+| Metric | Value | Flags |
+|--------|-------|-------|
+{% for mid, label, unit in [('revenue_cagr_5yr', 'Revenue CAGR 5yr', '%'), ('pat_cagr_5yr', 'PAT CAGR 5yr', '%'), ('pat_cagr_3yr', 'PAT CAGR 3yr', '%'), ('eps_cagr_5yr', 'EPS CAGR 5yr', '%'), ('operating_leverage', 'Operating Leverage', 'x')] %}
+{% set m = metrics.get(mid, {}) %}
+| {{ label }} | {% if m.get('value') is not none %}{{ "%.2f"|format(m.value) if m.value is number else m.value }}{{ unit }}{% else %}N/A{% endif %} | {{ m.get('flags', [])|join(', ') }} |
+{% endfor %}
+
+### Valuation
+| Metric | Value | Flags |
+|--------|-------|-------|
+{% for mid, label, unit in [('pe_ttm', 'PE TTM', 'x'), ('peg_ratio', 'PEG', 'x'), ('trailing_peg', 'Trailing PEG', 'x'), ('ev_ebitda', 'EV/EBITDA', 'x'), ('earnings_yield_spread', 'EY Spread', '%')] %}
+{% set m = metrics.get(mid, {}) %}
+| {{ label }} | {% if m.get('value') is not none %}{{ "%.2f"|format(m.value) if m.value is number else m.value }}{{ unit }}{% else %}N/A{% endif %} | {{ m.get('flags', [])|join(', ') }} |
+{% endfor %}
+
+### Longevity
+| Metric | Value | Flags |
+|--------|-------|-------|
+{% for mid, label, unit in [('roce_consistency', 'RoCE >15% Years', 'yrs'), ('revenue_growth_streak', 'Growth Streak', 'yrs'), ('gross_margin_stability', 'Margin StdDev', '%'), ('fcf_consistency', 'FCF+ Years', 'yrs'), ('reinvestment_rate', 'Reinvestment Rate', '%')] %}
+{% set m = metrics.get(mid, {}) %}
+| {{ label }} | {% if m.get('value') is not none %}{{ "%.2f"|format(m.value) if m.value is number else m.value }}{{ unit }}{% else %}N/A{% endif %} | {{ m.get('flags', [])|join(', ') }} |
+{% endfor %}
+
+---
+
+## Computed Flags
+
+{% for flag in flags %}
+- {{ flag }}
+{% endfor %}
+
+---
+
+{% if peers %}
+## Peer Discovery
+
+**Direct competitors:** {{ peers.direct_competitors|join(', ') }}
+**Sector peers:** {{ peers.sector_peers|join(', ') }}
+{% if peers.financial_peers %}**Financial peers:** {{ peers.financial_peers|join(', ') }}{% endif %}
+
+| Ticker | Name | Market Cap (₹Cr) | PE | RoCE |
+|--------|------|-------------------|-----|------|
+{% for pt, info in peers.peer_data.items() %}
+| {{ pt }} | {{ info.get('name', '') }} | {{ "{:,.0f}".format(info.get('market_cap', 0)|float) }} | {{ "%.1f"|format(info.get('pe', 0)|float) }} | {{ "%.1f"|format(info.get('roce', 0)|float) }}% |
+{% endfor %}
+{% endif %}
+
+---
+
+{% if comparison and comparison.get('companies') %}
+## Peer Comparison
+
+{% set companies = comparison.get('companies', {}) %}
+{% set comp_metrics = comparison.get('metrics', []) %}
+{% set ranks = comparison.get('ranks', {}) %}
+| Metric |{% for t in companies %} {{ t }}{% if t == ticker %} *{% endif %} |{% endfor %}
+
+|--------|{% for t in companies %}-------|{% endfor %}
+
+{% for mid in comp_metrics[:20] %}
+| {{ mid }} |{% for t in companies %}{% set val = companies[t].get(mid) %} {% if val is not none %}{{ "%.2f"|format(val) }}{% else %}—{% endif %} |{% endfor %}
+
+{% endfor %}
+
+*\* Target company*
+{% endif %}
+
+---
+
+{% if llm_analysis and not llm_analysis.get('skipped') %}
+{% set p2 = llm_analysis.get('pass2', {}) %}
+{% if p2 and not p2.get('error') and not p2.get('skipped') %}
+## Investment Thesis
+
+> {{ p2.get('thesis', 'No thesis generated.') }}
+
+**Conviction:** {{ p2.get('conviction_level', 'N/A') }} | **Action:** {{ p2.get('suggested_action', 'N/A') }} | **Holding period:** {{ p2.get('target_holding_period', 'N/A') }}
+
+### Bull Case
+{{ p2.get('bull_case', 'N/A') }}
+
+### Bear Case
+{{ p2.get('bear_case', 'N/A') }}
+
+### Kill the Thesis
+{% for item in p2.get('kill_the_thesis', []) %}
+- {{ item }}
+{% endfor %}
+
+### Key Monitorables
+{% for item in p2.get('key_monitorables', []) %}
+- {{ item }}
+{% endfor %}
+
+{% if p2.get('reasoning') %}
+### Detailed Reasoning
+{{ p2.get('reasoning') }}
+{% endif %}
+{% endif %}
+{% endif %}
+
+---
+
+{% if errors %}
+## Warnings & Errors
+{% for e in errors %}
+- {{ e }}
+{% endfor %}
+{% endif %}
+
+---
+*Generated by Boundless100x SQGLP Research System | {{ generation_date }}*

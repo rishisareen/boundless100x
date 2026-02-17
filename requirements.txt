@@ -1,0 +1,29 @@
+# Data fetching
+requests>=2.31
+beautifulsoup4>=4.12
+jugaad-data>=0.25
+nsetools>=1.0
+bsedata>=0.5
+yfinance>=0.2
+
+# Computation
+pandas>=2.1
+numpy>=1.25
+scipy>=1.11
+
+# PDF processing
+PyMuPDF>=1.23
+
+# Visualization & reporting
+plotly>=5.18
+jinja2>=3.1
+
+# LLM
+anthropic>=0.39
+
+# CLI & config
+typer>=0.9
+pyyaml>=6.0
+
+# Dev
+pytest>=7.4

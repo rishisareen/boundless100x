@@ -1,0 +1,96 @@
+# Reference: QGLP Checklist Q3-Q6 (Motilal Oswal Dec 2025)
+element: quality_business
+
+metrics:
+  roce_5yr_avg:
+    name: "RoCE (5yr Avg)"
+    module: "builtin.profitability"
+    function: "compute_roce_avg"
+    inputs: ["ratios"]
+    params: { years: 5 }
+    scoring: { thresholds: [5, 10, 15, 20, 25, 30], direction: "higher_is_better", weight: 0.15 }
+    display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+
+  roe_5yr_avg:
+    name: "RoE (5yr Avg)"
+    module: "builtin.profitability"
+    function: "compute_roe_avg"
+    inputs: ["financials", "balance_sheet"]
+    params: { years: 5 }
+    scoring: { thresholds: [5, 10, 15, 18, 22, 28], direction: "higher_is_better", weight: 0.12 }
+    display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+
+  operating_margin_5yr:
+    name: "Operating Margin (5yr Avg)"
+    module: "builtin.profitability"
+    function: "compute_opm_avg"
+    inputs: ["financials"]
+    params: { years: 5 }
+    scoring: { thresholds: [5, 8, 12, 18, 25, 35], direction: "higher_is_better", weight: 0.10 }
+    display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+
+  dupont_margin:
+    name: "DuPont: Net Profit Margin"
+    module: "builtin.profitability"
+    function: "compute_dupont_margin"
+    inputs: ["financials"]
+    scoring: { thresholds: [3, 5, 8, 12, 18, 25], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+
+  dupont_turnover:
+    name: "DuPont: Asset Turnover"
+    module: "builtin.profitability"
+    function: "compute_dupont_turnover"
+    inputs: ["financials", "balance_sheet"]
+    scoring: { thresholds: [0.3, 0.5, 0.8, 1.0, 1.5, 2.0], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:.2f}x", section: "quality_scorecard", peer_compare: true }
+
+  dupont_equity_multiplier:
+    name: "DuPont: Equity Multiplier"
+    module: "builtin.profitability"
+    function: "compute_dupont_leverage"
+    inputs: ["balance_sheet"]
+    scoring: { thresholds: [5.0, 4.0, 3.0, 2.5, 2.0, 1.5], direction: "lower_is_better", weight: 0.03 }
+    display: { format: "{:.2f}x", section: "quality_scorecard", peer_compare: true }
+
+  cash_conversion:
+    name: "Cash Conversion (OCF/EBITDA)"
+    module: "builtin.profitability"
+    function: "compute_cash_conversion"
+    inputs: ["financials", "cashflow"]
+    params: { years: 5 }
+    scoring: { thresholds: [30, 45, 55, 65, 75, 85], direction: "higher_is_better", weight: 0.08 }
+    display: { format: "{:.0f}%", section: "quality_scorecard", peer_compare: true }
+
+  fcf_yield:
+    name: "FCF Yield"
+    module: "builtin.profitability"
+    function: "compute_fcf_yield"
+    inputs: ["cashflow", "price", "metadata"]
+    scoring: { thresholds: [-2, 0, 1, 2, 4, 6], direction: "higher_is_better", weight: 0.07 }
+    display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+
+  debt_equity:
+    name: "Debt / Equity"
+    module: "builtin.leverage"
+    function: "compute_debt_equity"
+    inputs: ["balance_sheet"]
+    scoring: { thresholds: [2.0, 1.0, 0.5, 0.3, 0.1, 0.0], direction: "lower_is_better", weight: 0.08 }
+    display: { format: "{:.2f}x", section: "quality_scorecard", peer_compare: true }
+
+  interest_coverage:
+    name: "Interest Coverage"
+    module: "builtin.leverage"
+    function: "compute_interest_coverage"
+    inputs: ["financials"]
+    scoring: { thresholds: [1, 2, 3, 5, 8, 15], direction: "higher_is_better", weight: 0.07 }
+    display: { format: "{:.1f}x", section: "quality_scorecard", peer_compare: true }
+
+  working_capital_days_trend:
+    name: "Working Capital Days Trend"
+    module: "builtin.efficiency"
+    function: "compute_wc_days_trend"
+    inputs: ["ratios"]
+    params: { years: 5 }
+    scoring: { mode: "trend_direction", direction: "declining_is_better", weight: 0.05 }
+    display: { format: "{:.0f} days", section: "quality_scorecard", peer_compare: true }

@@ -1,0 +1,40 @@
+You are a financial analyst specializing in Indian equity markets. A company has been classified into a sector by Screener.in, and candidate peers were auto-selected from that sector classification. Your job is to assess whether these peers are truly comparable.
+
+## Target Company
+Name: {company_name} ({ticker})
+Sector (Screener.in): {sector}
+Market Cap: ₹{market_cap} Cr
+Key Financials: RoCE {roce}%, OPM {opm}%, Debt/Equity {de}x
+
+## Candidate Peers (from Screener.in sector classification)
+{candidate_list}
+
+## Task
+
+1. Assess whether Screener.in's sector classification is appropriate for this company. Consider: Does the company's core business model match the sector label? Are the listed peers in genuinely similar businesses?
+
+2. For each candidate peer, classify as:
+   - **true_competitor**: Same core business model, competes for similar customers, comparable unit economics
+   - **tangential**: Same broad industry but fundamentally different business model, revenue drivers, or economics
+   - **irrelevant**: Entirely different business despite sharing a sector classification
+
+3. Suggest up to {max_suggestions} NSE-listed Indian companies (by ticker symbol) that would be MORE appropriate peers, even if they come from a completely different Screener.in sector. Focus on companies with similar:
+   - Business model (asset-light vs asset-heavy, B2B vs B2C)
+   - Competitive dynamics (oligopoly vs fragmented, regulated vs unregulated)
+   - Unit economics (margin profile, capital intensity, working capital needs)
+   - Growth drivers (secular vs cyclical, domestic vs export)
+
+Respond ONLY with valid JSON matching this exact schema:
+```json
+{{{{
+  "classification_appropriate": <true or false>,
+  "classification_reasoning": "<1-2 sentences on why the sector classification is or isn't appropriate>",
+  "candidate_assessments": [
+    {{{{"ticker": "<TICKER>", "name": "<company name>", "relevance": "<true_competitor|tangential|irrelevant>", "reason": "<brief reason>"}}}}
+  ],
+  "suggested_alternatives": [
+    {{{{"ticker": "<NSE_TICKER>", "name": "<company name>", "rationale": "<why this is a better peer>"}}}}
+  ],
+  "ideal_peer_characteristics": "<what kind of companies are the RIGHT peers for this business>"
+}}}}
+```

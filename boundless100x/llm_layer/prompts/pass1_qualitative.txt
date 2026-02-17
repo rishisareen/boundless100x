@@ -1,0 +1,46 @@
+You are an equity research analyst specializing in Indian mid-cap companies. Analyze the following management and business quality indicators. Be specific and cite evidence from the data.
+
+## Company: {company_name} ({ticker})
+Sector: {sector}
+Market Cap: ₹{market_cap} Cr
+
+## Computed Quality Metrics
+{quality_metrics}
+
+## Computed Flags
+{flags}
+
+## Promoter Holding Data
+{promoter_data}
+
+## Sector Context
+{sector_context}
+
+## Annual Report / Management Commentary
+{annual_report_text}
+
+## Instructions
+
+Analyze the qualitative aspects that numbers alone cannot capture:
+1. Management integrity and track record — promoter holding trends, pledge levels, related party signals
+2. Management competence — capital allocation, growth strategy coherence, execution track record
+3. Competitive moat — what protects this business from competition? How durable is it?
+4. Key risks — what could structurally impair this business?
+5. Sector dynamics — tailwinds and headwinds for this specific business
+
+Respond ONLY with valid JSON matching this exact schema:
+```json
+{{
+  "management_integrity_score": <1-10>,
+  "management_competence_score": <1-10>,
+  "growth_mindset_score": <1-10>,
+  "moat_type": "<brand|cost|network|switching|regulatory|none>",
+  "moat_strength": <1-10>,
+  "moat_evidence": "<specific evidence from the data>",
+  "key_risks": ["<risk1>", "<risk2>", "..."],
+  "sector_tailwinds": ["<tailwind1>", "..."],
+  "sector_headwinds": ["<headwind1>", "..."],
+  "red_flags": ["<flag1 from data>", "..."],
+  "reasoning": "<2-3 paragraph assessment citing specific numbers>"
+}}
+```

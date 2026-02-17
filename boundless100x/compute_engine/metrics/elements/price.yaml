@@ -1,0 +1,70 @@
+# Reference: QGLP Checklist Q20-Q24; "Trailing PEG" methodology (Dec 2025)
+element: price
+
+metrics:
+  pe_ttm:
+    name: "P/E (TTM)"
+    module: "builtin.valuation"
+    function: "compute_pe_ttm"
+    inputs: ["financials", "metadata"]
+    scoring: { mode: "sector_relative_percentile", direction: "lower_is_better", weight: 0.12 }
+    display: { format: "{:.1f}x", section: "valuation_analysis", peer_compare: true }
+
+  peg_ratio:
+    name: "PEG Ratio (Forward)"
+    module: "builtin.valuation"
+    function: "compute_peg"
+    inputs: ["financials", "metadata"]
+    scoring: { thresholds: [3.0, 2.5, 2.0, 1.5, 1.0, 0.7], direction: "lower_is_better", weight: 0.15 }
+    display: { format: "{:.2f}x", section: "valuation_analysis", peer_compare: true }
+
+  trailing_peg:
+    name: "Trailing PEG (P/E ÷ 3yr PAT CAGR)"
+    module: "builtin.valuation"
+    function: "compute_trailing_peg"
+    inputs: ["financials", "metadata"]
+    params: { cagr_years: 3 }
+    scoring: { thresholds: [4.0, 3.0, 2.0, 1.5, 1.0, 0.5], direction: "lower_is_better", weight: 0.18 }
+    display: { format: "{:.2f}x", section: "valuation_analysis", peer_compare: true }
+
+  ev_ebitda:
+    name: "EV/EBITDA"
+    module: "builtin.valuation"
+    function: "compute_ev_ebitda"
+    inputs: ["financials", "balance_sheet", "metadata"]
+    scoring: { mode: "sector_relative_percentile", direction: "lower_is_better", weight: 0.12 }
+    display: { format: "{:.1f}x", section: "valuation_analysis", peer_compare: true }
+
+  pe_vs_historical:
+    name: "P/E Percentile (10yr range)"
+    module: "builtin.valuation"
+    function: "compute_pe_percentile"
+    inputs: ["financials", "metadata"]
+    params: { years: 10 }
+    scoring: { thresholds: [90, 75, 60, 50, 35, 20], direction: "lower_is_better", weight: 0.13 }
+    display: { format: "{:.0f}th percentile", section: "valuation_analysis" }
+
+  dcf_margin_of_safety:
+    name: "DCF Margin of Safety"
+    module: "builtin.valuation"
+    function: "compute_dcf_margin"
+    inputs: ["financials", "cashflow", "metadata"]
+    params: { projection_years: 10, terminal_growth: 0.04, discount_rate: 0.12 }
+    scoring: { thresholds: [-30, -10, 0, 10, 20, 35], direction: "higher_is_better", weight: 0.15 }
+    display: { format: "{:.0f}%", section: "valuation_analysis" }
+
+  reverse_dcf_growth:
+    name: "Reverse DCF Implied Growth"
+    module: "builtin.valuation"
+    function: "compute_reverse_dcf"
+    inputs: ["financials", "cashflow", "metadata"]
+    scoring: { mode: "comparison_to_actual", weight: 0.10 }
+    display: { format: "{:.1f}% implied", section: "valuation_analysis" }
+
+  earnings_yield_vs_gsec:
+    name: "Earnings Yield Spread vs G-Sec"
+    module: "builtin.valuation"
+    function: "compute_earnings_yield_spread"
+    inputs: ["financials", "metadata"]
+    scoring: { thresholds: [-3, -1, 0, 1, 2, 4], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:+.1f}pp", section: "valuation_analysis" }

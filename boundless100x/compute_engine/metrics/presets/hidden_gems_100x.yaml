@@ -1,0 +1,12 @@
+# Based on Motilal Oswal 2014 SQGLP 100x hunting criteria
+name: "Hidden Gems - 100x (MOSL 2014)"
+description: |
+  Market cap < INR 30b, P/E < 25x, low institutional holding.
+  Value migration or niche opportunity businesses.
+filters:
+  market_cap: { max: 30000 }
+  pe_ttm: { max: 25 }
+  institutional_holding: { max: 10 }
+  analyst_coverage: { max: 10 }
+rankings:
+  primary: "sqglp_composite"
