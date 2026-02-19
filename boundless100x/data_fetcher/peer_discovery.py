@@ -1,8 +1,11 @@
 """Multi-layer peer discovery pipeline.
 
-Layers 1-3: fully offline, zero LLM cost.
-Layer 4: LLM peer validation — validates candidates and suggests cross-sector alternatives.
-Layer 5: Value chain mapping (future).
+Layers 1-2: fully offline, zero LLM cost.
+Layer 3: LLM peer validation — validates candidates for competitive relevance.
+Layer 4: Value chain mapping (future).
+
+v4 CHANGE: Removed cross-sector financial similarity matching.
+Peers are now exclusively from the same industry classification.
 """
 
 import json
@@ -12,7 +15,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from boundless100x.data_fetcher.fetch_sector_peers import SectorPeersFetcher
@@ -29,20 +31,21 @@ class PeerResult:
 
     direct_competitors: list[str] = field(default_factory=list)
     sector_peers: list[str] = field(default_factory=list)
-    financial_peers: list[str] = field(default_factory=list)
     value_chain: list[str] = field(default_factory=list)
     discovery_metadata: dict = field(default_factory=dict)
     peer_data: dict = field(default_factory=dict)
 
 
 class PeerDiscovery:
-    """Multi-layer peer identification.
+    """Industry-focused peer identification.
 
     Layer 1: Industry classification from Screener.in peer table
-    Layer 2: Size filtering (market cap and revenue bands)
-    Layer 3: Financial similarity scoring (z-score euclidean distance)
-    Layer 4: LLM peer validation — filters bad peers, suggests cross-sector alternatives
-    Layer 5: Value chain mapping (future)
+    Layer 2: Size-filtered cohort (market cap and revenue bands)
+    Layer 3: LLM peer validation — validates competitive relevance (optional)
+    Layer 4: Value chain mapping (optional, future)
+
+    v4 CHANGE: Removed cross-sector financial similarity matching.
+    Peers are now exclusively from the same industry classification.
     """
 
     def __init__(self, config: dict):
@@ -51,9 +54,8 @@ class PeerDiscovery:
         self.size_band_mult = pd_config.get("size_band_multiplier", 3.0)
         self.revenue_band_mult = pd_config.get("revenue_band_multiplier", 5.0)
         self.min_listing_years = pd_config.get("min_listing_years", 5)
-        self.include_financial_peers = pd_config.get("include_financial_peers", True)
 
-        # Layer 4: LLM peer validation config
+        # Layer 3: LLM peer validation config
         self._llm_validation_enabled = pd_config.get("use_llm_validation", False)
         self._llm_max_suggestions = pd_config.get("max_llm_suggestions", 5)
         llm_config = config.get("llm", {})
@@ -85,7 +87,7 @@ class PeerDiscovery:
         Args:
             ticker: NSE symbol of the target company.
             target_data: Pre-fetched data dict (to avoid re-fetching).
-            use_llm: Whether to run Layer 4 LLM validation.
+            use_llm: Whether to run Layer 3 LLM validation.
 
         Returns:
             PeerResult with categorized peer lists.
@@ -112,37 +114,20 @@ class PeerDiscovery:
 
         logger.info(f"Layer 2: {len(size_filtered)} after size filter")
 
-        # Layer 3: Financial similarity ranking (on full sector list)
-        all_similarity_ranked = self._layer3_financial_similarity(
-            sector_df, ticker, all_sector_tickers
-        )
-
-        # Rank size-filtered peers by similarity
-        if len(size_filtered) >= 2:
-            size_similarity_ranked = self._layer3_financial_similarity(
-                sector_df, ticker, size_filtered
-            )
-        else:
-            size_similarity_ranked = size_filtered
-
-        logger.info(
-            f"Layer 3: {len(size_similarity_ranked)} size-filtered ranked, "
-            f"{len(all_similarity_ranked)} total ranked"
-        )
-
-        # Select final direct competitors: size-filtered first, then backfill
-        # from full similarity-ranked list if size filter was too restrictive
-        direct = size_similarity_ranked[: self.max_peers]
-        if len(direct) < self.max_peers and all_similarity_ranked:
-            for t in all_similarity_ranked:
+        # Select direct competitors from size-filtered list, backfill from
+        # full sector list if size filter was too restrictive
+        direct = size_filtered[: self.max_peers]
+        if len(direct) < self.max_peers:
+            for t in all_sector_tickers:
                 if t not in direct:
                     direct.append(t)
                 if len(direct) >= self.max_peers:
                     break
-            logger.info(
-                f"Backfilled {len(direct) - len(size_similarity_ranked)} peers "
-                f"from similarity ranking (size filter too restrictive)"
-            )
+            if len(direct) > len(size_filtered):
+                logger.info(
+                    f"Backfilled {len(direct) - len(size_filtered)} peers "
+                    f"from sector list (size filter too restrictive)"
+                )
 
         # Build peer data dict for downstream use
         peer_data = {}
@@ -157,18 +142,18 @@ class PeerDiscovery:
                     "sales_qtr": row.get("sales_qtr"),
                 }
 
-        layers_run = [1, 2, 3]
+        layers_run = [1, 2]
         peer_quality_context = (
             f"Peers sourced from Screener.in sector classification. "
             f"No LLM validation performed. {len(direct)} direct competitors selected "
-            f"from {len(all_sector_tickers)} sector peers after size and similarity filtering."
+            f"from {len(all_sector_tickers)} sector peers after size filtering."
         )
 
-        # Layer 4: LLM Peer Validation (if enabled)
-        run_layer4 = use_llm or self._llm_validation_enabled
-        if run_layer4:
+        # Layer 3: LLM Peer Validation (optional)
+        run_layer3 = use_llm or self._llm_validation_enabled
+        if run_layer3:
             try:
-                validated, suggestions, quality_context = self._layer4_llm_validation(
+                validated, suggestions, quality_context = self._layer3_llm_validation(
                     ticker=ticker,
                     target_data=target_data,
                     candidates=direct,
@@ -189,24 +174,20 @@ class PeerDiscovery:
 
                 direct = validated[: self.max_peers]
                 peer_quality_context = quality_context
-                layers_run.append(4)
+                layers_run.append(3)
 
                 logger.info(
-                    f"Layer 4: {len(direct)} peers after LLM validation"
+                    f"Layer 3: {len(direct)} peers after LLM validation"
                 )
             except Exception as e:
                 logger.warning(
-                    f"Layer 4 LLM validation failed, using Layer 1-3 peers: {e}"
+                    f"Layer 3 LLM validation failed, using Layer 1-2 peers: {e}"
                 )
-
-        # Financial peers = full sector similarity ranking (may overlap with direct)
-        financial_peers = [t for t in all_similarity_ranked if t not in direct][:5]
 
         result = PeerResult(
             direct_competitors=direct,
             sector_peers=all_sector_tickers,
-            financial_peers=financial_peers,
-            value_chain=[],  # Layer 5: future
+            value_chain=[],  # Layer 4: future
             discovery_metadata={
                 "target": ticker,
                 "target_mcap": target_mcap,
@@ -214,17 +195,15 @@ class PeerDiscovery:
                 "candidates_evaluated": len(all_sector_tickers),
                 "size_filtered_to": len(size_filtered),
                 "layers_run": layers_run,
-                "similarity_scores": self._last_similarity_scores,
                 "peer_quality_context": peer_quality_context,
-                "llm_validated": 4 in layers_run,
+                "llm_validated": 3 in layers_run,
             },
             peer_data=peer_data,
         )
 
         logger.info(
             f"Peer discovery complete: {len(direct)} direct competitors, "
-            f"{len(all_sector_tickers)} sector peers, "
-            f"{len(financial_peers)} financial peers"
+            f"{len(all_sector_tickers)} sector peers"
         )
 
         return result
@@ -317,87 +296,7 @@ class PeerDiscovery:
 
         return None
 
-    # ── Layer 3: Financial Similarity ──
-
-    _last_similarity_scores: dict = {}
-
-    def _layer3_financial_similarity(
-        self,
-        sector_df: pd.DataFrame,
-        ticker: str,
-        candidate_tickers: list[str],
-    ) -> list[str]:
-        """Rank candidates by financial similarity to target using euclidean distance.
-
-        Similarity dimensions: [RoCE, PE, Market Cap (log), quarterly sales growth]
-        All z-score normalized before computing distance.
-        """
-        self._last_similarity_scores = {}
-
-        if not candidate_tickers:
-            return []
-
-        # Build feature matrix from sector_df
-        all_tickers = [ticker] + candidate_tickers
-        features = sector_df[sector_df["peer_ticker"].isin(all_tickers)].copy()
-
-        if features.empty or len(features) < 2:
-            return candidate_tickers
-
-        # Select numeric dimensions available in the peer table
-        dims = []
-        for col in ["roce", "pe", "market_cap", "qtr_sales_var"]:
-            if col in features.columns:
-                features[col] = pd.to_numeric(features[col], errors="coerce")
-                if features[col].notna().sum() >= 2:
-                    dims.append(col)
-
-        if not dims:
-            return candidate_tickers
-
-        # Log-transform market cap for better distance scaling
-        if "market_cap" in dims:
-            features["market_cap"] = np.log1p(features["market_cap"].fillna(0))
-
-        # Z-score normalize each dimension
-        for col in dims:
-            mean = features[col].mean()
-            std = features[col].std()
-            if std > 0:
-                features[f"{col}_z"] = (features[col] - mean) / std
-            else:
-                features[f"{col}_z"] = 0.0
-
-        z_cols = [f"{c}_z" for c in dims]
-
-        # Get target vector
-        target_row = features[features["peer_ticker"] == ticker]
-        if target_row.empty:
-            return candidate_tickers
-
-        target_vector = target_row[z_cols].values[0].astype(float)
-
-        # Compute euclidean distance for each candidate
-        distances = {}
-        for _, row in features.iterrows():
-            pt = row["peer_ticker"]
-            if pt == ticker or pt not in candidate_tickers:
-                continue
-            candidate_vector = row[z_cols].values.astype(float)
-            # Handle NaN in vectors
-            mask = ~(np.isnan(target_vector) | np.isnan(candidate_vector))
-            if mask.sum() == 0:
-                continue
-            dist = np.sqrt(np.sum((target_vector[mask] - candidate_vector[mask]) ** 2))
-            distances[pt] = float(dist)
-
-        self._last_similarity_scores = distances
-
-        # Sort by closest distance (most similar first)
-        ranked = sorted(distances.keys(), key=lambda t: distances[t])
-        return ranked
-
-    # ── Layer 4: LLM Peer Validation ──
+    # ── Layer 3: LLM Peer Validation (optional) ──
 
     def _get_llm_client(self):
         """Lazy-init anthropic client for Layer 4."""
@@ -406,23 +305,23 @@ class PeerDiscovery:
 
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY not set — cannot run Layer 4")
+                raise ValueError("ANTHROPIC_API_KEY not set — cannot run Layer 3")
             self._llm_client = anthropic.Anthropic(api_key=api_key)
         return self._llm_client
 
-    def _layer4_llm_validation(
+    def _layer3_llm_validation(
         self,
         ticker: str,
         target_data: dict | None,
         candidates: list[str],
         peer_data: dict,
     ) -> tuple[list[str], list[str], str]:
-        """Validate peer candidates using LLM and get cross-sector suggestions.
+        """Validate peer candidates using LLM for competitive relevance.
 
         Returns:
             (validated_tickers, suggested_tickers, peer_quality_context)
         """
-        logger.info("[Layer 4] Running LLM peer validation")
+        logger.info("[Layer 3] Running LLM peer validation")
         start_time = time.time()
 
         # Build context from target data
@@ -475,7 +374,7 @@ class PeerDiscovery:
         output_text = response.content[0].text
 
         logger.info(
-            f"  Layer 4 LLM: {response.usage.input_tokens}in + "
+            f"  Layer 3 LLM: {response.usage.input_tokens}in + "
             f"{response.usage.output_tokens}out tokens, {elapsed:.1f}s"
         )
 
@@ -550,7 +449,7 @@ class PeerDiscovery:
         peer_quality_context = " ".join(context_parts)
 
         logger.info(
-            f"  Layer 4 result: {len(validated)} validated, "
+            f"  Layer 3 result: {len(validated)} validated, "
             f"{len(suggestions)} suggestions, "
             f"classification_appropriate={classification_ok}"
         )
@@ -662,5 +561,5 @@ class PeerDiscovery:
             except json.JSONDecodeError:
                 pass
 
-        logger.warning("Could not parse JSON from Layer 4 LLM response")
+        logger.warning("Could not parse JSON from Layer 3 LLM response")
         return {}

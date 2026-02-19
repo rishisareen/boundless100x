@@ -16,7 +16,6 @@ peer_discovery:
   size_band_multiplier: 3.0
   revenue_band_multiplier: 5.0
   sector_source: "screener"
-  include_financial_peers: true
   min_listing_years: 5
 
 # ── Analysis Period ──

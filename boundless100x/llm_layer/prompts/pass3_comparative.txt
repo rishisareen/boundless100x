@@ -17,7 +17,6 @@ NOTE: The above assessment indicates how relevant these peers are for comparison
 ## Peer Discovery Metadata
 Candidates evaluated: {candidates_evaluated}
 Size-filtered: {size_filtered}
-Similarity scores: {similarity_scores}
 
 ## Instructions
 

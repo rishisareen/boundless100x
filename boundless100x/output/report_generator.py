@@ -10,6 +10,7 @@ import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +42,24 @@ class ReportGenerator:
         formats = formats or ["html", "md", "json"]
         report_dir = self._make_report_dir(result.ticker)
 
+        # Compute growth decomposition for the expanded report section
+        growth_decomposition = self._compute_growth_decomposition(result)
+
         if "json" in formats:
-            self._export_json(result, report_dir)
+            self._export_json(result, report_dir, growth_decomposition)
             logger.info(f"JSON exports saved to {report_dir}")
 
         # Pre-render charts for HTML
         charts = self._render_charts(result)
 
         if "html" in formats:
-            html = self._render_html(result, charts)
+            html = self._render_html(result, charts, growth_decomposition)
             path = report_dir / "sqglp_dashboard.html"
             path.write_text(html)
             logger.info(f"HTML dashboard: {path}")
 
         if "md" in formats:
-            md = self._render_markdown(result)
+            md = self._render_markdown(result, growth_decomposition)
             path = report_dir / "sqglp_report.md"
             path.write_text(md)
             logger.info(f"Markdown report: {path}")
@@ -64,7 +68,7 @@ class ReportGenerator:
 
     # ── HTML ──
 
-    def _render_html(self, result, charts: dict) -> str:
+    def _render_html(self, result, charts: dict, growth_decomposition: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.html.j2")
         return template.render(
             ticker=result.ticker,
@@ -75,6 +79,7 @@ class ReportGenerator:
             peers=result.peers,
             comparison=result.comparison,
             llm_analysis=result.llm_analysis,
+            growth=growth_decomposition,
             radar_chart=charts.get("radar", ""),
             roce_trend_chart=charts.get("roce_trend", ""),
             pe_band_chart=charts.get("pe_band", ""),
@@ -85,7 +90,7 @@ class ReportGenerator:
 
     # ── Markdown ──
 
-    def _render_markdown(self, result) -> str:
+    def _render_markdown(self, result, growth_decomposition: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.md.j2")
         return template.render(
             ticker=result.ticker,
@@ -96,13 +101,14 @@ class ReportGenerator:
             peers=result.peers,
             comparison=result.comparison,
             llm_analysis=result.llm_analysis,
+            growth=growth_decomposition,
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
     # ── JSON Export ──
 
-    def _export_json(self, result, report_dir: Path):
+    def _export_json(self, result, report_dir: Path, growth_decomposition: dict | None = None):
         # raw_metrics.json
         metrics_export = {}
         for mid, mr in result.metrics.items():
@@ -127,11 +133,14 @@ class ReportGenerator:
             discovery = {
                 "direct_competitors": result.peers.direct_competitors,
                 "sector_peers": result.peers.sector_peers,
-                "financial_peers": result.peers.financial_peers,
                 "peer_data": result.peers.peer_data,
                 "discovery_metadata": result.peers.discovery_metadata,
             }
             self._write_json(report_dir / "peer_discovery.json", discovery)
+
+        # growth_decomposition.json
+        if growth_decomposition:
+            self._write_json(report_dir / "growth_decomposition.json", growth_decomposition)
 
         # llm_analysis.json
         if result.llm_analysis:
@@ -297,6 +306,35 @@ class ReportGenerator:
             height=350,
         )
         return pio.to_html(fig, include_plotlyjs=False, full_html=False)
+
+    # ── Growth Decomposition ──
+
+    def _compute_growth_decomposition(self, result) -> dict | None:
+        """Compute 4-lever growth decomposition from result data."""
+        try:
+            financials = result.data.get("financials")
+            if financials is None or financials.empty:
+                return None
+
+            decomposition = compute_lever_decomposition_table(result.data)
+
+            # Enrich valuation check with PE from metrics if not in financials
+            val_check = decomposition.get("valuation_check", {})
+            if val_check.get("current_pe") is None:
+                pe_result = result.metrics.get("pe_ttm")
+                if pe_result and pe_result.ok:
+                    val_check["current_pe"] = pe_result.value
+                    pat_5 = val_check.get("pat_cagr_5yr")
+                    if pat_5 and pat_5 > 0:
+                        val_check["trailing_peg"] = pe_result.value / pat_5
+                        from boundless100x.compute_engine.metrics.builtin.growth import _peg_verdict
+                        quality = decomposition.get("growth_synthesis", {}).get("quality_flag", "moderate")
+                        val_check["verdict"] = _peg_verdict(val_check["trailing_peg"], quality)
+
+            return decomposition
+        except Exception as e:
+            logger.warning(f"Growth decomposition failed: {e}")
+            return None
 
     # ── Helpers ──
 

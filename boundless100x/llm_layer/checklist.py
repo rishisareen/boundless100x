@@ -211,3 +211,49 @@ def build_peer_comparison_text(comparison: dict) -> str:
         lines.append(f"| {' | '.join(row)} |")
 
     return "\n".join(lines)
+
+
+def build_growth_decomposition_context(growth_decomposition: dict | None) -> str:
+    """Format growth decomposition data for LLM context (v4)."""
+    if not growth_decomposition:
+        return "No growth decomposition data available."
+
+    lines = []
+
+    # Earnings Profile
+    ep = growth_decomposition.get("earnings_profile", {})
+    pat_3 = ep.get("pat_cagr_3yr")
+    pat_5 = ep.get("pat_cagr_5yr")
+    lines.append("Earnings Growth Profile:")
+    lines.append(f"  3-Year PAT CAGR: {pat_3:.1f}%" if pat_3 is not None else "  3-Year PAT CAGR: N/A")
+    lines.append(f"  5-Year PAT CAGR: {pat_5:.1f}%" if pat_5 is not None else "  5-Year PAT CAGR: N/A")
+
+    # Lever Table
+    lines.append("\n4-Lever Earnings Decomposition:")
+    for lever in growth_decomposition.get("lever_table", []):
+        lines.append(f"  {lever['lever']}: {lever['status']}")
+        lines.append(f"    {lever['analysis']}")
+
+    # Growth Synthesis
+    synthesis = growth_decomposition.get("growth_synthesis", {})
+    quality = synthesis.get("quality_flag", "N/A")
+    drivers = synthesis.get("primary_drivers", [])
+    narrative = synthesis.get("narrative", "")
+    lines.append(f"\nGrowth Quality: {quality.replace('_', ' ').title()}")
+    if drivers:
+        lines.append(f"Primary drivers: {', '.join(drivers)}")
+    if narrative:
+        lines.append(f"Narrative: {narrative}")
+
+    # Valuation Check
+    vc = growth_decomposition.get("valuation_check", {})
+    pe = vc.get("current_pe")
+    peg = vc.get("trailing_peg")
+    verdict = vc.get("verdict", "")
+    lines.append("\nValuation Reality Check:")
+    lines.append(f"  Current P/E: {pe:.1f}x" if pe is not None else "  Current P/E: N/A")
+    lines.append(f"  Trailing PEG: {peg:.2f}x" if peg is not None else "  Trailing PEG: N/A")
+    if verdict:
+        lines.append(f"  Verdict: {verdict}")
+
+    return "\n".join(lines)

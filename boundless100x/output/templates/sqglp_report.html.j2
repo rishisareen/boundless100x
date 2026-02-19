@@ -103,6 +103,98 @@
 </div>
 {% endif %}
 
+<!-- Earnings Quality & Growth Decomposition (v4) -->
+{% if growth %}
+<h2>Earnings Quality &amp; Growth Decomposition</h2>
+
+<!-- 6.1 Earnings Growth Profile -->
+<div class="card">
+  <h3>Earnings Growth Profile</h3>
+  <table class="metric-table">
+    <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>3-Year PAT CAGR</td>
+        <td class="{% if growth.earnings_profile.pat_cagr_3yr and growth.earnings_profile.pat_cagr_3yr >= 20 %}score-high{% elif growth.earnings_profile.pat_cagr_3yr and growth.earnings_profile.pat_cagr_3yr >= 10 %}score-mid{% else %}score-low{% endif %}" style="font-weight: 600;">
+          {% if growth.earnings_profile.pat_cagr_3yr is not none %}{{ "%.1f"|format(growth.earnings_profile.pat_cagr_3yr) }}%{% else %}N/A{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>5-Year PAT CAGR</td>
+        <td class="{% if growth.earnings_profile.pat_cagr_5yr and growth.earnings_profile.pat_cagr_5yr >= 20 %}score-high{% elif growth.earnings_profile.pat_cagr_5yr and growth.earnings_profile.pat_cagr_5yr >= 10 %}score-mid{% else %}score-low{% endif %}" style="font-weight: 600;">
+          {% if growth.earnings_profile.pat_cagr_5yr is not none %}{{ "%.1f"|format(growth.earnings_profile.pat_cagr_5yr) }}%{% else %}N/A{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- 6.2 The 4-Lever Earnings Decomposition -->
+<div class="card" style="margin-top: 15px;">
+  <h3>The 4-Lever Earnings Decomposition</h3>
+  <p style="color: var(--gray); font-size: 0.85em; margin-bottom: 10px;">
+    <em>Formula: ΔEPS = ΔVolume × (ΔSales/ΔVolume) × (ΔEBIT/ΔSales) × (ΔEPS/ΔEBIT)</em>
+  </p>
+  <table>
+    <thead>
+      <tr><th>Lever</th><th>Status / Observation</th><th>Analysis</th></tr>
+    </thead>
+    <tbody>
+      {% for lever in growth.lever_table %}
+      <tr>
+        <td><strong>{{ lever.lever }}</strong></td>
+        <td>{{ lever.status }}</td>
+        <td>{{ lever.analysis }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- 6.3 Growth Synthesis -->
+<div class="card" style="margin-top: 15px;">
+  <h3>Growth Synthesis</h3>
+  <div style="margin-bottom: 10px;">
+    <span class="conviction conviction-{% if growth.growth_synthesis.quality_flag == 'high_quality' %}high{% elif growth.growth_synthesis.quality_flag == 'moderate' %}medium{% else %}low{% endif %}">
+      {{ growth.growth_synthesis.quality_flag | replace("_", " ") | title }}
+    </span>
+  </div>
+  <ul>
+    {% for driver in growth.growth_synthesis.primary_drivers %}
+    <li><strong>{{ driver }}</strong> is a primary growth driver</li>
+    {% endfor %}
+  </ul>
+  <p style="margin-top: 8px;">{{ growth.growth_synthesis.narrative }}</p>
+</div>
+
+<!-- 6.4 Valuation Reality Check -->
+<div class="card" style="margin-top: 15px;">
+  <h3>Valuation Reality Check</h3>
+  <table class="metric-table">
+    <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Current P/E Ratio</td>
+        <td>{% if growth.valuation_check.current_pe is not none %}{{ "%.1f"|format(growth.valuation_check.current_pe) }}x{% else %}N/A{% endif %}</td>
+      </tr>
+      <tr>
+        <td>5-Year PAT CAGR</td>
+        <td>{% if growth.valuation_check.pat_cagr_5yr is not none %}{{ "%.1f"|format(growth.valuation_check.pat_cagr_5yr) }}%{% else %}N/A{% endif %}</td>
+      </tr>
+      <tr>
+        <td>Trailing PEG Ratio</td>
+        <td class="{% if growth.valuation_check.trailing_peg and growth.valuation_check.trailing_peg < 1.0 %}score-high{% elif growth.valuation_check.trailing_peg and growth.valuation_check.trailing_peg < 2.0 %}score-mid{% else %}score-low{% endif %}" style="font-weight: 600;">
+          {% if growth.valuation_check.trailing_peg is not none %}{{ "%.2f"|format(growth.valuation_check.trailing_peg) }}x{% else %}N/A{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="thesis-box" style="margin-top: 10px;">
+    <strong>Verdict:</strong> {{ growth.valuation_check.verdict }}
+  </div>
+</div>
+{% endif %}
+
 <!-- Key Metrics -->
 <h2>Key Metrics</h2>
 <div class="grid">
@@ -184,9 +276,6 @@
 <div class="card">
   <p><strong>Direct competitors:</strong> {{ peers.direct_competitors|join(', ') }}</p>
   <p><strong>Sector peers:</strong> {{ peers.sector_peers|join(', ') }}</p>
-  {% if peers.financial_peers %}
-  <p><strong>Financial peers:</strong> {{ peers.financial_peers|join(', ') }}</p>
-  {% endif %}
   <h3>Peer Data</h3>
   <table>
     <thead><tr><th>Ticker</th><th>Name</th><th>Market Cap (₹Cr)</th><th>PE</th><th>RoCE</th></tr></thead>

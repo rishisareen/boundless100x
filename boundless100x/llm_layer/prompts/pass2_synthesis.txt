@@ -22,6 +22,9 @@ Sector: {sector}
 ## Qualitative Assessment (from prior analysis)
 {pass1_output}
 
+## Growth Quality Report (pre-computed 4-lever decomposition)
+{growth_quality_report}
+
 ## Instructions
 
 Synthesize an investment thesis weighing:

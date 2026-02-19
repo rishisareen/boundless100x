@@ -76,3 +76,44 @@ metrics:
     params: { field: "revenue", years: 10 }
     scoring: { thresholds: [30, 25, 20, 15, 10, 5], direction: "lower_is_better", weight: 0.08 }
     display: { format: "σ = {:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  # ─── v4: Additional growth metrics for expanded report ───
+
+  revenue_cagr_3yr:
+    name: "Revenue CAGR (3yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "revenue", years: 3 }
+    scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  ebit_cagr_5yr:
+    name: "EBIT CAGR (5yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "operating_profit", years: 5 }
+    scoring: { thresholds: [3, 8, 15, 20, 28, 40], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  ebit_cagr_3yr:
+    name: "EBIT CAGR (3yr)"
+    module: "builtin.growth"
+    function: "compute_cagr"
+    inputs: ["financials"]
+    params: { field: "operating_profit", years: 3 }
+    scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+
+  price_lever_signal:
+    name: "Price Lever Signal"
+    module: "builtin.growth"
+    function: "compute_price_lever"
+    inputs: ["financials"]
+    params: { years: 5 }
+    scoring:
+      mode: "categorical"
+      categories: { "strong_pricing_power": 10, "moderate_pricing": 7, "discounting": 3, "unknown": 5 }
+      weight: 0.05
+    display: { format: "{}", section: "growth_decomposition", peer_compare: false }

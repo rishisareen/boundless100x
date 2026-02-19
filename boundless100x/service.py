@@ -17,6 +17,7 @@ from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
 from boundless100x.compute_engine.peer_comparison import build_comparison_table
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer.orchestrator import LLMOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class AnalysisResult:
     data: dict = field(default_factory=dict)
     metrics: dict[str, MetricResult] = field(default_factory=dict)
     scores: dict = field(default_factory=dict)
+    growth_decomposition: dict | None = None
     peers: PeerResult | None = None
     peer_metrics: dict[str, dict[str, MetricResult]] = field(default_factory=dict)
     comparison: dict = field(default_factory=dict)
@@ -132,6 +134,15 @@ class Boundless100xService:
             result.errors.append(f"Scoring failed: {e}")
             logger.error(f"Scoring failed for {ticker}: {e}")
 
+        # Stage 3.5: Growth Decomposition (v4)
+        try:
+            financials = result.data.get("financials")
+            if financials is not None and not financials.empty:
+                result.growth_decomposition = compute_lever_decomposition_table(result.data)
+                logger.info("Growth decomposition computed")
+        except Exception as e:
+            logger.warning(f"Growth decomposition failed: {e}")
+
         if skip_peers:
             return result
 
@@ -211,6 +222,7 @@ class Boundless100xService:
                     comparison=result.comparison,
                     peer_metadata=peer_metadata,
                     annual_report_text=ar_text,
+                    growth_decomposition=result.growth_decomposition,
                 )
 
                 usage = result.llm_analysis.get("usage", {})

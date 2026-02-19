@@ -16,6 +16,7 @@ import anthropic
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.llm_layer.checklist import (
     build_flags_context,
+    build_growth_decomposition_context,
     build_key_metrics_context,
     build_peer_comparison_text,
     build_promoter_context,
@@ -73,6 +74,7 @@ class LLMOrchestrator:
         peer_metadata: dict | None = None,
         annual_report_text: str | None = None,
         sector_context: str = "",
+        growth_decomposition: dict | None = None,
     ) -> dict:
         """Run the full 3-pass LLM analysis.
 
@@ -112,6 +114,7 @@ class LLMOrchestrator:
             metrics=metrics,
             scores=scores,
             pass1_output=results["pass1"],
+            growth_decomposition=growth_decomposition,
         )
 
         # Pass 3: Comparative (only if peer comparison data exists)
@@ -175,6 +178,7 @@ class LLMOrchestrator:
         metrics: dict[str, MetricResult],
         scores: dict,
         pass1_output: dict,
+        growth_decomposition: dict | None = None,
     ) -> dict:
         template = self._load_template("pass2_synthesis.txt")
 
@@ -193,6 +197,7 @@ class LLMOrchestrator:
             flags=build_flags_context(metrics),
             qg_quadrant=build_qg_quadrant_context(metrics),
             pass1_output=pass1_text[:2000],  # Truncate
+            growth_quality_report=build_growth_decomposition_context(growth_decomposition),
         )
 
         return self._call_api(self.pass2_model, prompt, "pass2")
@@ -216,9 +221,6 @@ class LLMOrchestrator:
             pass2_thesis=pass2_thesis[:500],  # Brief thesis context
             candidates_evaluated=peer_metadata.get("candidates_evaluated", "N/A"),
             size_filtered=peer_metadata.get("size_filtered_to", "N/A"),
-            similarity_scores=json.dumps(
-                peer_metadata.get("similarity_scores", {}), indent=2
-            ),
             peer_quality_context=peer_metadata.get(
                 "peer_quality_context",
                 "Peer quality not assessed (LLM validation not run).",
