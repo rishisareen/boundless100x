@@ -18,7 +18,14 @@ class ShareholdingFetcher(BaseFetcher):
     Note: Screener.in also has shareholding data on the company page,
     which the FinancialsFetcher already parses. This fetcher provides
     BSE-sourced data as an alternative/supplement with more granular detail.
+
+    As of late 2025, the BSE CorporateShareholding API has been deprecated
+    and returns an HTML error page. This fetcher detects that and falls back
+    gracefully to Screener.in data (already fetched by FinancialsFetcher).
     """
+
+    # Track whether we've already warned about the deprecated API this session
+    _api_deprecation_warned = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -59,6 +66,18 @@ class ShareholdingFetcher(BaseFetcher):
                 "qtrid": "",
             }
             resp = self._get(BSE_SHP_URL, params=params)
+
+            # Detect deprecated API: returns HTML instead of JSON
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/html" in content_type or resp.text.strip().startswith("<"):
+                if not ShareholdingFetcher._api_deprecation_warned:
+                    logger.info(
+                        "BSE CorporateShareholding API is deprecated — "
+                        "using Screener.in shareholding data instead"
+                    )
+                    ShareholdingFetcher._api_deprecation_warned = True
+                return pd.DataFrame()
+
             data = resp.json()
 
             if isinstance(data, list):
@@ -66,11 +85,24 @@ class ShareholdingFetcher(BaseFetcher):
                     record = self._parse_bse_entry(entry)
                     if record:
                         records.append(record)
+            elif isinstance(data, dict) and data.get("Data") is None:
+                # API returns {"Data": null} for some endpoints
+                logger.debug(f"BSE shareholding returned null data for {bse_code}")
+                return pd.DataFrame()
         except Exception as e:
+            # Check if this is a JSON decode error from HTML response
+            if "Expecting value" in str(e) or "JSONDecodeError" in type(e).__name__:
+                if not ShareholdingFetcher._api_deprecation_warned:
+                    logger.info(
+                        "BSE CorporateShareholding API is deprecated — "
+                        "using Screener.in shareholding data instead"
+                    )
+                    ShareholdingFetcher._api_deprecation_warned = True
+                return pd.DataFrame()
             logger.warning(f"BSE shareholding fetch failed for {bse_code}: {e}")
 
         if not records:
-            logger.warning(f"No shareholding data from BSE for {bse_code}")
+            logger.debug(f"No shareholding records parsed from BSE for {bse_code}")
             return pd.DataFrame()
 
         df = pd.DataFrame(records)

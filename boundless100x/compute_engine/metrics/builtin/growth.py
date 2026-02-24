@@ -350,6 +350,8 @@ def compute_price_lever(data: dict, params: dict) -> MetricResult:
 
 def _compute_operating_leverage_avg(df: pd.DataFrame, years: int) -> float:
     """Compute average operating leverage from financials DataFrame."""
+    if "revenue" not in df.columns or "operating_profit" not in df.columns:
+        return 1.0
     revenue = pd.to_numeric(df["revenue"], errors="coerce").dropna()
     op = pd.to_numeric(df["operating_profit"], errors="coerce").dropna()
 
@@ -372,6 +374,8 @@ def _compute_operating_leverage_avg(df: pd.DataFrame, years: int) -> float:
 
 def _compute_financial_leverage_avg(df: pd.DataFrame, years: int) -> float:
     """Compute average financial leverage from financials DataFrame."""
+    if "operating_profit" not in df.columns or "eps" not in df.columns:
+        return 1.0
     op = pd.to_numeric(df["operating_profit"], errors="coerce").dropna()
     eps = pd.to_numeric(df["eps"], errors="coerce").dropna()
 
@@ -440,6 +444,18 @@ def _classify_fin_lever(fin_lever_avg: float) -> str:
         return "Neutral — minimal debt impact"
     else:
         return "Negative financial leverage (deleveraging)"
+
+
+def _classify_price_lever(price_lever: MetricResult) -> str:
+    """Classify price lever status into human-readable description."""
+    signal = price_lever.value if price_lever.ok else "unknown"
+    labels = {
+        "strong_pricing_power": "Strong pricing power",
+        "moderate_pricing": "Moderate pricing power",
+        "discounting": "Weak — discounting to maintain volumes",
+        "unknown": "Insufficient data",
+    }
+    return labels.get(signal, signal.replace("_", " ").title() if isinstance(signal, str) else "Unknown")
 
 
 def _generate_volume_analysis(rev_cagr: float | None, price_lever: MetricResult, df: pd.DataFrame) -> str:
@@ -610,6 +626,35 @@ def _peg_verdict(trailing_peg: float | None, quality_flag: str) -> str:
         )
 
 
+def _ensure_operating_profit(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive operating_profit if not present in the DataFrame.
+
+    Screener.in omits operating_profit for financial companies (banks, NBFCs).
+    Fallback: operating_profit = revenue - expenses - depreciation.
+    If expenses or depreciation are also missing, use pbt + interest as proxy.
+    """
+    if "operating_profit" in df.columns:
+        return df
+
+    df = df.copy()
+
+    if "revenue" in df.columns and "expenses" in df.columns:
+        rev = pd.to_numeric(df["revenue"], errors="coerce")
+        exp = pd.to_numeric(df["expenses"], errors="coerce")
+        depr = pd.to_numeric(df.get("depreciation", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        df["operating_profit"] = rev - exp - depr
+    elif "pbt" in df.columns and "interest" in df.columns:
+        # EBIT proxy: PBT + Interest (before other_income adjustment)
+        pbt = pd.to_numeric(df["pbt"], errors="coerce")
+        interest = pd.to_numeric(df["interest"], errors="coerce")
+        df["operating_profit"] = pbt + interest
+    else:
+        # Cannot derive — leave missing; callers handle gracefully
+        pass
+
+    return df
+
+
 def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
     """Full 4-lever decomposition for the expanded report section.
 
@@ -622,6 +667,7 @@ def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
     This is consumed by the Jinja2 report template.
     """
     df = _get_annual_rows(data["financials"], years + 1)
+    df = _ensure_operating_profit(df)
 
     # Compute all required CAGRs
     rev_cagr_3 = _compute_cagr_from_series(df["revenue"], 3) if "revenue" in df.columns else None
@@ -656,7 +702,7 @@ def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
         },
         {
             "lever": "Price Lever",
-            "status": price_lever.value if price_lever.ok else "unknown",
+            "status": _classify_price_lever(price_lever),
             "analysis": _generate_price_analysis(rev_cagr_5, price_lever, df),
         },
         {

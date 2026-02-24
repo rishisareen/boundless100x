@@ -36,8 +36,8 @@ class LLMOrchestrator:
     def __init__(self, config: dict):
         llm_config = config.get("llm", {})
         self.enabled = llm_config.get("enabled", True)
-        self.pass1_model = llm_config.get("pass1_model", "claude-sonnet-4-5-20250929")
-        self.pass2_model = llm_config.get("pass2_model", "claude-sonnet-4-5-20250929")
+        self.pass1_model = llm_config.get("pass1_model", "claude-sonnet-4-6")
+        self.pass2_model = llm_config.get("pass2_model", "claude-sonnet-4-6")
         self.pass3_model = llm_config.get("pass3_model", "claude-haiku-4-5-20251001")
         self.max_tokens = llm_config.get("max_tokens", 2000)
         self.skip_pass1_if_no_ar = llm_config.get("skip_pass1_if_no_ar", True)
@@ -54,8 +54,8 @@ class LLMOrchestrator:
 
     def use_deep_models(self) -> None:
         """Override Pass 1 & 2 to use Opus for deeper analysis."""
-        self.pass1_model = "claude-opus-4-5-20251101"
-        self.pass2_model = "claude-opus-4-5-20251101"
+        self.pass1_model = "claude-opus-4-6"
+        self.pass2_model = "claude-opus-4-6"
         self.max_tokens = 4000  # Opus benefits from more output room
         logger.info(
             f"Deep mode: Pass 1 & 2 → {self.pass1_model}, "
@@ -214,6 +214,35 @@ class LLMOrchestrator:
     ) -> dict:
         template = self._load_template("pass3_comparative.txt")
 
+        # Enrich peer quality context with classification info
+        quality_context = peer_metadata.get(
+            "peer_quality_context",
+            "Peer quality not assessed (LLM validation not run).",
+        )
+
+        # Add peer classification breakdown
+        peer_categories = peer_metadata.get("peer_categories", {})
+        if peer_categories:
+            classification_lines = []
+            for t, cat in peer_categories.items():
+                classification_lines.append(f"  {t}: {cat}")
+            quality_context += (
+                "\n\nPeer Classification:\n"
+                + "\n".join(classification_lines)
+            )
+
+        # Add limitation warning if applicable
+        limitation = peer_metadata.get("limitation_note", "")
+        has_competitors = peer_metadata.get("has_competitors", True)
+        if limitation:
+            quality_context += f"\n\nIMPORTANT: {limitation}"
+        if not has_competitors:
+            quality_context += (
+                "\nAll peers in this comparison are sector benchmarks, not direct competitors. "
+                "Frame your analysis as 'vs sector benchmarks' rather than 'vs competitors'. "
+                "Focus on absolute quality assessment rather than relative competitive ranking."
+            )
+
         prompt = template.format(
             ticker=ticker,
             sector=sector,
@@ -221,10 +250,7 @@ class LLMOrchestrator:
             pass2_thesis=pass2_thesis[:500],  # Brief thesis context
             candidates_evaluated=peer_metadata.get("candidates_evaluated", "N/A"),
             size_filtered=peer_metadata.get("size_filtered_to", "N/A"),
-            peer_quality_context=peer_metadata.get(
-                "peer_quality_context",
-                "Peer quality not assessed (LLM validation not run).",
-            ),
+            peer_quality_context=quality_context,
         )
 
         return self._call_api(self.pass3_model, prompt, "pass3")
@@ -271,45 +297,89 @@ class LLMOrchestrator:
             return {"error": str(e), "pass": pass_name}
 
     def _parse_json_response(self, text: str) -> dict:
-        """Extract JSON from LLM response, handling markdown code blocks."""
+        """Extract JSON from LLM response, handling markdown code blocks and truncation."""
         # Try direct parse first
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # Try extracting from code block
-        if "```json" in text:
-            start = text.index("```json") + 7
-            end = text.index("```", start)
+        # Try extracting from ```json code block
+        json_marker = text.find("```json")
+        if json_marker != -1:
+            start = json_marker + 7
+            end = text.find("```", start)
+            snippet = text[start:end].strip() if end != -1 else text[start:].strip()
             try:
-                return json.loads(text[start:end].strip())
+                return json.loads(snippet)
             except json.JSONDecodeError:
+                # May be truncated — try brace matching below
                 pass
 
-        # Try extracting from generic code block
+        # Try extracting from generic ``` code block
         if "```" in text:
-            start = text.index("```") + 3
-            # Skip optional language identifier on same line
-            newline = text.index("\n", start)
-            start = newline + 1
-            end = text.index("```", start)
-            try:
-                return json.loads(text[start:end].strip())
-            except json.JSONDecodeError:
-                pass
+            start = text.find("```") + 3
+            newline = text.find("\n", start)
+            if newline != -1:
+                start = newline + 1
+                end = text.find("```", start)
+                snippet = text[start:end].strip() if end != -1 else text[start:].strip()
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError:
+                    pass
 
-        # Try finding JSON object in text
+        # Try finding JSON object in text (handles truncated responses)
         brace_start = text.find("{")
         brace_end = text.rfind("}")
-        if brace_start != -1 and brace_end != -1:
+        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
             try:
                 return json.loads(text[brace_start : brace_end + 1])
             except json.JSONDecodeError:
                 pass
 
+        # Last resort: try to repair truncated JSON by closing open braces/brackets
+        if brace_start != -1:
+            fragment = text[brace_start:]
+            repaired = self._repair_truncated_json(fragment)
+            if repaired:
+                return repaired
+
         logger.warning("Could not parse JSON from LLM response")
         return {"raw_response": text, "parse_error": True}
+
+    @staticmethod
+    def _repair_truncated_json(fragment: str) -> dict | None:
+        """Attempt to repair truncated JSON by closing open structures."""
+        # Strip trailing incomplete string/value
+        # Walk backward to find a clean cut point after a complete value
+        cleaned = fragment.rstrip()
+
+        # Remove trailing comma if present
+        if cleaned.endswith(","):
+            cleaned = cleaned[:-1]
+
+        # Count open/close braces and brackets
+        open_braces = cleaned.count("{") - cleaned.count("}")
+        open_brackets = cleaned.count("[") - cleaned.count("]")
+
+        # Check if we're inside a string (odd number of unescaped quotes)
+        in_string = False
+        for i, ch in enumerate(cleaned):
+            if ch == '"' and (i == 0 or cleaned[i - 1] != "\\"):
+                in_string = not in_string
+
+        if in_string:
+            cleaned += '"'
+
+        # Close structures
+        cleaned += "]" * max(0, open_brackets)
+        cleaned += "}" * max(0, open_braces)
+
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return None
 
     def _load_template(self, filename: str) -> str:
         """Load a prompt template file."""

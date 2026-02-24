@@ -208,6 +208,9 @@ class Boundless100xService:
                 peer_metadata = (
                     result.peers.discovery_metadata if result.peers else {}
                 )
+                # Add peer categories for LLM context
+                if result.peers and result.peers.peer_categories:
+                    peer_metadata["peer_categories"] = result.peers.peer_categories
 
                 # Resolve annual report text: user-provided overrides auto-extracted
                 ar_text = annual_report_text or result.data.get("annual_report_text")

@@ -109,6 +109,10 @@ class DataFetcherSuite:
             data["analyst_coverage"] = self.analyst_coverage.fetch(
                 ticker, output_dir=self.raw_data_dir
             )
+            # Merge sector from Trendlyne if Screener.in didn't provide it
+            ac = data["analyst_coverage"]
+            if ac.get("sector") and not data.get("metadata", {}).get("sector"):
+                data.setdefault("metadata", {})["sector"] = ac["sector"]
         except Exception as e:
             logger.error(f"Analyst coverage fetch failed for {ticker}: {e}")
             data["analyst_coverage"] = {}

@@ -342,13 +342,19 @@ def _print_peers(result):
     if not result.peers:
         return
 
+    # Show limitation note if present
+    meta = result.peers.discovery_metadata or {}
+    limitation = meta.get("limitation_note", "")
+    if limitation:
+        console.print(f"\n[yellow]Note: {limitation}[/yellow]")
+
     table = Table(title="Peer Discovery")
     table.add_column("Ticker", style="cyan bold")
     table.add_column("Name")
     table.add_column("MCap (₹Cr)", justify="right")
     table.add_column("PE", justify="right")
     table.add_column("RoCE", justify="right")
-    table.add_column("Type", style="dim")
+    table.add_column("Type")
 
     for pt in result.peers.direct_competitors:
         info = result.peers.peer_data.get(pt, {})
@@ -356,24 +362,18 @@ def _print_peers(result):
         pe = info.get("pe", 0)
         roce = info.get("roce", 0)
         name = info.get("name", "")
+        peer_type = result.peers.peer_categories.get(pt, "unknown")
+        type_display = (
+            "[green]Competitor[/green]" if peer_type == "competitor"
+            else "[yellow]Benchmark[/yellow]"
+        )
         table.add_row(
             pt, name,
             f"{mcap:,.0f}" if mcap else "—",
             f"{pe:.1f}" if pe else "—",
             f"{roce:.1f}%" if roce else "—",
-            "Direct",
+            type_display,
         )
-
-    for pt in result.peers.financial_peers:
-        if pt not in result.peers.direct_competitors:
-            info = result.peers.peer_data.get(pt, {})
-            table.add_row(
-                pt, info.get("name", ""),
-                f"{info.get('market_cap', 0):,.0f}",
-                f"{info.get('pe', 0):.1f}",
-                f"{info.get('roce', 0):.1f}%",
-                "Financial",
-            )
 
     console.print(table)
 

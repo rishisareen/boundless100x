@@ -3,88 +3,554 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SQGLP Analysis: {{ ticker }}</title>
+<title>SQGLP Analysis: {{ ticker }} — {{ metadata.get('name', ticker) }}</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
-  :root { --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #f59e0b; --gray: #6b7280; }
+  /* Light theme (default) */
+  :root {
+    --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #f59e0b; --gray: #6b7280;
+    --bg-body: #f8fafc; --bg-card: #ffffff; --bg-card-alt: #f8fafc; --bg-input: #f1f5f9;
+    --text-primary: #1e293b; --text-secondary: #475569; --text-muted: #9ca3af;
+    --border: #e2e8f0; --border-light: #f1f5f9;
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.1); --shadow-exec: 0 2px 8px rgba(0,0,0,0.12);
+    --flag-bg: #fef3c7; --flag-text: #92400e; --flag-good-bg: #dcfce7; --flag-good-text: #166534;
+    --flag-bad-bg: #fecaca; --flag-bad-text: #991b1b;
+    --rank-best: #dcfce7; --rank-worst: #fecaca;
+    --thesis-bg: #eff6ff; --risk-bg: #fef2f2;
+    --exec-thesis-bg: #f8fafc;
+    --toc-bg: #ffffff;
+  }
+  /* Dark theme */
+  [data-theme="dark"] {
+    --bg-body: #0f172a; --bg-card: #1e293b; --bg-card-alt: #162032; --bg-input: #334155;
+    --text-primary: #f1f5f9; --text-secondary: #cbd5e1; --text-muted: #64748b;
+    --border: #334155; --border-light: #283548;
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.4); --shadow-exec: 0 2px 8px rgba(0,0,0,0.5);
+    --flag-bg: #422006; --flag-text: #fbbf24; --flag-good-bg: #14532d; --flag-good-text: #86efac;
+    --flag-bad-bg: #450a0a; --flag-bad-text: #fca5a5;
+    --rank-best: #14532d; --rank-worst: #450a0a;
+    --thesis-bg: #172554; --risk-bg: #2d0a0a;
+    --exec-thesis-bg: #1e293b;
+    --toc-bg: #1e293b;
+    --blue: #60a5fa; --green: #4ade80; --red: #f87171; --amber: #fbbf24; --gray: #94a3b8;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8fafc; color: #1e293b; line-height: 1.6; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-  h1 { font-size: 2em; margin-bottom: 5px; }
-  h2 { font-size: 1.4em; margin: 30px 0 15px; padding-bottom: 8px; border-bottom: 2px solid var(--blue); }
-  h3 { font-size: 1.1em; margin: 20px 0 10px; color: var(--gray); }
-  .header { background: linear-gradient(135deg, #1e40af, #3b82f6); color: white; padding: 30px; border-radius: 12px; margin-bottom: 25px; }
-  .header .subtitle { opacity: 0.85; font-size: 0.9em; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-body); color: var(--text-primary); line-height: 1.65; transition: background 0.3s, color 0.3s; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 30px 40px; padding-top: 70px; }
+  h1 { font-size: 2em; margin-bottom: 5px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.7em; margin: 48px 0 20px; padding-bottom: 10px; border-bottom: 3px solid var(--blue); letter-spacing: -0.01em; font-weight: 700; }
+  h3 { font-size: 1.15em; margin: 20px 0 10px; color: var(--text-primary); font-weight: 600; }
   .composite-score { font-size: 3em; font-weight: 700; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
-  .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-  .element-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 24px; }
+  .card { background: var(--bg-card); border-radius: 12px; padding: 24px 28px; box-shadow: var(--shadow-card); border: 1px solid var(--border-light); }
+  .element-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-light); }
   .element-name { font-weight: 500; }
   .element-score { font-weight: 700; font-size: 1.1em; }
-  .score-bar { height: 6px; background: #e2e8f0; border-radius: 3px; flex: 1; margin: 0 15px; }
+  .score-bar { height: 6px; background: var(--border); border-radius: 3px; flex: 1; margin: 0 15px; }
   .score-fill { height: 100%; border-radius: 3px; }
   .score-high { background: var(--green); }
   .score-mid { background: var(--amber); }
   .score-low { background: var(--red); }
-  .flag { display: inline-block; background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin: 2px; }
-  .flag-good { background: #dcfce7; color: #166534; }
-  .flag-bad { background: #fecaca; color: #991b1b; }
+  .flag { display: inline-block; background: var(--flag-bg); color: var(--flag-text); padding: 4px 12px; border-radius: 6px; font-size: 0.8em; margin: 4px; }
+  .flag-good { background: var(--flag-good-bg); color: var(--flag-good-text); }
+  .flag-bad { background: var(--flag-bad-bg); color: var(--flag-bad-text); }
+  .flag-icon { margin-right: 3px; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-  th { background: #f8fafc; font-weight: 600; }
-  .rank-1 { background: #dcfce7; font-weight: 600; }
-  .rank-last { background: #fecaca; }
-  .thesis-box { background: #eff6ff; border-left: 4px solid var(--blue); padding: 15px 20px; border-radius: 0 8px 8px 0; margin: 15px 0; }
-  .risk-box { background: #fef2f2; border-left: 4px solid var(--red); padding: 15px 20px; border-radius: 0 8px 8px 0; margin: 15px 0; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--bg-card-alt); font-weight: 600; }
+  tbody tr:nth-child(even) { background: var(--bg-card-alt); }
+  .rank-1 { background: var(--rank-best); font-weight: 600; }
+  .rank-last { background: var(--rank-worst); }
+  .thesis-box { background: var(--thesis-bg); border-left: 4px solid var(--blue); padding: 18px 24px; border-radius: 0 10px 10px 0; margin: 18px 0; }
+  .risk-box { background: var(--risk-bg); border-left: 4px solid var(--red); padding: 18px 24px; border-radius: 0 10px 10px 0; margin: 18px 0; }
   .conviction { display: inline-block; padding: 4px 12px; border-radius: 20px; font-weight: 600; font-size: 0.9em; }
-  .conviction-high { background: #dcfce7; color: #166534; }
-  .conviction-medium { background: #fef9c3; color: #854d0e; }
-  .conviction-low { background: #fecaca; color: #991b1b; }
-  .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; color: var(--gray); font-size: 0.85em; text-align: center; }
+  .conviction-high { background: var(--flag-good-bg); color: var(--flag-good-text); }
+  .conviction-medium { background: var(--flag-bg); color: var(--flag-text); }
+  .conviction-low { background: var(--flag-bad-bg); color: var(--flag-bad-text); }
+  .footer { margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--gray); font-size: 0.85em; text-align: center; }
   .metric-table td:nth-child(2) { font-weight: 600; }
   .chart-container { margin: 15px 0; }
+  /* Executive Summary */
+  .exec-summary { background: var(--bg-card); border-radius: 14px; padding: 30px; box-shadow: var(--shadow-exec); margin-bottom: 30px; border: 1px solid var(--border-light); border-top: 4px solid var(--blue); }
+  .action-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: 700; font-size: 1em; text-transform: uppercase; letter-spacing: 0.5px; }
+  .action-strong_buy { background: #166534; color: white; }
+  .action-buy { background: #16a34a; color: white; }
+  .action-hold { background: #f59e0b; color: #1e293b; }
+  .action-watchlist { background: #3b82f6; color: white; }
+  .action-avoid { background: #dc2626; color: white; }
+  .exec-thesis { font-size: 1.05em; line-height: 1.5; margin: 15px 0; padding: 12px 15px; background: var(--exec-thesis-bg); border-radius: 8px; }
+  .kill-risks li { color: var(--red); margin: 4px 0; }
+  .highlight-chips { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0; }
+  .highlight-chip { background: var(--bg-input); padding: 10px 16px; border-radius: 8px; font-size: 0.9em; }
+  .highlight-chip .val { font-weight: 700; color: var(--blue); }
+  /* Financial Snapshot */
+  .snapshot-container { overflow-x: auto; margin: 20px 0; }
+  .snapshot-table { font-size: 0.85em; white-space: nowrap; }
+  .snapshot-table th { position: sticky; left: 0; background: var(--bg-card-alt); z-index: 1; min-width: 90px; }
+  .snapshot-table td { min-width: 80px; text-align: right; }
+  .snapshot-table td:first-child { text-align: left; font-weight: 600; position: sticky; left: 0; background: var(--bg-card); z-index: 1; }
+  .val-good { color: var(--green); }
+  .val-warn { color: var(--amber); }
+  .val-bad { color: var(--red); }
+  /* Sector Context Annotations */
+  .sector-annotation { font-size: 0.75em; font-weight: 400; margin-left: 4px; white-space: nowrap; }
+  .sector-good { color: var(--green); }
+  .sector-bad { color: var(--red); }
+  .sector-neutral { color: var(--gray); }
+  /* DCF Summary Card */
+  .dcf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px; }
+  .dcf-stat { text-align: center; padding: 10px; }
+  .dcf-stat .label { font-size: 0.8em; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; }
+  .dcf-stat .value { font-size: 1.5em; font-weight: 700; }
+  /* Cash Flow Quality */
+  .cf-summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 10px; }
+  .cf-stat { text-align: center; padding: 12px; background: var(--bg-input); border-radius: 8px; }
+  .cf-stat .label { font-size: 0.75em; color: var(--gray); text-transform: uppercase; }
+  .cf-stat .value { font-size: 1.2em; font-weight: 700; margin-top: 4px; }
+  /* Theme Toggle */
+  .theme-toggle { position: fixed; top: 15px; right: 15px; z-index: 200; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 1.2em; box-shadow: var(--shadow-card); transition: background 0.3s; }
+  .theme-toggle:hover { background: var(--bg-input); }
+  /* Table of Contents Nav */
+  .toc-nav { position: sticky; top: 0; z-index: 100; background: var(--toc-bg); border-bottom: 1px solid var(--border); box-shadow: 0 2px 4px rgba(0,0,0,0.05); padding: 10px 24px; overflow-x: auto; white-space: nowrap; }
+  .toc-nav a { display: inline-block; padding: 6px 14px; margin: 2px 3px; font-size: 0.82em; color: var(--text-secondary); text-decoration: none; border-radius: 6px; transition: background 0.2s, color 0.2s; font-weight: 500; }
+  .toc-nav a:hover { background: var(--bg-input); color: var(--blue); }
+  /* Reasoning paragraphs */
+  .reasoning-text p { margin-bottom: 16px; line-height: 1.8; color: var(--text-secondary); }
+  .reasoning-text p:first-child { margin-top: 4px; }
+  .reasoning-text p:last-child { margin-bottom: 0; }
+  /* Score drill-down */
+  .drilldown { display: none; padding: 8px 0 4px 20px; }
+  .drilldown.open { display: block; }
+  .element-row.clickable { cursor: pointer; }
+  .element-row.clickable:hover { background: var(--bg-input); border-radius: 6px; }
+  .drilldown-toggle { font-size: 0.7em; color: var(--text-muted); margin-left: 6px; transition: transform 0.2s; display: inline-block; }
+  .drilldown-toggle.open { transform: rotate(90deg); }
+  .drilldown table { font-size: 0.8em; margin: 0; }
+  .drilldown th { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 8px; }
+  .drilldown td { padding: 4px 8px; }
+  .contrib-good { color: var(--green); font-weight: 600; }
+  .contrib-mid { color: var(--amber); font-weight: 600; }
+  .contrib-low { color: var(--red); font-weight: 600; }
+  /* Signal groups */
+  .signal-group { margin-bottom: 16px; }
+  .signal-group-label { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; color: var(--gray); }
+  /* Peer category header */
+  .peer-category-row td { background: var(--bg-input); font-weight: 600; font-size: 0.85em; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid var(--border); }
+  /* Responsive: narrow screens */
+  @media (max-width: 500px) {
+    .container { padding: 16px; padding-top: 60px; }
+    .grid { grid-template-columns: 1fr; }
+    h2 { font-size: 1.4em; margin: 32px 0 14px; }
+    .exec-summary { padding: 20px; }
+    .highlight-chips { gap: 8px; }
+    .highlight-chip { padding: 8px 12px; font-size: 0.85em; }
+  }
+  /* Print CSS */
+  @media print {
+    .theme-toggle, .toc-nav { display: none !important; }
+    .container { padding: 20px; padding-top: 20px; }
+    body { background: white !important; color: black !important; }
+    .card { box-shadow: none !important; border: 1px solid #e2e8f0; break-inside: avoid; }
+    .exec-summary { box-shadow: none !important; border: 1px solid #e2e8f0; }
+    h2 { break-after: avoid; margin-top: 30px; }
+    .chart-container { break-inside: avoid; }
+    .grid { grid-template-columns: 1fr 1fr; }
+  }
 </style>
 </head>
 <body>
+<button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#x1F313;</button>
+
+<!-- Table of Contents Navigation -->
+<nav class="toc-nav">
+  <a href="#summary">Summary</a>
+  <a href="#scorecard">SQGLP Scores</a>
+  {% if llm_analysis and not llm_analysis.get('skipped') %}<a href="#thesis">Investment Thesis</a>{% endif %}
+  <a href="#valuation">Valuation</a>
+  <a href="#financials">Financials</a>
+  <a href="#growth">Growth</a>
+  <a href="#metrics">Key Metrics</a>
+  {% if shareholding_data %}<a href="#shareholding">Shareholding</a>{% endif %}
+  {% if comparison and comparison.get('companies') %}<a href="#peers">Peers</a>{% endif %}
+  {% if llm_analysis and not llm_analysis.get('skipped') %}<a href="#qualitative">Qualitative</a>{% endif %}
+  <a href="#signals">Signals</a>
+</nav>
+
 <div class="container">
 
-<!-- Header -->
-<div class="header">
-  <h1>{{ ticker }} — SQGLP Analysis</h1>
-  <div class="subtitle">
-    {{ metadata.get('name', ticker) }} | {{ metadata.get('sector', 'N/A') }} | Market Cap: ₹{{ "{:,.0f}".format(metadata.get('Market Cap', 0)|float) }} Cr
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 1: Executive Summary / Decision Dashboard      -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="summary"></div>
+{% if executive_summary %}
+<div class="exec-summary">
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 15px;">
+    <div>
+      <h1 style="margin-bottom: 5px;">{{ ticker }} — {{ executive_summary.company_name }}</h1>
+      <div style="color: var(--gray); font-size: 0.9em;">
+        {% if executive_summary.sector and executive_summary.sector != 'N/A' %}{{ executive_summary.sector }} | {% endif %}Market Cap: ₹{{ "{:,.0f}".format((executive_summary.market_cap or 0)|float) }} Cr | {{ generation_date }}
+      </div>
+    </div>
+    <div style="text-align: right;">
+      <div class="composite-score" style="color: {% if executive_summary.composite_score and executive_summary.composite_score >= 7 %}var(--green){% elif executive_summary.composite_score and executive_summary.composite_score >= 4 %}var(--amber){% else %}var(--red){% endif %};">
+        {{ executive_summary.composite_score or 'N/A' }}<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+      </div>
+      <div style="color: var(--gray); font-size: 0.85em;">SQGLP Composite</div>
+    </div>
   </div>
-  <div style="margin-top: 15px;">
-    <span class="composite-score">{{ scores.get('composite', 'N/A') }}</span><span style="font-size: 1.2em; opacity: 0.7">/10</span>
-  </div>
-  <div class="subtitle">SQGLP Composite Score</div>
-</div>
 
-<!-- SQGLP Radar + Element Scores -->
-<div class="grid">
-  <div class="card">
-    <h2 style="border: none; margin-top: 0;">SQGLP Radar</h2>
-    <div class="chart-container">{{ radar_chart }}</div>
+  <!-- Quadrant badge + action badges row -->
+  <div style="margin-top: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+    {% if executive_summary.quadrant %}
+    <span class="conviction conviction-{% if executive_summary.quadrant.sentiment == 'good' %}high{% elif executive_summary.quadrant.sentiment == 'bad' %}low{% else %}medium{% endif %}" title="{{ executive_summary.quadrant.description }}{% if executive_summary.quadrant.avg_roce is not none %} | RoCE: {{ '%.1f'|format(executive_summary.quadrant.avg_roce) }}%, PAT CAGR: {{ '%.1f'|format(executive_summary.quadrant.pat_cagr) }}%{% endif %}">{{ executive_summary.quadrant.label }}</span>
+    {% endif %}
+    {% if executive_summary.has_llm %}
+    {% if executive_summary.suggested_action %}
+    <span class="action-badge action-{{ executive_summary.suggested_action }}">{{ executive_summary.suggested_action | replace("_", " ") }}</span>
+    {% endif %}
+    {% if executive_summary.conviction_level %}
+    <span class="conviction conviction-{{ executive_summary.conviction_level }}">{{ executive_summary.conviction_level | upper }} conviction</span>
+    {% endif %}
+    {% if executive_summary.holding_period %}
+    <span style="color: var(--gray); font-size: 0.9em;">Holding period: {{ executive_summary.holding_period }}</span>
+    {% endif %}
+    {% endif %}
   </div>
-  <div class="card">
+
+  {% if executive_summary.has_llm %}
+  {% if executive_summary.thesis %}
+  <div class="exec-thesis">{{ executive_summary.thesis }}</div>
+  {% endif %}
+  {% if executive_summary.kill_risks %}
+  <div style="margin: 10px 0;">
+    <strong style="color: var(--red); font-size: 0.9em;">Kill-the-Thesis Risks:</strong>
+    <ul class="kill-risks">
+      {% for risk in executive_summary.kill_risks %}
+      <li>{{ risk }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% else %}
+  <div style="margin-top: 15px;">
+    {% if executive_summary.key_highlights %}
+    <div class="highlight-chips">
+      {% for h in executive_summary.key_highlights %}
+      <div class="highlight-chip">{{ h.label }}: <span class="val">{{ "%.1f"|format(h.value) if h.value is number else h.value }}{{ h.unit }}</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div style="margin-top: 10px; color: var(--gray); font-size: 0.85em; font-style: italic;">
+      Run with LLM analysis for investment thesis, conviction level, and risk assessment.
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Red flags + Analyst cross-check row (shown in both LLM and no-LLM) -->
+  {% if executive_summary.red_flags or executive_summary.analyst %}
+  <div style="margin-top: 15px; display: flex; gap: 15px; flex-wrap: wrap;">
+    {% if executive_summary.red_flags %}
+    <div style="flex: 1; min-width: 250px;">
+      <div style="font-size: 0.8em; font-weight: 600; color: var(--red); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">⚠ Key Concerns</div>
+      {% for rf in executive_summary.red_flags %}
+      <span class="flag flag-bad" style="margin-bottom: 4px;"><span class="flag-icon">&#10007;</span> {{ rf }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if executive_summary.analyst %}
+    <div style="flex: 0 0 auto; min-width: 200px; background: var(--bg-input); border-radius: 8px; padding: 12px 16px;">
+      <div style="font-size: 0.8em; font-weight: 600; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Analyst Consensus</div>
+      <div style="font-size: 1.3em; font-weight: 700; color: var(--blue);">₹{{ "%.0f"|format(executive_summary.analyst.avg_target) }}</div>
+      <div style="font-size: 0.8em; color: var(--text-secondary);">
+        {{ executive_summary.analyst.count }} analyst{{ 's' if executive_summary.analyst.count != 1 else '' }} · {{ executive_summary.analyst.consensus | upper }}
+        {% if executive_summary.analyst.upside is defined %}
+        · <span style="color: {% if executive_summary.analyst.upside > 0 %}var(--green){% else %}var(--red){% endif %}; font-weight: 600;">{{ "%+.0f"|format(executive_summary.analyst.upside) }}%</span>
+        {% endif %}
+      </div>
+      {% if executive_summary.analyst.dcf_intrinsic is not none %}
+      <div style="font-size: 0.75em; color: var(--text-muted); margin-top: 4px;">DCF intrinsic: ₹{{ "%.0f"|format(executive_summary.analyst.dcf_intrinsic) }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 2: SQGLP Score Card                            -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="scorecard"></div>
+<div class="card">
     <h2 style="border: none; margin-top: 0;">Element Scores</h2>
+    <p style="color: var(--text-muted); font-size: 0.8em; margin-bottom: 12px;">Click any element to see which sub-metrics drive the score.</p>
     {% set element_names = {'size': 'Size (S)', 'quality_business': 'Quality - Business (Q)', 'quality_management': 'Quality - Mgmt (Q)', 'growth': 'Growth (G)', 'longevity': 'Longevity (L)', 'price': 'Price (P)'} %}
     {% set element_weights = {'size': '10%', 'quality_business': '20%', 'quality_management': '10%', 'growth': '25%', 'longevity': '20%', 'price': '15%'} %}
     {% for el_key, el_name in element_names.items() %}
     {% set score = scores.get('elements', {}).get(el_key) %}
-    <div class="element-row">
-      <span class="element-name">{{ el_name }} <span style="color: #9ca3af; font-size: 0.8em;">({{ element_weights[el_key] }})</span></span>
+    {% set dd = score_drilldown.get(el_key, []) %}
+    <div class="element-row{% if dd %} clickable{% endif %}" {% if dd %}onclick="toggleDrilldown('dd-{{ el_key }}')"{% endif %}>
+      <span class="element-name">
+        {{ el_name }} <span style="color: var(--text-muted); font-size: 0.8em;">({{ element_weights[el_key] }})</span>
+        {% if dd %}<span class="drilldown-toggle" id="toggle-dd-{{ el_key }}">&#9654;</span>{% endif %}
+      </span>
       <div class="score-bar">
         <div class="score-fill {% if score and score >= 7 %}score-high{% elif score and score >= 4 %}score-mid{% else %}score-low{% endif %}" style="width: {{ (score or 0) * 10 }}%;"></div>
       </div>
-      <span class="element-score">{% if score is not none %}{{ "%.1f"|format(score) }}{% else %}N/A{% endif %}</span>
+      <span class="element-score">{% if score is not none %}{{ "%.1f"|format(score) }}{% else %}—{% endif %}</span>
     </div>
+    {% if dd %}
+    <div class="drilldown" id="dd-{{ el_key }}">
+      <table>
+        <thead><tr><th>Metric</th><th style="text-align: right;">Value</th><th style="text-align: right;">Score</th><th style="text-align: right;">Weight</th></tr></thead>
+        <tbody>
+          {% for m in dd %}
+          <tr>
+            <td>{{ m.name }}</td>
+            <td style="text-align: right;">{{ m.value }}</td>
+            <td style="text-align: right;" class="contrib-{{ m.contribution }}">{{ m.score_pct }}</td>
+            <td style="text-align: right; color: var(--text-muted);">{{ m.weight }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
     {% endfor %}
-  </div>
 </div>
 
-<!-- Charts Row -->
-<div class="grid" style="margin-top: 20px;">
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 3: Investment Thesis (LLM — moved up)          -->
+<!-- ═══════════════════════════════════════════════════════ -->
+{% if llm_analysis and not llm_analysis.get('skipped') %}
+<div id="thesis"></div>
+{% set p2 = llm_analysis.get('pass2', {}) %}
+{% if p2 and not p2.get('error') and not p2.get('skipped') %}
+<h2>Investment Thesis</h2>
+
+<div class="thesis-box">
+  <p><strong>{{ p2.get('thesis', 'No thesis generated.') }}</strong></p>
+  <p style="margin-top: 10px;">
+    <span class="conviction conviction-{{ p2.get('conviction_level', 'low') }}">{{ p2.get('conviction_level', 'N/A')|upper }} conviction</span>
+    &nbsp; Action: <strong>{{ p2.get('suggested_action', 'N/A') | replace("_", " ") | upper }}</strong>
+    &nbsp; Holding period: <strong>{{ p2.get('target_holding_period', 'N/A') }}</strong>
+  </p>
+</div>
+
+<div class="grid" style="margin-top: 15px;">
+  {% if p2.get('bull_case') %}
+  <div class="card">
+    <h3 style="color: var(--green); margin-top: 0;">Bull Case</h3>
+    <div class="reasoning-text">{{ p2.get('bull_case') | paragraphize }}</div>
+  </div>
+  {% endif %}
+  {% if p2.get('bear_case') %}
+  <div class="card" style="border-left: 3px solid var(--red);">
+    <h3 style="color: var(--red); margin-top: 0;">Bear Case</h3>
+    <div class="reasoning-text">{{ p2.get('bear_case') | paragraphize }}</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if p2.get('kill_the_thesis') %}
+<div class="risk-box" style="margin-top: 15px;">
+  <h3 style="margin-top: 0; color: var(--red);">Kill the Thesis</h3>
+  <ul>{% for item in p2.get('kill_the_thesis', []) %}<li style="margin: 6px 0;">{{ item }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if p2.get('key_monitorables') %}
+<div class="card" style="margin-top: 15px;">
+  <h3>Key Monitorables</h3>
+  <ul>{% for item in p2.get('key_monitorables', []) %}<li style="margin: 4px 0;">{{ item }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if p2.get('what_market_is_missing') %}
+<div class="thesis-box" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">What the Market Is Missing</h3>
+  <div class="reasoning-text">{{ p2.get('what_market_is_missing') | paragraphize }}</div>
+</div>
+{% endif %}
+
+{% if p2.get('reasoning') %}
+<div class="card" style="margin-top: 15px;">
+  <h3>Detailed Reasoning</h3>
+  <div class="reasoning-text">
+    {{ p2.get('reasoning') | paragraphize }}
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endif %}
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 4: Valuation                                   -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="valuation"></div>
+<h2>Valuation</h2>
+
+<div class="grid">
+  {% if pe_band_chart %}
+  <div class="card">
+    <div class="chart-container">{{ pe_band_chart }}</div>
+  </div>
+  {% endif %}
+  {% if dcf_gauge_chart %}
+  <div class="card">
+    <div class="chart-container">{{ dcf_gauge_chart }}</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if dcf_summary %}
+<div class="card" style="margin-top: 15px;">
+  <h3>DCF Summary</h3>
+  <div class="dcf-grid">
+    <div class="dcf-stat">
+      <div class="label">Intrinsic Value</div>
+      <div class="value" style="color: var(--green);">{% if dcf_summary.intrinsic_per_share is not none %}₹{{ "%.0f"|format(dcf_summary.intrinsic_per_share) }}{% else %}—{% endif %}</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">Current Price</div>
+      <div class="value">{% if dcf_summary.current_price is not none %}₹{{ "%.0f"|format(dcf_summary.current_price) }}{% else %}—{% endif %}</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">Margin of Safety</div>
+      <div class="value" style="color: {% if dcf_summary.margin_pct is not none and dcf_summary.margin_pct >= 0 %}var(--green){% else %}var(--red){% endif %};">{% if dcf_summary.margin_pct is not none %}{{ "%.1f"|format(dcf_summary.margin_pct) }}%{% else %}—{% endif %}</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">FCF Growth Assumed</div>
+      <div class="value">{% if dcf_summary.fcf_growth_assumed is not none %}{{ "%.1f"|format(dcf_summary.fcf_growth_assumed) }}%{% else %}—{% endif %}</div>
+    </div>
+  </div>
+  {% if dcf_summary.reverse_dcf_implied is not none %}
+  <div style="margin-top: 15px; padding: 10px; background: var(--bg-input); border-radius: 8px; font-size: 0.9em;">
+    <strong>Reverse DCF Check:</strong> Market implies {{ "%.1f"|format(dcf_summary.reverse_dcf_implied) }}% growth
+    {% if dcf_summary.actual_cagr is not none %}
+    vs actual {{ "%.1f"|format(dcf_summary.actual_cagr) }}% CAGR
+    {% if dcf_summary.reverse_dcf_gap is not none %}
+    <span style="color: {% if dcf_summary.reverse_dcf_gap > 5 %}var(--red){% elif dcf_summary.reverse_dcf_gap > 0 %}var(--amber){% else %}var(--green){% endif %};">(gap: {{ "%+.1f"|format(dcf_summary.reverse_dcf_gap) }}pp)</span>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if pe_band_historical_chart %}
+<div class="card" style="margin-top: 15px;">
+  <div class="chart-container">{{ pe_band_historical_chart }}</div>
+</div>
+{% endif %}
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 5: Financial Health                            -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="financials"></div>
+
+{% if snapshot %}
+<h2>Financial Health</h2>
+<div class="card snapshot-container">
+  <h3 style="margin-top: 0;">10-Year Financial Snapshot</h3>
+  {% set trends = snapshot[0].get('_trends', {}) if snapshot else {} %}
+  <table class="snapshot-table" style="width: 100%; border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="text-align: left;">Metric</th>
+        {% for row in snapshot %}
+        <th>{{ row.year | replace("Mar ", "'") }}</th>
+        {% endfor %}
+        <th style="min-width: 40px;">3yr</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set snap_metrics = [
+        ('revenue', 'Revenue (₹Cr)', 'comma', none),
+        ('pat', 'PAT (₹Cr)', 'comma', none),
+        ('eps', 'EPS (₹)', 'decimal', none),
+        ('opm', 'OPM %', 'pct', [20, 10]),
+        ('roce', 'RoCE %', 'pct', [20, 12]),
+        ('de', 'D/E', 'de', [0.3, 1.0]),
+        ('cfo', 'CFO (₹Cr)', 'cfo', none)
+      ] %}
+      {% for key, label, fmt, thresholds in snap_metrics %}
+      <tr>
+        <td>{{ label }}</td>
+        {% for row in snapshot %}
+        {% set val = row.get(key) %}
+        <td{% if thresholds and val is not none %} class="{% if fmt == 'pct' %}{% if val >= thresholds[0] %}val-good{% elif val >= thresholds[1] %}val-warn{% else %}val-bad{% endif %}{% elif fmt == 'de' %}{% if val <= thresholds[0] %}val-good{% elif val <= thresholds[1] %}val-warn{% else %}val-bad{% endif %}{% endif %}"{% elif fmt == 'cfo' and val is not none %} class="{% if val > 0 %}val-good{% else %}val-bad{% endif %}"{% endif %}>
+          {% if val is not none %}{% if fmt == 'comma' or fmt == 'cfo' %}{{ "{:,.0f}".format(val) }}{% elif fmt == 'decimal' %}{{ "%.2f"|format(val) }}{% elif fmt == 'pct' %}{{ "%.0f"|format(val) }}%{% elif fmt == 'de' %}{{ "%.2f"|format(val) }}x{% endif %}{% else %}—{% endif %}
+        </td>
+        {% endfor %}
+        <td style="text-align: center; font-size: 1.1em;">
+          {% set t = trends.get(key) %}
+          {% if t == 'up' %}<span style="color: var(--green);">&#9650;</span>
+          {% elif t == 'down' %}<span style="color: var(--red);">&#9660;</span>
+          {% elif t == 'flat' %}<span style="color: var(--gray);">&#9644;</span>
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p style="margin-top: 8px; color: var(--text-muted); font-size: 0.75em;">
+    3yr column: <span style="color: var(--green);">&#9650;</span> improving &gt;5% | <span style="color: var(--red);">&#9660;</span> declining &gt;5% | <span style="color: var(--gray);">&#9644;</span> stable. D/E: lower is better.
+  </p>
+</div>
+{% endif %}
+
+{% if cashflow_quality_chart or cashflow_quality %}
+<div class="grid" style="margin-top: 15px;">
+  {% if cashflow_quality_chart %}
+  <div class="card">
+    <div class="chart-container">{{ cashflow_quality_chart }}</div>
+  </div>
+  {% endif %}
+  {% if cashflow_quality and cashflow_quality.cumulative_ratio is defined %}
+  <div class="card">
+    <h3 style="margin-top: 0;">Cash Flow Quality</h3>
+    <div class="cf-summary-grid">
+      <div class="cf-stat">
+        <div class="label">Avg CFO/PAT</div>
+        <div class="value" style="color: {% if cashflow_quality.avg_cfo_pat_ratio >= 80 %}var(--green){% elif cashflow_quality.avg_cfo_pat_ratio >= 50 %}var(--amber){% else %}var(--red){% endif %};">{{ "%.0f"|format(cashflow_quality.avg_cfo_pat_ratio) }}%</div>
+      </div>
+      <div class="cf-stat">
+        <div class="label">Cumul. CFO/PAT</div>
+        <div class="value" style="color: {% if cashflow_quality.cumulative_ratio >= 80 %}var(--green){% elif cashflow_quality.cumulative_ratio >= 50 %}var(--amber){% else %}var(--red){% endif %};">{{ "%.0f"|format(cashflow_quality.cumulative_ratio) }}%</div>
+      </div>
+      <div class="cf-stat">
+        <div class="label">Cumul. CFO</div>
+        <div class="value">₹{{ "{:,.0f}".format(cashflow_quality.cumulative_cfo) }} Cr</div>
+      </div>
+    </div>
+    {% if cashflow_quality.yearly_data %}
+    <table style="margin-top: 15px; font-size: 0.8em;">
+      <thead><tr><th>Year</th><th style="text-align:right;">CFO</th><th style="text-align:right;">PAT</th><th style="text-align:right;">CFO/PAT</th></tr></thead>
+      <tbody>
+        {% for yr in cashflow_quality.yearly_data %}
+        <tr>
+          <td>{{ yr.year[-4:] }}</td>
+          <td style="text-align:right;">{{ "{:,.0f}".format(yr.cfo) }}</td>
+          <td style="text-align:right;">{{ "{:,.0f}".format(yr.pat) }}</td>
+          <td style="text-align:right; color: {% if yr.ratio is not none and yr.ratio >= 80 %}var(--green){% elif yr.ratio is not none and yr.ratio >= 50 %}var(--amber){% else %}var(--red){% endif %};">{% if yr.ratio is not none %}{{ "%.0f"|format(yr.ratio) }}%{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 6: Growth Analysis                             -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="growth"></div>
+<h2>Growth Analysis</h2>
+
+<div class="grid">
   {% if growth_chart %}
   <div class="card">
     <div class="chart-container">{{ growth_chart }}</div>
@@ -97,43 +563,32 @@
   {% endif %}
 </div>
 
-{% if pe_band_chart %}
-<div class="card" style="margin-top: 20px;">
-  <div class="chart-container">{{ pe_band_chart }}</div>
-</div>
-{% endif %}
-
-<!-- Earnings Quality & Growth Decomposition (v4) -->
 {% if growth %}
-<h2>Earnings Quality &amp; Growth Decomposition</h2>
-
-<!-- 6.1 Earnings Growth Profile -->
-<div class="card">
-  <h3>Earnings Growth Profile</h3>
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">Earnings Growth Profile</h3>
   <table class="metric-table">
     <thead><tr><th>Metric</th><th>Value</th></tr></thead>
     <tbody>
       <tr>
         <td>3-Year PAT CAGR</td>
         <td class="{% if growth.earnings_profile.pat_cagr_3yr and growth.earnings_profile.pat_cagr_3yr >= 20 %}score-high{% elif growth.earnings_profile.pat_cagr_3yr and growth.earnings_profile.pat_cagr_3yr >= 10 %}score-mid{% else %}score-low{% endif %}" style="font-weight: 600;">
-          {% if growth.earnings_profile.pat_cagr_3yr is not none %}{{ "%.1f"|format(growth.earnings_profile.pat_cagr_3yr) }}%{% else %}N/A{% endif %}
+          {% if growth.earnings_profile.pat_cagr_3yr is not none %}{{ "%.1f"|format(growth.earnings_profile.pat_cagr_3yr) }}%{% else %}—{% endif %}
         </td>
       </tr>
       <tr>
         <td>5-Year PAT CAGR</td>
         <td class="{% if growth.earnings_profile.pat_cagr_5yr and growth.earnings_profile.pat_cagr_5yr >= 20 %}score-high{% elif growth.earnings_profile.pat_cagr_5yr and growth.earnings_profile.pat_cagr_5yr >= 10 %}score-mid{% else %}score-low{% endif %}" style="font-weight: 600;">
-          {% if growth.earnings_profile.pat_cagr_5yr is not none %}{{ "%.1f"|format(growth.earnings_profile.pat_cagr_5yr) }}%{% else %}N/A{% endif %}
+          {% if growth.earnings_profile.pat_cagr_5yr is not none %}{{ "%.1f"|format(growth.earnings_profile.pat_cagr_5yr) }}%{% else %}—{% endif %}
         </td>
       </tr>
     </tbody>
   </table>
 </div>
 
-<!-- 6.2 The 4-Lever Earnings Decomposition -->
 <div class="card" style="margin-top: 15px;">
-  <h3>The 4-Lever Earnings Decomposition</h3>
+  <h3 style="margin-top: 0;">The 4-Lever Earnings Decomposition</h3>
   <p style="color: var(--gray); font-size: 0.85em; margin-bottom: 10px;">
-    <em>Formula: ΔEPS = ΔVolume × (ΔSales/ΔVolume) × (ΔEBIT/ΔSales) × (ΔEPS/ΔEBIT)</em>
+    <em>Formula: &#916;EPS = &#916;Volume &#215; (&#916;Sales/&#916;Volume) &#215; (&#916;EBIT/&#916;Sales) &#215; (&#916;EPS/&#916;EBIT)</em>
   </p>
   <table>
     <thead>
@@ -151,9 +606,8 @@
   </table>
 </div>
 
-<!-- 6.3 Growth Synthesis -->
 <div class="card" style="margin-top: 15px;">
-  <h3>Growth Synthesis</h3>
+  <h3 style="margin-top: 0;">Growth Synthesis</h3>
   <div style="margin-bottom: 10px;">
     <span class="conviction conviction-{% if growth.growth_synthesis.quality_flag == 'high_quality' %}high{% elif growth.growth_synthesis.quality_flag == 'moderate' %}medium{% else %}low{% endif %}">
       {{ growth.growth_synthesis.quality_flag | replace("_", " ") | title }}
@@ -167,24 +621,23 @@
   <p style="margin-top: 8px;">{{ growth.growth_synthesis.narrative }}</p>
 </div>
 
-<!-- 6.4 Valuation Reality Check -->
 <div class="card" style="margin-top: 15px;">
-  <h3>Valuation Reality Check</h3>
+  <h3 style="margin-top: 0;">Valuation Reality Check</h3>
   <table class="metric-table">
     <thead><tr><th>Metric</th><th>Value</th></tr></thead>
     <tbody>
       <tr>
         <td>Current P/E Ratio</td>
-        <td>{% if growth.valuation_check.current_pe is not none %}{{ "%.1f"|format(growth.valuation_check.current_pe) }}x{% else %}N/A{% endif %}</td>
+        <td>{% if growth.valuation_check.current_pe is not none %}{{ "%.1f"|format(growth.valuation_check.current_pe) }}x{% else %}—{% endif %}</td>
       </tr>
       <tr>
         <td>5-Year PAT CAGR</td>
-        <td>{% if growth.valuation_check.pat_cagr_5yr is not none %}{{ "%.1f"|format(growth.valuation_check.pat_cagr_5yr) }}%{% else %}N/A{% endif %}</td>
+        <td>{% if growth.valuation_check.pat_cagr_5yr is not none %}{{ "%.1f"|format(growth.valuation_check.pat_cagr_5yr) }}%{% else %}—{% endif %}</td>
       </tr>
       <tr>
         <td>Trailing PEG Ratio</td>
         <td class="{% if growth.valuation_check.trailing_peg and growth.valuation_check.trailing_peg < 1.0 %}score-high{% elif growth.valuation_check.trailing_peg and growth.valuation_check.trailing_peg < 2.0 %}score-mid{% else %}score-low{% endif %}" style="font-weight: 600;">
-          {% if growth.valuation_check.trailing_peg is not none %}{{ "%.2f"|format(growth.valuation_check.trailing_peg) }}x{% else %}N/A{% endif %}
+          {% if growth.valuation_check.trailing_peg is not none %}{{ "%.2f"|format(growth.valuation_check.trailing_peg) }}x{% else %}—{% endif %}
         </td>
       </tr>
     </tbody>
@@ -195,28 +648,32 @@
 </div>
 {% endif %}
 
-<!-- Key Metrics -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 7: Key Metrics                                 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="metrics"></div>
 <h2>Key Metrics</h2>
 <div class="grid">
   {% set metric_groups = [
     ('Quality', [('roce_5yr_avg', 'RoCE 5yr Avg', '%'), ('roe_5yr_avg', 'ROE 5yr Avg', '%'), ('operating_margin_5yr', 'OPM 5yr', '%'), ('cash_conversion', 'Cash Conversion', '%'), ('fcf_yield', 'FCF Yield', '%'), ('debt_equity', 'Debt/Equity', 'x')]),
     ('Growth', [('revenue_cagr_5yr', 'Revenue CAGR 5yr', '%'), ('pat_cagr_5yr', 'PAT CAGR 5yr', '%'), ('pat_cagr_3yr', 'PAT CAGR 3yr', '%'), ('eps_cagr_5yr', 'EPS CAGR 5yr', '%')]),
-    ('Valuation', [('pe_ttm', 'PE TTM', 'x'), ('peg_ratio', 'PEG Ratio', 'x'), ('trailing_peg', 'Trailing PEG', 'x'), ('ev_ebitda', 'EV/EBITDA', 'x'), ('earnings_yield_spread', 'EY Spread vs GSec', '%')]),
+    ('Valuation', [('pe_ttm', 'PE TTM', 'x'), ('peg_ratio', 'PEG Ratio', 'x'), ('trailing_peg', 'Trailing PEG', 'x'), ('ev_ebitda', 'EV/EBITDA', 'x'), ('earnings_yield_vs_gsec', 'EY Spread vs G-Sec', '%')]),
     ('Longevity', [('roce_consistency', 'RoCE >15% Years', 'yrs'), ('revenue_growth_streak', 'Growth Streak', 'yrs'), ('gross_margin_stability', 'Margin StdDev', '%'), ('fcf_consistency', 'FCF+ Years', 'yrs')])
   ] %}
   {% for group_name, group_metrics in metric_groups %}
   <div class="card">
-    <h3>{{ group_name }}</h3>
+    <h3 style="margin-top: 0;">{{ group_name }}</h3>
     <table class="metric-table">
       {% for mid, label, unit in group_metrics %}
       {% set m = metrics.get(mid, {}) %}
+      {% set sc = sector_context.get(mid, {}) %}
       <tr>
         <td>{{ label }}</td>
-        <td>{% if m.get('value') is not none %}{{ "%.2f"|format(m.value) if m.value is number else m.value }}{{ unit }}{% else %}N/A{% endif %}</td>
         <td>
-          {% for f in m.get('flags', []) %}
-          <span class="flag {% if 'high' in f or 'strong' in f or 'consistent' in f or 'free' in f or 'wide' in f %}flag-good{% elif 'expensive' in f or 'low' in f or 'weak' in f or 'worsening' in f or 'overvalued' in f %}flag-bad{% endif %}">{{ f }}</span>
-          {% endfor %}
+          {% if m.get('value') is not none %}{{ "%.2f"|format(m.value) if m.value is number else m.value }}{{ unit }}{% else %}—{% endif %}
+          {% if sc and sc.vs_median %}
+          <span class="sector-annotation sector-{{ sc.sentiment }}">{% if sc.vs_median == 'above' %}&#9650;{% elif sc.vs_median == 'below' %}&#9660;{% else %}&#9644;{% endif %} med: {{ "%.1f"|format(sc.median) }}</span>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -225,183 +682,285 @@
   {% endfor %}
 </div>
 
-<!-- Flags Summary -->
-<h2>Computed Flags</h2>
-<div class="card">
-  {% for flag in flags %}
-  <span class="flag {% if 'high' in flag or 'strong' in flag or 'consistent' in flag or 'free' in flag or 'wide' in flag or 'stable' in flag %}flag-good{% elif 'expensive' in flag or 'low' in flag or 'weak' in flag or 'worsening' in flag or 'overvalued' in flag or 'dilution' in flag or 'overpriced' in flag %}flag-bad{% endif %}">{{ flag }}</span>
-  {% endfor %}
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 8: Shareholding Trend                          -->
+<!-- ═══════════════════════════════════════════════════════ -->
+{% if shareholding_data %}
+<div id="shareholding"></div>
+<h2>Shareholding Trend</h2>
+<div class="card snapshot-container">
+  <table class="snapshot-table" style="width: 100%; border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="text-align: left;">Category</th>
+        {% for sh in shareholding_data %}
+        <th>{{ sh.quarter | replace("Mar ", "M'") | replace("Jun ", "J'") | replace("Sep ", "S'") | replace("Dec ", "D'") }}</th>
+        {% endfor %}
+        <th style="font-weight: 700;">Chg</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set sh_rows = [('promoter_pct', 'Promoter'), ('fii_pct', 'FII'), ('dii_pct', 'DII'), ('public_pct', 'Public')] %}
+      {% for col, label in sh_rows %}
+      {% set first_val = shareholding_data[0].get(col) %}
+      {% set last_val = shareholding_data[-1].get(col) %}
+      {% set delta = (last_val - first_val) if first_val is not none and last_val is not none else none %}
+      <tr>
+        <td style="font-weight: 600;">{{ label }}</td>
+        {% for sh in shareholding_data %}
+        {% set val = sh.get(col) %}
+        <td style="text-align: right;">{% if val is not none %}{{ "%.1f"|format(val) }}{% else %}—{% endif %}</td>
+        {% endfor %}
+        <td style="text-align: right; font-weight: 700; color: {% if delta is not none and delta > 0.5 %}var(--green){% elif delta is not none and delta < -0.5 %}var(--red){% else %}var(--gray){% endif %};">
+          {% if delta is not none %}{{ "%+.1f"|format(delta) }}pp{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if shareholding_data[0].get('govt_pct') is not none %}
+      {% set first_govt = shareholding_data[0].get('govt_pct') %}
+      {% set last_govt = shareholding_data[-1].get('govt_pct') %}
+      {% set delta_govt = (last_govt - first_govt) if first_govt is not none and last_govt is not none else none %}
+      <tr>
+        <td style="font-weight: 600;">Government</td>
+        {% for sh in shareholding_data %}
+        {% set val = sh.get('govt_pct') %}
+        <td style="text-align: right;">{% if val is not none %}{{ "%.1f"|format(val) }}{% else %}—{% endif %}</td>
+        {% endfor %}
+        <td style="text-align: right; font-weight: 700; color: {% if delta_govt is not none and delta_govt > 0.5 %}var(--green){% elif delta_govt is not none and delta_govt < -0.5 %}var(--red){% else %}var(--gray){% endif %};">
+          {% if delta_govt is not none %}{{ "%+.1f"|format(delta_govt) }}pp{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endif %}
+      {% if shareholding_data[0].get('promoter_pledge_pct') is not none %}
+      {% set first_pledge = shareholding_data[0].get('promoter_pledge_pct') %}
+      {% set last_pledge = shareholding_data[-1].get('promoter_pledge_pct') %}
+      {% set delta_pledge = (last_pledge - first_pledge) if first_pledge is not none and last_pledge is not none else none %}
+      <tr>
+        <td style="font-weight: 600; color: var(--red);">Pledge %</td>
+        {% for sh in shareholding_data %}
+        {% set val = sh.get('promoter_pledge_pct') %}
+        <td style="text-align: right; color: {% if val is not none and val > 0 %}var(--red){% else %}var(--gray){% endif %};">{% if val is not none %}{{ "%.1f"|format(val) }}{% else %}—{% endif %}</td>
+        {% endfor %}
+        <td style="text-align: right; font-weight: 700; color: {% if delta_pledge is not none and delta_pledge > 0.5 %}var(--red){% elif delta_pledge is not none and delta_pledge < -0.5 %}var(--green){% else %}var(--gray){% endif %};">
+          {% if delta_pledge is not none %}{{ "%+.1f"|format(delta_pledge) }}pp{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
 </div>
+{% endif %}
 
-<!-- Peer Comparison -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 9: Peer Comparison (merged discovery + metrics)-->
+<!-- ═══════════════════════════════════════════════════════ -->
 {% if comparison and comparison.get('companies') %}
+<div id="peers"></div>
 <h2>Peer Comparison</h2>
+
+{# ── Context card: explain competitive landscape ── #}
+{% if peers %}
+{% set meta = peers.discovery_metadata %}
+{% set has_comp = meta.get('has_competitors', true) %}
+{% set limitation = meta.get('limitation_note', '') %}
+{% set comp_count = meta.get('competitor_count', 0) %}
+{% set bench_count = meta.get('benchmark_count', 0) %}
+
+{% if not has_comp and limitation %}
+<div class="card" style="border-left: 4px solid var(--amber); margin-bottom: 15px; padding: 12px 16px;">
+  <strong style="color: var(--amber);">Limited Competitive Landscape</strong>
+  <p style="color: var(--text-secondary); margin: 6px 0 0 0; font-size: 0.9em;">{{ limitation }}</p>
+</div>
+{% elif comp_count < 3 and limitation %}
+<p style="color: var(--gray); font-size: 0.85em; margin-bottom: 15px;">
+  {{ comp_count }} competitor{{ 's' if comp_count != 1 else '' }}{% if bench_count > 0 %} + {{ bench_count }} sector benchmark{{ 's' if bench_count != 1 else '' }} for reference{% endif %}.
+  {% if meta.get('llm_validated') %} LLM-validated.{% endif %}
+</p>
+{% else %}
+<p style="color: var(--gray); font-size: 0.85em; margin-bottom: 15px;">
+  {{ comp_count }} competitor{{ 's' if comp_count != 1 else '' }}{% if bench_count > 0 %} + {{ bench_count }} benchmark{{ 's' if bench_count != 1 else '' }}{% endif %} | {{ meta.get('candidates_evaluated', '?') }} sector peers evaluated
+  {% if meta.get('llm_validated') %} | LLM-validated{% endif %}
+</p>
+{% endif %}
+{% endif %}
+
 <div class="card" style="overflow-x: auto;">
   {% set companies = comparison.get('companies', {}) %}
-  {% set comp_metrics = comparison.get('metrics', []) %}
   {% set ranks = comparison.get('ranks', {}) %}
-  {% set best = comparison.get('best_in_class', {}) %}
   {% set total = companies|length %}
   <table>
     <thead>
       <tr>
         <th>Metric</th>
         {% for t in companies %}
-        <th {% if t == ticker %}style="background: #eff6ff;"{% endif %}>{{ t }}{% if t == ticker %} *{% endif %}</th>
+        <th {% if t == ticker %}style="background: var(--thesis-bg); font-weight: 700;"{% endif %}>
+          {{ t }}{% if t == ticker %} &#9733;{% endif %}
+          {% if t != ticker and peer_categories %}
+          {% if peer_categories.get(t) == 'benchmark' %}
+          <br><span style="font-size: 0.7em; font-weight: 400; color: var(--amber);">BENCHMARK</span>
+          {% elif peer_categories.get(t) == 'competitor' %}
+          <br><span style="font-size: 0.7em; font-weight: 400; color: var(--green);">COMPETITOR</span>
+          {% endif %}
+          {% endif %}
+        </th>
         {% endfor %}
       </tr>
     </thead>
     <tbody>
-      {% for mid in comp_metrics[:25] %}
+      {% set current_category = namespace(val='') %}
+      {% for mid, label, category in peer_display_metrics %}
+      {% if category != current_category.val %}
+      {% set current_category.val = category %}
+      <tr class="peer-category-row">
+        <td colspan="{{ companies|length + 1 }}">{{ category }}</td>
+      </tr>
+      {% endif %}
+      {% if mid in comparison.get('metrics', []) %}
       <tr>
-        <td>{{ mid }}</td>
+        <td>{{ label }}</td>
         {% for t in companies %}
         {% set val = companies[t].get(mid) %}
         {% set rank = ranks.get(t, {}).get(mid) %}
-        <td class="{% if rank == 1 %}rank-1{% elif rank == total %}rank-last{% endif %}" {% if t == ticker %}style="{% if rank != 1 and rank != total %}background: #eff6ff;{% endif %}"{% endif %}>
+        <td class="{% if rank == 1 %}rank-1{% elif rank == total %}rank-last{% endif %}" {% if t == ticker and rank != 1 and rank != total %}style="background: var(--thesis-bg);"{% endif %}>
           {% if val is not none %}{{ "%.2f"|format(val) }}{% else %}—{% endif %}
         </td>
         {% endfor %}
       </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>
-  <p style="margin-top: 10px; color: #6b7280; font-size: 0.85em;">* Target company. Green = best in class, Red = worst in class.</p>
-</div>
-{% endif %}
-
-<!-- Peer Discovery -->
-{% if peers %}
-<h2>Peer Discovery</h2>
-<div class="card">
-  <p><strong>Direct competitors:</strong> {{ peers.direct_competitors|join(', ') }}</p>
-  <p><strong>Sector peers:</strong> {{ peers.sector_peers|join(', ') }}</p>
-  <h3>Peer Data</h3>
-  <table>
-    <thead><tr><th>Ticker</th><th>Name</th><th>Market Cap (₹Cr)</th><th>PE</th><th>RoCE</th></tr></thead>
-    <tbody>
-    {% for pt, info in peers.peer_data.items() %}
-    <tr>
-      <td><strong>{{ pt }}</strong></td>
-      <td>{{ info.get('name', '') }}</td>
-      <td>{{ "{:,.0f}".format(info.get('market_cap', 0)|float) }}</td>
-      <td>{{ "%.1f"|format(info.get('pe', 0)|float) }}</td>
-      <td>{{ "%.1f"|format(info.get('roce', 0)|float) }}%</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
-
-<!-- LLM Analysis -->
-{% if llm_analysis and not llm_analysis.get('skipped') %}
-<h2>Investment Thesis (LLM Analysis)</h2>
-
-{% set p2 = llm_analysis.get('pass2', {}) %}
-{% if p2 and not p2.get('error') and not p2.get('skipped') %}
-<div class="thesis-box">
-  <p><strong>{{ p2.get('thesis', 'No thesis generated.') }}</strong></p>
-  <p style="margin-top: 10px;">
-    <span class="conviction conviction-{{ p2.get('conviction_level', 'low') }}">{{ p2.get('conviction_level', 'N/A')|upper }} conviction</span>
-    &nbsp; Action: <strong>{{ p2.get('suggested_action', 'N/A') }}</strong>
-    &nbsp; Holding period: <strong>{{ p2.get('target_holding_period', 'N/A') }}</strong>
+  <p style="margin-top: 10px; color: var(--gray); font-size: 0.85em;">
+    &#9733; Target company.
+    <span style="color: var(--green);">Green</span> = best in class,
+    <span style="color: var(--red);">Red</span> = worst in class.
+    {% if peer_categories %}
+    | <span style="color: var(--green);">COMPETITOR</span> = direct peer,
+    <span style="color: var(--amber);">BENCHMARK</span> = sector reference only.
+    {% endif %}
   </p>
 </div>
-
-{% if p2.get('bull_case') %}
-<div class="card" style="margin-top: 15px;">
-  <h3>Bull Case</h3>
-  <p>{{ p2.get('bull_case') }}</p>
-</div>
 {% endif %}
 
-{% if p2.get('bear_case') %}
-<div class="risk-box">
-  <h3 style="margin-top: 0;">Bear Case</h3>
-  <p>{{ p2.get('bear_case') }}</p>
-</div>
-{% endif %}
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 10: Qualitative Assessment + Competitive Pos.  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+{% if llm_analysis and not llm_analysis.get('skipped') %}
+<div id="qualitative"></div>
 
-{% if p2.get('kill_the_thesis') %}
-<div class="card" style="margin-top: 15px;">
-  <h3>Kill the Thesis</h3>
-  <ul>{% for item in p2.get('kill_the_thesis', []) %}<li>{{ item }}</li>{% endfor %}</ul>
-</div>
-{% endif %}
-
-{% if p2.get('key_monitorables') %}
-<div class="card" style="margin-top: 15px;">
-  <h3>Key Monitorables</h3>
-  <ul>{% for item in p2.get('key_monitorables', []) %}<li>{{ item }}</li>{% endfor %}</ul>
-</div>
-{% endif %}
-
-{% if p2.get('reasoning') %}
-<div class="card" style="margin-top: 15px;">
-  <h3>Detailed Reasoning</h3>
-  <p>{{ p2.get('reasoning') }}</p>
-</div>
-{% endif %}
-{% endif %}
-
-<!-- Pass 1: Qualitative -->
 {% set p1 = llm_analysis.get('pass1', {}) %}
 {% if p1 and not p1.get('skipped') and not p1.get('error') %}
 <h2>Qualitative Assessment</h2>
 <div class="grid">
   <div class="card">
-    <h3>Management</h3>
+    <h3 style="margin-top: 0;">Management</h3>
     <table class="metric-table">
-      <tr><td>Integrity</td><td>{{ p1.get('management_integrity_score', 'N/A') }}/10</td></tr>
-      <tr><td>Competence</td><td>{{ p1.get('management_competence_score', 'N/A') }}/10</td></tr>
-      <tr><td>Growth Mindset</td><td>{{ p1.get('growth_mindset_score', 'N/A') }}/10</td></tr>
+      <tr><td>Integrity</td><td>{{ p1.get('management_integrity_score', '—') }}/10</td></tr>
+      <tr><td>Competence</td><td>{{ p1.get('management_competence_score', '—') }}/10</td></tr>
+      <tr><td>Growth Mindset</td><td>{{ p1.get('growth_mindset_score', '—') }}/10</td></tr>
     </table>
   </div>
   <div class="card">
-    <h3>Competitive Moat</h3>
-    <p>Type: <strong>{{ p1.get('moat_type', 'N/A') }}</strong> | Strength: <strong>{{ p1.get('moat_strength', 'N/A') }}/10</strong></p>
-    <p style="margin-top: 8px;">{{ p1.get('moat_evidence', '') }}</p>
+    <h3 style="margin-top: 0;">Competitive Moat</h3>
+    <p>Type: <strong>{{ p1.get('moat_type', '—') }}</strong> | Strength: <strong>{{ p1.get('moat_strength', '—') }}/10</strong></p>
+    <div class="reasoning-text" style="margin-top: 8px;">{{ p1.get('moat_evidence', '') | paragraphize }}</div>
   </div>
 </div>
 {% if p1.get('red_flags') %}
 <div class="risk-box" style="margin-top: 15px;">
-  <h3 style="margin-top: 0;">Red Flags</h3>
-  <ul>{% for item in p1.get('red_flags', []) %}<li>{{ item }}</li>{% endfor %}</ul>
+  <h3 style="margin-top: 0; color: var(--red);">Red Flags</h3>
+  <ul>{% for item in p1.get('red_flags', []) %}<li style="margin: 4px 0;">{{ item }}</li>{% endfor %}</ul>
 </div>
 {% endif %}
 {% endif %}
 
-<!-- Pass 3: Comparative -->
 {% set p3 = llm_analysis.get('pass3', {}) %}
 {% if p3 and not p3.get('skipped') and not p3.get('error') %}
 <h2>Competitive Positioning</h2>
 <div class="grid">
   <div class="card">
-    <h3>Advantages</h3>
-    <ul>{% for item in p3.get('competitive_advantages', []) %}<li>{{ item }}</li>{% endfor %}</ul>
+    <h3 style="margin-top: 0; color: var(--green);">Advantages</h3>
+    <ul>{% for item in p3.get('competitive_advantages', []) %}<li style="margin: 4px 0;">{{ item }}</li>{% endfor %}</ul>
   </div>
   <div class="card">
-    <h3>Disadvantages</h3>
-    <ul>{% for item in p3.get('competitive_disadvantages', []) %}<li>{{ item }}</li>{% endfor %}</ul>
+    <h3 style="margin-top: 0; color: var(--red);">Disadvantages</h3>
+    <ul>{% for item in p3.get('competitive_disadvantages', []) %}<li style="margin: 4px 0;">{{ item }}</li>{% endfor %}</ul>
   </div>
 </div>
-<div class="card" style="margin-top: 15px;">
-  <p><strong>Preferred pick:</strong> {{ p3.get('preferred_pick_in_sector', 'N/A') }} — {{ p3.get('preferred_pick_reasoning', '') }}</p>
-  <p><strong>Valuation vs peers:</strong> {{ p3.get('valuation_relative_assessment', 'N/A') }}</p>
+<div class="grid" style="margin-top: 15px;">
+  {% if p3.get('preferred_pick_in_sector') %}
+  <div class="card">
+    <h3 style="margin-top: 0;">Preferred Pick</h3>
+    <div style="font-size: 1.2em; font-weight: 700; color: var(--blue); margin-bottom: 8px;">{{ p3.get('preferred_pick_in_sector', '—') }}</div>
+    {% if p3.get('preferred_pick_reasoning') %}
+    <div class="reasoning-text">{{ p3.get('preferred_pick_reasoning') | paragraphize }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if p3.get('valuation_relative_assessment') %}
+  <div class="card">
+    <h3 style="margin-top: 0;">Valuation vs Peers</h3>
+    <div class="reasoning-text">{{ p3.get('valuation_relative_assessment') | paragraphize }}</div>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
-<!-- LLM Usage -->
 {% set usage = llm_analysis.get('usage', {}) %}
 {% if usage %}
-<div style="margin-top: 15px; color: #9ca3af; font-size: 0.8em;">
+<div style="margin-top: 15px; color: var(--text-muted); font-size: 0.8em;">
   LLM: {{ usage.get('total_tokens', 0) }} tokens | ~${{ "%.4f"|format(usage.get('estimated_cost_usd', 0)) }} | {{ usage.get('total_seconds', 0) }}s
 </div>
 {% endif %}
 {% endif %}
 
-<!-- Errors -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 11: Key Signals (humanized flags)              -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="signals"></div>
+<h2>Key Signals</h2>
+<div class="card">
+  {% set good_flags = [] %}
+  {% set bad_flags = [] %}
+  {% set neutral_flags = [] %}
+  {% for f in flags %}
+    {% if f.sentiment == 'good' %}{% if good_flags.append(f) %}{% endif %}
+    {% elif f.sentiment == 'bad' %}{% if bad_flags.append(f) %}{% endif %}
+    {% else %}{% if neutral_flags.append(f) %}{% endif %}
+    {% endif %}
+  {% endfor %}
+
+  {% if good_flags %}
+  <div class="signal-group">
+    <div class="signal-group-label" style="color: var(--green);">Strengths</div>
+    {% for f in good_flags %}
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> {{ f.label }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if bad_flags %}
+  <div class="signal-group">
+    <div class="signal-group-label" style="color: var(--red);">Concerns</div>
+    {% for f in bad_flags %}
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> {{ f.label }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if neutral_flags %}
+  <div class="signal-group">
+    <div class="signal-group-label">Context</div>
+    {% for f in neutral_flags %}
+    <span class="flag"><span class="flag-icon">&#8226;</span> {{ f.label }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 12: Warnings & Errors                          -->
+<!-- ═══════════════════════════════════════════════════════ -->
 {% if errors %}
 <h2>Warnings &amp; Errors</h2>
 <div class="card">
@@ -417,5 +976,29 @@
 </div>
 
 </div>
+
+<script>
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  try { localStorage.setItem('sqglp-theme', next); } catch(e) {}
+}
+function toggleDrilldown(id) {
+  const dd = document.getElementById(id);
+  const toggle = document.getElementById('toggle-' + id);
+  if (dd) {
+    dd.classList.toggle('open');
+    if (toggle) toggle.classList.toggle('open');
+  }
+}
+(function() {
+  try {
+    const saved = localStorage.getItem('sqglp-theme');
+    if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  } catch(e) {}
+})();
+</script>
 </body>
 </html>

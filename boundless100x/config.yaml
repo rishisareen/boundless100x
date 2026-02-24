@@ -13,6 +13,7 @@ peer_discovery:
   peer_validation_model: "claude-haiku-4-5-20251001"
   max_llm_suggestions: 5
   max_peers: 5
+  max_benchmarks: 3
   size_band_multiplier: 3.0
   revenue_band_multiplier: 5.0
   sector_source: "screener"
@@ -35,10 +36,10 @@ fetching:
 # ── LLM Configuration ──
 llm:
   provider: "anthropic"
-  pass1_model: "claude-sonnet-4-5-20250929"
-  pass2_model: "claude-sonnet-4-5-20250929"
+  pass1_model: "claude-sonnet-4-6"
+  pass2_model: "claude-sonnet-4-6"
   pass3_model: "claude-haiku-4-5-20251001"
-  max_tokens: 2000
+  max_tokens: 4096
   enabled: true
   skip_pass1_if_no_ar: true
 
