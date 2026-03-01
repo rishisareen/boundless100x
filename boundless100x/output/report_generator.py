@@ -179,6 +179,85 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
     "earnings_yield_vs_gsec": ("price", "EY Spread vs G-Sec"),
 }
 
+# ── Flag-to-SQGLP element mapping ──
+# Maps raw flag strings to their SQGLP element for per-section grouping
+FLAG_ELEMENT_MAP: dict[str, str] = {
+    # Growth
+    "growth_quality_high_quality": "growth",
+    "growth_quality_moderate": "growth",
+    "growth_quality_low_quality": "growth",
+    "very_short_history_unreliable": "growth",
+    "bonus_split_adjusted": "growth",
+    "high_dilution": "growth",
+    "minimal_dilution": "growth",
+    # Quality Business (Profitability + Leverage + Efficiency)
+    "consistently_high_roce": "quality_business",
+    "exceptional_roce": "quality_business",
+    "improving_roce": "quality_business",
+    "declining_roce": "quality_business",
+    "high_operating_margin": "quality_business",
+    "improving_margins": "quality_business",
+    "cash_cow": "quality_business",
+    "cfi_dominated_by_acquisitions": "quality_business",
+    "volatile_tax_rate": "quality_business",
+    "debt_risk": "quality_business",
+    "virtually_debt_free": "quality_business",
+    "low_interest_coverage": "quality_business",
+    "strong_interest_coverage": "quality_business",
+    "improving_working_capital": "quality_business",
+    "worsening_working_capital": "quality_business",
+    # Price (Valuation)
+    "very_expensive_pe": "price",
+    "expensive_pe": "price",
+    "cheap_pe": "price",
+    "attractively_valued_peg": "price",
+    "expensive_peg": "price",
+    "attractive_trailing_peg": "price",
+    "pe_above_historical_75th": "price",
+    "pe_below_historical_25th": "price",
+    "dcf_undervalued": "price",
+    "dcf_overvalued": "price",
+    "negative_average_fcf": "price",
+    "negative_fcf_even_after_outlier_removal": "price",
+    "reverse_dcf_overpriced": "price",
+    "reverse_dcf_underpriced": "price",
+    "earnings_yield_above_gsec": "price",
+    "gsec_more_attractive": "price",
+    # Size
+    "small_cap": "size",
+    "mid_cap": "size",
+    "large_cap": "size",
+    "micro_cap": "size",
+    "low_institutional_ownership": "size",
+    "heavily_institutional": "size",
+    "under_researched": "size",
+    "lightly_covered": "size",
+    # Quality Management
+    "promoter_increasing_stake": "quality_management",
+    "promoter_reducing_stake": "quality_management",
+    "promoter_pledge_red_flag": "quality_management",
+    # Longevity
+    "wide_moat_cap": "longevity",
+    "moderate_moat_cap": "longevity",
+    "highly_stable_margins": "longevity",
+    "volatile_margins": "longevity",
+    "heavy_reinvestment": "longevity",
+    "consistent_fcf_generator": "longevity",
+    "consistent_organic_fcf_generator": "longevity",
+    # Composite
+    "possible_bonus_split": "composite",
+}
+
+# ── SQGLP element display config ──
+ELEMENT_CONFIG: dict[str, dict] = {
+    "size": {"label": "Size", "short": "S", "weight": "10%"},
+    "quality_business": {"label": "Quality — Business", "short": "QB", "weight": "20%"},
+    "quality_management": {"label": "Quality — Management", "short": "QM", "weight": "10%"},
+    "growth": {"label": "Growth", "short": "G", "weight": "25%"},
+    "longevity": {"label": "Longevity", "short": "L", "weight": "20%"},
+    "price": {"label": "Price", "short": "P", "weight": "15%"},
+}
+
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
@@ -294,6 +373,8 @@ class ReportGenerator:
         cashflow_quality = self._build_cashflow_quality(result)
         pe_band_summary = self._build_pe_band_summary(result)
         score_drilldown = self._build_score_drilldown(result)
+        flags = self._collect_flags(result.metrics)
+        element_summaries = self._build_element_summaries(result, score_drilldown, flags)
 
         if "json" in formats:
             self._export_json(result, report_dir, growth_decomposition)
@@ -317,6 +398,8 @@ class ReportGenerator:
                 cashflow_quality=cashflow_quality,
                 shareholding_data=shareholding_data,
                 score_drilldown=score_drilldown,
+                element_summaries=element_summaries,
+                flags_precomputed=flags,
             )
             path = report_dir / f"{result.ticker}_dashboard.html"
             path.write_text(html)
@@ -332,6 +415,9 @@ class ReportGenerator:
                 dcf_summary=dcf_summary,
                 cashflow_quality=cashflow_quality,
                 pe_band_summary=pe_band_summary,
+                score_drilldown=score_drilldown,
+                element_summaries=element_summaries,
+                flags_precomputed=flags,
             )
             path = report_dir / f"{result.ticker}_report.md"
             path.write_text(md)
@@ -348,14 +434,17 @@ class ReportGenerator:
                      dcf_summary: dict | None = None,
                      cashflow_quality: dict | None = None,
                      shareholding_data: list | None = None,
-                     score_drilldown: dict | None = None) -> str:
+                     score_drilldown: dict | None = None,
+                     element_summaries: dict | None = None,
+                     flags_precomputed: list | None = None) -> str:
         template = self.env.get_template("sqglp_report.html.j2")
+        flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
             ticker=result.ticker,
             metadata=result.data.get("metadata", {}),
             scores=result.scores,
             metrics=self._metrics_to_display(result.metrics),
-            flags=self._collect_flags(result.metrics),
+            flags=flags,
             peers=result.peers,
             peer_categories=result.peers.peer_categories if result.peers else {},
             comparison=result.comparison,
@@ -377,6 +466,8 @@ class ReportGenerator:
             pe_band_historical_chart=charts.get("pe_band_historical", ""),
             peer_radar_chart=charts.get("peer_radar", ""),
             score_drilldown=score_drilldown or {},
+            element_summaries=element_summaries or {},
+            element_config=ELEMENT_CONFIG,
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -390,14 +481,18 @@ class ReportGenerator:
                          sector_context: dict | None = None,
                          dcf_summary: dict | None = None,
                          cashflow_quality: dict | None = None,
-                         pe_band_summary: dict | None = None) -> str:
+                         pe_band_summary: dict | None = None,
+                         score_drilldown: dict | None = None,
+                         element_summaries: dict | None = None,
+                         flags_precomputed: list | None = None) -> str:
         template = self.env.get_template("sqglp_report.md.j2")
+        flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
             ticker=result.ticker,
             metadata=result.data.get("metadata", {}),
             scores=result.scores,
             metrics=self._metrics_to_display(result.metrics),
-            flags=self._collect_flags(result.metrics),
+            flags=flags,
             peers=result.peers,
             peer_categories=result.peers.peer_categories if result.peers else {},
             comparison=result.comparison,
@@ -410,6 +505,9 @@ class ReportGenerator:
             dcf_summary=dcf_summary or {},
             cashflow_quality=cashflow_quality or {},
             pe_band_summary=pe_band_summary or {},
+            score_drilldown=score_drilldown or {},
+            element_summaries=element_summaries or {},
+            element_config=ELEMENT_CONFIG,
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -847,6 +945,63 @@ class ReportGenerator:
             drilldown[el].sort(key=lambda x: float(x["weight"].rstrip("%")), reverse=True)
 
         return drilldown
+
+    def _build_element_summaries(self, result, score_drilldown: dict, flags: list[dict]) -> dict[str, str]:
+        """Generate a data-driven 1-2 sentence summary for each SQGLP element.
+
+        Uses metric scores and flags to build a narrative without needing LLM.
+        """
+        summaries: dict[str, str] = {}
+
+        for element, config in ELEMENT_CONFIG.items():
+            parts = []
+            drilldown = score_drilldown.get(element, [])
+            el_flags = [f for f in flags if f.get("element") == element]
+
+            # Identify top strengths and weaknesses from drilldown
+            strengths = [m for m in drilldown if m["contribution"] == "good"]
+            weaknesses = [m for m in drilldown if m["contribution"] == "low"]
+
+            if strengths:
+                top = strengths[:3]
+                names = [f"{m['name']} ({m['value']})" for m in top]
+                if len(names) == 1:
+                    parts.append(f"Strong on {names[0]}.")
+                else:
+                    parts.append(f"Strong on {', '.join(names[:-1])} and {names[-1]}.")
+
+            if weaknesses:
+                bottom = weaknesses[:2]
+                names = [f"{m['name']} ({m['value']})" for m in bottom]
+                if len(names) == 1:
+                    parts.append(f"Weak on {names[0]}.")
+                else:
+                    parts.append(f"Weak on {' and '.join(names)}.")
+
+            # Add notable flags
+            good_flags = [f["label"] for f in el_flags if f["sentiment"] == "good"]
+            bad_flags = [f["label"] for f in el_flags if f["sentiment"] == "bad"]
+
+            if good_flags and not strengths:
+                parts.append(f"{', '.join(good_flags[:2])}.")
+            if bad_flags and not weaknesses:
+                parts.append(f"Watch: {', '.join(bad_flags[:2])}.")
+
+            # Fallback if no drilldown data
+            if not parts:
+                el_score = result.scores.get("elements", {}).get(element)
+                if el_score is not None:
+                    if el_score >= 7:
+                        parts.append(f"Scores well at {el_score:.1f}/10.")
+                    elif el_score >= 4:
+                        parts.append(f"Average at {el_score:.1f}/10.")
+                    else:
+                        parts.append(f"Below average at {el_score:.1f}/10.")
+
+            if parts:
+                summaries[element] = " ".join(parts)
+
+        return summaries
 
     # ── Financial Snapshot ──
 
@@ -1725,7 +1880,8 @@ class ReportGenerator:
                         # Auto-humanize: replace underscores with spaces, title case
                         label = f.replace("_", " ").title()
                         sentiment = "neutral"
-                    flags.append({"label": label, "sentiment": sentiment, "raw": f})
+                    element = FLAG_ELEMENT_MAP.get(f, "composite")
+                    flags.append({"label": label, "sentiment": sentiment, "raw": f, "element": element})
 
         # Sort: good first, then bad, then neutral
         order = {"good": 0, "bad": 1, "neutral": 2}
