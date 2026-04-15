@@ -403,9 +403,15 @@ def _print_llm_summary(result):
 
 
 if __name__ == "__main__":
+    import os
     try:
         app()
-    finally:
-        # Force exit — jugaad-data / requests can leave background threads alive
-        import os
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        os._exit(code)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        os._exit(1)
+    else:
         os._exit(0)
