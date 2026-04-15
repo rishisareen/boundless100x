@@ -118,14 +118,6 @@ class ComputeEngine:
                 metadata={"metric_id": metric_id},
             )
 
-    def get_peer_comparable_metrics(self) -> list[str]:
-        """Return metric IDs that should appear in peer comparison tables."""
-        return [
-            mid
-            for mid, cfg in self.metrics.items()
-            if cfg.get("display", {}).get("peer_compare", False)
-        ]
-
     def get_metrics_by_element(self) -> dict[str, list[str]]:
         """Return metric IDs grouped by element."""
         by_element: dict[str, list[str]] = {}

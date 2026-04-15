@@ -30,10 +30,8 @@ def setup_logging(verbose: bool = False):
 def analyze(
     ticker: str = typer.Argument(help="NSE symbol (e.g., ASTRAL)"),
     bse_code: str = typer.Option(None, help="BSE scrip code"),
-    peers: str = typer.Option(None, help="Comma-separated manual peer list"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Skip LLM analysis"),
     deep: bool = typer.Option(False, "--deep", help="Use Opus for Pass 1 & 2 (~5x LLM cost, deeper analysis)"),
-    max_peers: int = typer.Option(5, help="Max peers to compute"),
     formats: str = typer.Option("html,md,json", help="Output formats (comma-separated)"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
@@ -52,14 +50,10 @@ def analyze(
         bse_code=bse_code,
         use_llm=not no_llm,
         deep=deep,
-        max_peer_compute=max_peers,
     )
 
     # Print summary to console
     _print_scores(result, svc)
-
-    if result.peers:
-        _print_peers(result)
 
     if result.llm_analysis and not result.llm_analysis.get("skipped"):
         _print_llm_summary(result)
@@ -111,27 +105,6 @@ def compute(
             table.add_row(mid, f"[red]ERR: {mr.error}[/red]", "")
 
     console.print(table)
-
-
-@app.command(name="peers")
-def discover_peers(
-    ticker: str = typer.Argument(help="NSE symbol"),
-    verbose: bool = typer.Option(False, "-v", "--verbose"),
-):
-    """Discover sector peers for a company."""
-    setup_logging(verbose)
-
-    from boundless100x.service import Boundless100xService
-
-    console.print(f"\n[bold blue]Discovering peers for {ticker}[/bold blue]\n")
-
-    svc = Boundless100xService()
-    result = svc.analyze(ticker, skip_peers=False, use_llm=False, max_peer_compute=0)
-
-    if result.peers:
-        _print_peers(result)
-    else:
-        console.print("[red]No peers found.[/red]")
 
 
 @app.command()
@@ -338,46 +311,6 @@ def _print_scores(result, svc):
     console.print(table)
 
 
-def _print_peers(result):
-    if not result.peers:
-        return
-
-    # Show limitation note if present
-    meta = result.peers.discovery_metadata or {}
-    limitation = meta.get("limitation_note", "")
-    if limitation:
-        console.print(f"\n[yellow]Note: {limitation}[/yellow]")
-
-    table = Table(title="Peer Discovery")
-    table.add_column("Ticker", style="cyan bold")
-    table.add_column("Name")
-    table.add_column("MCap (₹Cr)", justify="right")
-    table.add_column("PE", justify="right")
-    table.add_column("RoCE", justify="right")
-    table.add_column("Type")
-
-    for pt in result.peers.direct_competitors:
-        info = result.peers.peer_data.get(pt, {})
-        mcap = info.get("market_cap", 0)
-        pe = info.get("pe", 0)
-        roce = info.get("roce", 0)
-        name = info.get("name", "")
-        peer_type = result.peers.peer_categories.get(pt, "unknown")
-        type_display = (
-            "[green]Competitor[/green]" if peer_type == "competitor"
-            else "[yellow]Benchmark[/yellow]"
-        )
-        table.add_row(
-            pt, name,
-            f"{mcap:,.0f}" if mcap else "—",
-            f"{pe:.1f}" if pe else "—",
-            f"{roce:.1f}%" if roce else "—",
-            type_display,
-        )
-
-    console.print(table)
-
-
 def _print_llm_summary(result):
     llm = result.llm_analysis
     if not llm:
@@ -403,9 +336,15 @@ def _print_llm_summary(result):
 
 
 if __name__ == "__main__":
+    import os
     try:
         app()
-    finally:
-        # Force exit — jugaad-data / requests can leave background threads alive
-        import os
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        os._exit(code)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        os._exit(1)
+    else:
         os._exit(0)

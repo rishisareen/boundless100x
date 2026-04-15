@@ -151,8 +151,7 @@
   /* Signal groups */
   .signal-group { margin-bottom: 16px; }
   .signal-group-label { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; color: var(--gray); }
-  /* Peer category header */
-  .peer-category-row td { background: var(--bg-input); font-weight: 600; font-size: 0.85em; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid var(--border); }
+  /* Signal groups */
   /* Responsive: narrow screens */
   @media (max-width: 500px) {
     .container { padding: 16px; padding-top: 60px; }
@@ -190,7 +189,6 @@
   <a href="#longevity">Longevity</a>
   <a href="#price">Price</a>
   {% if llm_analysis and not llm_analysis.get('skipped') %}<a href="#thesis">Thesis</a>{% endif %}
-  {% if comparison and comparison.get('companies') %}<a href="#peers">Peers</a>{% endif %}
   <a href="#appendix">Appendix</a>
 </nav>
 
@@ -792,99 +790,7 @@
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<!-- SECTION 9: Peer Comparison                             -->
-<!-- ═══════════════════════════════════════════════════════ -->
-{% if comparison and comparison.get('companies') %}
-<div id="peers"></div>
-<h2>Peer Comparison</h2>
-
-{# Context card: explain competitive landscape #}
-{% if peers %}
-{% set meta = peers.discovery_metadata %}
-{% set has_comp = meta.get('has_competitors', true) %}
-{% set limitation = meta.get('limitation_note', '') %}
-{% set comp_count = meta.get('competitor_count', 0) %}
-{% set bench_count = meta.get('benchmark_count', 0) %}
-
-{% if not has_comp and limitation %}
-<div class="card" style="border-left: 4px solid var(--amber); margin-bottom: 15px; padding: 12px 16px;">
-  <strong style="color: var(--amber);">Limited Competitive Landscape</strong>
-  <p style="color: var(--text-secondary); margin: 6px 0 0 0; font-size: 0.9em;">{{ limitation }}</p>
-</div>
-{% elif comp_count < 3 and limitation %}
-<p style="color: var(--gray); font-size: 0.85em; margin-bottom: 15px;">
-  {{ comp_count }} competitor{{ 's' if comp_count != 1 else '' }}{% if bench_count > 0 %} + {{ bench_count }} sector benchmark{{ 's' if bench_count != 1 else '' }} for reference{% endif %}.
-  {% if meta.get('llm_validated') %} LLM-validated.{% endif %}
-</p>
-{% else %}
-<p style="color: var(--gray); font-size: 0.85em; margin-bottom: 15px;">
-  {{ comp_count }} competitor{{ 's' if comp_count != 1 else '' }}{% if bench_count > 0 %} + {{ bench_count }} benchmark{{ 's' if bench_count != 1 else '' }}{% endif %} | {{ meta.get('candidates_evaluated', '?') }} sector peers evaluated
-  {% if meta.get('llm_validated') %} | LLM-validated{% endif %}
-</p>
-{% endif %}
-{% endif %}
-
-<div class="card" style="overflow-x: auto;">
-  {% set companies = comparison.get('companies', {}) %}
-  {% set ranks = comparison.get('ranks', {}) %}
-  {% set total = companies|length %}
-  <table>
-    <thead>
-      <tr>
-        <th>Metric</th>
-        {% for t in companies %}
-        <th {% if t == ticker %}style="background: var(--thesis-bg); font-weight: 700;"{% endif %}>
-          {{ t }}{% if t == ticker %} &#9733;{% endif %}
-          {% if t != ticker and peer_categories %}
-          {% if peer_categories.get(t) == 'benchmark' %}
-          <br><span style="font-size: 0.7em; font-weight: 400; color: var(--amber);">BENCHMARK</span>
-          {% elif peer_categories.get(t) == 'competitor' %}
-          <br><span style="font-size: 0.7em; font-weight: 400; color: var(--green);">COMPETITOR</span>
-          {% endif %}
-          {% endif %}
-        </th>
-        {% endfor %}
-      </tr>
-    </thead>
-    <tbody>
-      {% set current_category = namespace(val='') %}
-      {% for mid, label, category in peer_display_metrics %}
-      {% if category != current_category.val %}
-      {% set current_category.val = category %}
-      <tr class="peer-category-row">
-        <td colspan="{{ companies|length + 1 }}">{{ category }}</td>
-      </tr>
-      {% endif %}
-      {% if mid in comparison.get('metrics', []) %}
-      <tr>
-        <td>{{ label }}</td>
-        {% for t in companies %}
-        {% set val = companies[t].get(mid) %}
-        {% set rank = ranks.get(t, {}).get(mid) %}
-        <td class="{% if rank == 1 %}rank-1{% elif rank == total %}rank-last{% endif %}" {% if t == ticker and rank != 1 and rank != total %}style="background: var(--thesis-bg);"{% endif %}>
-          {% if val is not none %}{{ "%.2f"|format(val) }}{% else %}—{% endif %}
-        </td>
-        {% endfor %}
-      </tr>
-      {% endif %}
-      {% endfor %}
-    </tbody>
-  </table>
-  <p style="margin-top: 10px; color: var(--gray); font-size: 0.85em;">
-    &#9733; Target company.
-    <span style="color: var(--green);">Green</span> = best in class,
-    <span style="color: var(--red);">Red</span> = worst in class.
-    {% if peer_categories %}
-    | <span style="color: var(--green);">COMPETITOR</span> = direct peer,
-    <span style="color: var(--amber);">BENCHMARK</span> = sector reference only.
-    {% endif %}
-  </p>
-</div>
-{% endif %}
-
-
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- SECTION 10: Appendix                                   -->
+<!-- SECTION 9: Appendix                                   -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div id="appendix"></div>
 <h2>Appendix</h2>

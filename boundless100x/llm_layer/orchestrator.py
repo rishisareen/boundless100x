@@ -1,8 +1,7 @@
-"""LLM Orchestrator — 3-pass Claude API analysis pipeline.
+"""LLM Orchestrator — 2-pass Claude API analysis pipeline.
 
 Pass 1: Qualitative analysis (management, moat, risks) — Sonnet
 Pass 2: Investment thesis synthesis — Sonnet
-Pass 3: Comparative peer judgment — Haiku
 """
 
 import json
@@ -18,7 +17,6 @@ from boundless100x.llm_layer.checklist import (
     build_flags_context,
     build_growth_decomposition_context,
     build_key_metrics_context,
-    build_peer_comparison_text,
     build_promoter_context,
     build_qg_quadrant_context,
     build_quality_metrics_context,
@@ -31,14 +29,13 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 class LLMOrchestrator:
-    """3-pass LLM analysis pipeline using Claude API."""
+    """2-pass LLM analysis pipeline using Claude API."""
 
     def __init__(self, config: dict):
         llm_config = config.get("llm", {})
         self.enabled = llm_config.get("enabled", True)
         self.pass1_model = llm_config.get("pass1_model", "claude-sonnet-4-6")
         self.pass2_model = llm_config.get("pass2_model", "claude-sonnet-4-6")
-        self.pass3_model = llm_config.get("pass3_model", "claude-haiku-4-5-20251001")
         self.max_tokens = llm_config.get("max_tokens", 2000)
         self.skip_pass1_if_no_ar = llm_config.get("skip_pass1_if_no_ar", True)
 
@@ -70,15 +67,13 @@ class LLMOrchestrator:
         market_cap: float | None,
         metrics: dict[str, MetricResult],
         scores: dict,
-        comparison: dict | None = None,
-        peer_metadata: dict | None = None,
         annual_report_text: str | None = None,
         sector_context: str = "",
         growth_decomposition: dict | None = None,
     ) -> dict:
-        """Run the full 3-pass LLM analysis.
+        """Run the full 2-pass LLM analysis.
 
-        Returns dict with keys: pass1, pass2, pass3, usage.
+        Returns dict with keys: pass1, pass2, usage.
         """
         if not self.enabled:
             return {"skipped": True, "reason": "LLM disabled in config"}
@@ -116,23 +111,6 @@ class LLMOrchestrator:
             pass1_output=results["pass1"],
             growth_decomposition=growth_decomposition,
         )
-
-        # Pass 3: Comparative (only if peer comparison data exists)
-        if comparison and comparison.get("companies"):
-            logger.info("[LLM Pass 3] Comparative judgment")
-            results["pass3"] = self._run_pass3(
-                ticker=ticker,
-                sector=sector,
-                comparison=comparison,
-                peer_metadata=peer_metadata or {},
-                pass2_thesis=results["pass2"].get("thesis", ""),
-            )
-        else:
-            logger.info("[LLM Pass 3] Skipped (no peer comparison data)")
-            results["pass3"] = {
-                "skipped": True,
-                "reason": "No peer comparison data",
-            }
 
         # Summarize usage
         results["usage"] = self._summarize_usage()
@@ -201,59 +179,6 @@ class LLMOrchestrator:
         )
 
         return self._call_api(self.pass2_model, prompt, "pass2")
-
-    # ── Pass 3: Comparative ──
-
-    def _run_pass3(
-        self,
-        ticker: str,
-        sector: str,
-        comparison: dict,
-        peer_metadata: dict,
-        pass2_thesis: str,
-    ) -> dict:
-        template = self._load_template("pass3_comparative.txt")
-
-        # Enrich peer quality context with classification info
-        quality_context = peer_metadata.get(
-            "peer_quality_context",
-            "Peer quality not assessed (LLM validation not run).",
-        )
-
-        # Add peer classification breakdown
-        peer_categories = peer_metadata.get("peer_categories", {})
-        if peer_categories:
-            classification_lines = []
-            for t, cat in peer_categories.items():
-                classification_lines.append(f"  {t}: {cat}")
-            quality_context += (
-                "\n\nPeer Classification:\n"
-                + "\n".join(classification_lines)
-            )
-
-        # Add limitation warning if applicable
-        limitation = peer_metadata.get("limitation_note", "")
-        has_competitors = peer_metadata.get("has_competitors", True)
-        if limitation:
-            quality_context += f"\n\nIMPORTANT: {limitation}"
-        if not has_competitors:
-            quality_context += (
-                "\nAll peers in this comparison are sector benchmarks, not direct competitors. "
-                "Frame your analysis as 'vs sector benchmarks' rather than 'vs competitors'. "
-                "Focus on absolute quality assessment rather than relative competitive ranking."
-            )
-
-        prompt = template.format(
-            ticker=ticker,
-            sector=sector,
-            peer_comparison_table=build_peer_comparison_text(comparison),
-            pass2_thesis=pass2_thesis[:500],  # Brief thesis context
-            candidates_evaluated=peer_metadata.get("candidates_evaluated", "N/A"),
-            size_filtered=peer_metadata.get("size_filtered_to", "N/A"),
-            peer_quality_context=quality_context,
-        )
-
-        return self._call_api(self.pass3_model, prompt, "pass3")
 
     # ── API Call ──
 
