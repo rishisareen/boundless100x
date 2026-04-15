@@ -215,41 +215,6 @@ Current PE of **{{ "%.1f"|format(pe_band_summary.current_pe) }}x** is at the **{
 ---
 {% endif %}
 
-{# ── Peer Comparison ── #}
-{% if peers or (comparison and comparison.get('companies')) %}
-## Peer Comparison
-
-{% if peers %}
-{% set meta = peers.discovery_metadata %}
-{% set limitation = meta.get('limitation_note', '') %}
-{% if limitation %}
-> **Note:** {{ limitation }}
-
-{% endif %}
-**Peers:** {% for pt in peers.direct_competitors %}{{ pt }} ({{ peer_categories.get(pt, '—') }}){% if not loop.last %}, {% endif %}{% endfor %}
-{% endif %}
-
-{% if comparison and comparison.get('companies') %}
-{% set companies = comparison.get('companies', {}) %}
-{% set ranks = comparison.get('ranks', {}) %}
-{% set peer_metrics_list = [('roce_5yr_avg', 'RoCE 5yr'), ('operating_margin_5yr', 'OPM 5yr'), ('debt_equity', 'D/E'), ('revenue_cagr_5yr', 'Rev CAGR 5yr'), ('pat_cagr_5yr', 'PAT CAGR 5yr'), ('pe_ttm', 'PE TTM'), ('peg_ratio', 'PEG'), ('fcf_consistency', 'FCF+ Yrs'), ('roce_consistency', 'RoCE>15% Yrs')] %}
-
-| Metric |{% for t in companies %} {{ t }}{% if t == ticker %} *{% endif %} |{% endfor %}
-
-|--------|{% for t in companies %}-------|{% endfor %}
-
-{% for mid, label in peer_metrics_list %}
-{% if mid in comparison.get('metrics', []) %}
-| {{ label }} |{% for t in companies %}{% set val = companies[t].get(mid) %} {% if val is not none %}{{ "%.2f"|format(val) }}{% else %}—{% endif %} |{% endfor %}
-
-{% endif %}
-{% endfor %}
-
-*\* Target company*
-{% endif %}
-
----
-{% endif %}
 
 {# ── Appendix ── #}
 ## Appendix

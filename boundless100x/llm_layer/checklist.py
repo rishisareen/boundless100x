@@ -179,40 +179,6 @@ def build_qg_quadrant_context(metrics: dict[str, MetricResult]) -> str:
     )
 
 
-def build_peer_comparison_text(comparison: dict) -> str:
-    """Format peer comparison table as readable text for LLM."""
-    if not comparison:
-        return "No peer comparison data available."
-
-    companies = comparison.get("companies", {})
-    metrics_list = comparison.get("metrics", [])
-    ranks = comparison.get("ranks", {})
-    best = comparison.get("best_in_class", {})
-
-    if not companies or not metrics_list:
-        return "No peer comparison data available."
-
-    # Build header
-    tickers = list(companies.keys())
-    lines = [f"| Metric | {' | '.join(tickers)} | Best |"]
-    lines.append(f"|{'---|' * (len(tickers) + 2)}")
-
-    for mid in metrics_list:
-        row = [mid]
-        for t in tickers:
-            val = companies[t].get(mid)
-            if val is not None:
-                rank = ranks.get(t, {}).get(mid, "")
-                rank_str = f" (#{rank})" if rank else ""
-                row.append(f"{val:.2f}{rank_str}" if isinstance(val, float) else f"{val}{rank_str}")
-            else:
-                row.append("N/A")
-        row.append(best.get(mid, ""))
-        lines.append(f"| {' | '.join(row)} |")
-
-    return "\n".join(lines)
-
-
 def build_growth_decomposition_context(growth_decomposition: dict | None) -> str:
     """Format growth decomposition data for LLM context (v4)."""
     if not growth_decomposition:

@@ -112,7 +112,7 @@ class WatchlistManager:
 
         for ticker in tickers:
             try:
-                result = service.analyze(ticker, use_llm=False, max_peer_compute=2)
+                result = service.analyze(ticker, use_llm=False)
                 composite = result.scores.get("composite")
                 self.mark_run(ticker, composite)
                 generator.generate(result, formats=["json", "md"])

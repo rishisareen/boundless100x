@@ -103,24 +103,6 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "possible_bonus_split": ("Possible Bonus/Split Event Detected", "neutral"),
 }
 
-# ── Peer comparison: curated metrics with human labels ──
-PEER_DISPLAY_METRICS: list[tuple[str, str, str]] = [
-    # (metric_id, display_label, category)
-    ("roce_5yr_avg", "RoCE 5yr Avg", "Quality"),
-    ("operating_margin_5yr", "OPM 5yr", "Quality"),
-    ("cash_conversion", "Cash Conversion", "Quality"),
-    ("debt_equity", "Debt/Equity", "Quality"),
-    ("revenue_cagr_5yr", "Revenue CAGR 5yr", "Growth"),
-    ("pat_cagr_5yr", "PAT CAGR 5yr", "Growth"),
-    ("eps_cagr_5yr", "EPS CAGR 5yr", "Growth"),
-    ("pe_ttm", "PE TTM", "Valuation"),
-    ("peg_ratio", "PEG Ratio", "Valuation"),
-    ("ev_ebitda", "EV/EBITDA", "Valuation"),
-    ("fcf_yield", "FCF Yield", "Valuation"),
-    ("fcf_consistency", "FCF+ Years", "Longevity"),
-    ("roce_consistency", "RoCE >15% Years", "Longevity"),
-]
-
 # ── Metric-to-element mapping with display labels ──
 # Used for SQGLP score drill-down: maps metric_id → (element, display_name)
 METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
@@ -445,10 +427,6 @@ class ReportGenerator:
             scores=result.scores,
             metrics=self._metrics_to_display(result.metrics),
             flags=flags,
-            peers=result.peers,
-            peer_categories=result.peers.peer_categories if result.peers else {},
-            comparison=result.comparison,
-            peer_display_metrics=PEER_DISPLAY_METRICS,
             llm_analysis=result.llm_analysis,
             growth=growth_decomposition,
             executive_summary=executive_summary or {},
@@ -464,7 +442,6 @@ class ReportGenerator:
             dcf_gauge_chart=charts.get("dcf_gauge", ""),
             cashflow_quality_chart=charts.get("cashflow_quality", ""),
             pe_band_historical_chart=charts.get("pe_band_historical", ""),
-            peer_radar_chart=charts.get("peer_radar", ""),
             score_drilldown=score_drilldown or {},
             element_summaries=element_summaries or {},
             element_config=ELEMENT_CONFIG,
@@ -493,9 +470,6 @@ class ReportGenerator:
             scores=result.scores,
             metrics=self._metrics_to_display(result.metrics),
             flags=flags,
-            peers=result.peers,
-            peer_categories=result.peers.peer_categories if result.peers else {},
-            comparison=result.comparison,
             llm_analysis=result.llm_analysis,
             growth=growth_decomposition,
             executive_summary=executive_summary or {},
@@ -528,22 +502,6 @@ class ReportGenerator:
 
         # scores.json
         self._write_json(report_dir / "scores.json", result.scores)
-
-        # peer_comparison.json
-        if result.comparison:
-            # Convert for serialization (values are already native types)
-            self._write_json(report_dir / "peer_comparison.json", result.comparison)
-
-        # peer_discovery.json
-        if result.peers:
-            discovery = {
-                "direct_competitors": result.peers.direct_competitors,
-                "sector_peers": result.peers.sector_peers,
-                "peer_data": result.peers.peer_data,
-                "peer_categories": result.peers.peer_categories,
-                "discovery_metadata": result.peers.discovery_metadata,
-            }
-            self._write_json(report_dir / "peer_discovery.json", discovery)
 
         # growth_decomposition.json
         if growth_decomposition:

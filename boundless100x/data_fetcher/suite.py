@@ -8,7 +8,6 @@ import pandas as pd
 from boundless100x.data_fetcher.fetch_financials import FinancialsFetcher
 from boundless100x.data_fetcher.fetch_price_volume import PriceVolumeFetcher
 from boundless100x.data_fetcher.fetch_shareholding import ShareholdingFetcher
-from boundless100x.data_fetcher.fetch_sector_peers import SectorPeersFetcher
 from boundless100x.data_fetcher.fetch_corporate_actions import CorporateActionsFetcher
 from boundless100x.data_fetcher.fetch_analyst_coverage import AnalystCoverageFetcher
 from boundless100x.data_fetcher.download_annual_reports import AnnualReportDownloader
@@ -38,7 +37,6 @@ class DataFetcherSuite:
         self.financials = FinancialsFetcher(**common_kwargs)
         self.price_volume = PriceVolumeFetcher(**common_kwargs)
         self.shareholding_bse = ShareholdingFetcher(**common_kwargs)
-        self.sector_peers = SectorPeersFetcher(**common_kwargs)
         self.corporate_actions = CorporateActionsFetcher(**common_kwargs)
         self.analyst_coverage = AnalystCoverageFetcher(**common_kwargs)
         self.annual_reports = AnnualReportDownloader(**common_kwargs)
@@ -67,7 +65,7 @@ class DataFetcherSuite:
 
         Returns dict with keys matching compute engine expected inputs:
             financials, balance_sheet, cashflow, ratios, shareholding,
-            price, analyst_coverage, metadata, sector_peers
+            price, analyst_coverage, metadata
         """
         logger.info(f"Fetching all data for {ticker}")
         data = {"annual_report_text": None}
@@ -121,17 +119,6 @@ class DataFetcherSuite:
         resolved_bse = bse_code or data.get("metadata", {}).get("bse_code")
         if resolved_bse:
             self.fetch_bse_data(data, ticker, resolved_bse)
-
-        # 5. Sector peers
-        logger.info(f"Fetching sector peers for {ticker}...")
-        warehouse_id = data.get("metadata", {}).get("warehouse_id")
-        try:
-            data["sector_peers"] = self.sector_peers.fetch(
-                ticker, warehouse_id=warehouse_id, output_dir=self.raw_data_dir
-            )
-        except Exception as e:
-            logger.warning(f"Sector peers fetch failed for {ticker}: {e}")
-            data["sector_peers"] = pd.DataFrame()
 
         logger.info(f"Data fetch complete for {ticker}")
         return data
