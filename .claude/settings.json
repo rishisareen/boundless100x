@@ -1,0 +1,63 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Bash(npm run *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(echo *)",
+      "Bash(pwd)",
+      "Bash(cd *)"
+  // Python
+  "Bash(python *)",
+  "Bash(python3 *)",
+  "Bash(pip install *)",
+  "Bash(pip3 install *)",
+  
+  // Directory navigation
+  "Bash(cd *)",
+  
+  // Internet access
+  "Bash(curl *)",
+  "Bash(curl * | python3 *)",
+  "Bash(curl * | python *)",
+  "Bash(wget *)",
+  "Bash(fetch *)",
+  "WebFetch"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(rm -r *)",
+      "Bash(sudo *)",
+      "Bash(chmod 777 *)",
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)",
+      "Bash(kill *)",
+      "Bash(pkill *)",
+      "Bash(shutdown *)",
+      "Bash(reboot *)",
+      "Bash(dd *)",
+      "Bash(mkfs *)",
+      "Bash(> *)",
+      "Bash(docker rm *)",
+      "Bash(docker rmi *)"
+    ]
+  }
+}
