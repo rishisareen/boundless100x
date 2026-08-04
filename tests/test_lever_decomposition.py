@@ -79,6 +79,51 @@ class TestValuationCheckResolves:
         assert check["trailing_peg"] is None
 
 
+class TestMetricAndTableAgree:
+    """The scored metric and the report table grade through one function."""
+
+    def test_one_grade_per_company(self):
+        from boundless100x.compute_engine.metrics.builtin.growth import (
+            compute_growth_quality,
+        )
+
+        data = make_data()
+        metric = compute_growth_quality(data, {})
+        table = compute_lever_decomposition_table(
+            data, macro={"inflation_pct": 5.0, "strong_real_growth_pct": 10.0}
+        )
+
+        assert metric.ok
+        assert metric.value == table["growth_synthesis"]["quality_flag"]
+        assert metric.metadata["primary_drivers"] == table["growth_synthesis"]["primary_drivers"]
+
+    def test_leverage_driven_company_is_risky_in_both(self):
+        from boundless100x.compute_engine.metrics.builtin.growth import (
+            compute_growth_quality,
+        )
+
+        # Revenue below inflation (no volume/price drivers), EPS outrunning
+        # EBIT several-fold (financial leverage the only driver).
+        data = make_data(financials={"revenue_growth": 0.03, "pat_growth": 0.30})
+        metric = compute_growth_quality(data, {})
+        table = compute_lever_decomposition_table(
+            data, macro={"inflation_pct": 5.0, "strong_real_growth_pct": 10.0}
+        )
+
+        assert metric.value == "risky"
+        assert table["growth_synthesis"]["quality_flag"] == "risky"
+
+    def test_grades_cover_the_declared_categories(self):
+        """Every grade the shared grader emits must be scoreable by the YAML categories."""
+        from boundless100x.compute_engine.engine import ComputeEngine
+
+        categories = (
+            ComputeEngine().metrics["growth_quality_grade"]["scoring"]["categories"]
+        )
+        for grade in ("high_quality", "moderate", "low_quality", "risky"):
+            assert grade in categories
+
+
 class TestReportAndModelSeeTheSameTable:
     def test_report_reuses_the_analysis_result_decomposition(self, tmp_path):
         """No second, silently different computation for the reader."""

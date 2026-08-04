@@ -18,11 +18,11 @@ against the real cached data.
   than recomputing and patching its own, so the reader and LLM Pass 2 can no
   longer be shown different verdicts for one company.
 
-- **Veto flags disappear when their source metric errors.**
-  `EligibilityEvaluator` scans all metrics for `reverse_dcf_overpriced`. If the
-  reverse-DCF metric itself errored, no metric carries the flag and the price
-  gate proceeds on the PEG conditions alone. A veto whose source is unavailable
-  should read indeterminate, matching how missing conditions are already handled.
+- ~~**Veto flags disappear when their source metric errors.**~~ **Resolved.**
+  Gates now declare `veto_sources` (metrics expected to emit the veto flag).
+  When no metric carries `reverse_dcf_overpriced` and its source
+  `reverse_dcf_growth` is missing or errored, the price gate reads
+  indeterminate instead of proceeding on the PEG conditions alone.
 
 - **A single missing year can trigger the small-cap history waiver.**
   `_short_window_flags` counts non-null observations, so one NaN year in a
@@ -40,10 +40,11 @@ against the real cached data.
   scoring configuration than production runs. Worth stating in the limitations
   block.
 
-- **Reverse DCF saturates silently.** The binary search is bounded to
-  [-10%, +50%]; a company pinned at the ceiling returns exactly 50.0 with no
-  flag, and that value both feeds scoring and gates the overpriced veto.
-  Pre-existing, not introduced here.
+- ~~**Reverse DCF saturates silently.**~~ **Resolved.** The search still runs
+  bounded to [-10%, +50%], but a pinned result now carries the
+  `reverse_dcf_saturated` flag and `saturated_at: ceiling|floor` in metadata,
+  so scoring and the overpriced veto can see that the value is an artifact of
+  the bound.
 
 ## Testing
 
@@ -69,11 +70,15 @@ against the real cached data.
 
 ## Data quality (pre-existing, surfaced during review)
 
-- **`metadata["sector"]` is absent from every cached ticker.** The Screener
-  selector that populates it is not matching, so `sector_tailwind` scores
-  `unknown` for all 17 companies until a re-fetch. The wiring is correct; the
-  input is missing.
+- ~~**`metadata["sector"]` is absent from every cached ticker.**~~ **Resolved.**
+  Root cause: the page carries several `<p class="sub">` blocks (the first is
+  a "machine generated" disclaimer), so the first-anchor selector never found
+  the sector. Extraction now locates the `/market/` breadcrumb by its link
+  titles and prefers Broad Industry; study-bucket matching is plural-tolerant
+  ("Capital Market" matches Screener's "Capital Markets"). Live-verified on
+  CDSL. Tickers still need a re-fetch for their cached metadata to pick it up.
 
-- **The financials fetch bypasses its cache** (dead code in
-  `FinancialsFetcher.fetch_all`), so every run re-scrapes Screener.in. Deferred
-  by the plan's scope boundaries.
+- ~~**The financials fetch bypasses its cache**~~ **Resolved.** The dead
+  `_do_fetch`/`cache_key` code is gone; the Screener company page HTML now
+  goes through the TTL cache (`txt` entries), so repeat runs within the
+  window parse the cached page instead of re-scraping.

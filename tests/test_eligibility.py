@@ -32,6 +32,8 @@ def passing_metrics(**overrides) -> dict:
         "trailing_peg": MetricResult(value=1.2),
         "peg_ratio": MetricResult(value=1.1),
         "roiic": MetricResult(value=28.0),
+        # Veto source for the price gate: ran fine, emitted no flag.
+        "reverse_dcf_growth": MetricResult(value=12.0),
     }
     metrics.update(overrides)
     return metrics
@@ -114,6 +116,46 @@ class TestVetoFlags:
         ))
 
         assert verdict["gates"]["price"]["passed"] is False
+
+
+class TestVetoSourceAvailability:
+    """A veto whose source metric never ran is not evidence of affordability."""
+
+    def test_errored_veto_source_makes_the_gate_indeterminate(self):
+        verdict = evaluator().evaluate(passing_metrics(
+            reverse_dcf_growth=MetricResult(error="Negative average FCF"),
+        ))
+
+        assert verdict["gates"]["price"]["passed"] is None
+        assert verdict["verdict"] == "indeterminate"
+        assert "price" in verdict["indeterminate"]
+        assert "reverse_dcf_growth" in verdict["gates"]["price"]["reason"]
+
+    def test_missing_veto_source_makes_the_gate_indeterminate(self):
+        metrics = passing_metrics()
+        del metrics["reverse_dcf_growth"]
+
+        verdict = evaluator().evaluate(metrics)
+
+        assert verdict["gates"]["price"]["passed"] is None
+        assert verdict["verdict"] == "indeterminate"
+
+    def test_available_veto_source_without_flag_lets_conditions_decide(self):
+        """The source ran and did not flag: the PEG conditions rule."""
+        verdict = evaluator().evaluate(passing_metrics())
+
+        assert verdict["gates"]["price"]["passed"] is True
+
+    def test_gates_without_veto_sources_keep_flag_only_behavior(self):
+        gates = {"g": {
+            "label": "G",
+            "veto_flags": ["some_flag"],
+            "conditions": [{"metric": "market_cap", "comparator": "lt", "threshold": 30000}],
+        }}
+
+        verdict = EligibilityEvaluator(gates).evaluate(passing_metrics())
+
+        assert verdict["gates"]["g"]["passed"] is True
 
 
 class TestIndeterminate:

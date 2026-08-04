@@ -50,11 +50,16 @@ def _normalise(text: str) -> str:
 
 
 def _matches(sector: str, listed: str) -> bool:
-    """Whole-phrase match, so a short code like 'IT' cannot hit 'Securities'."""
+    """Whole-phrase match, tolerant of a trailing plural 's'.
+
+    Word boundaries stop a short code like 'IT' hitting 'Securities'; the
+    optional plural lets the study's 'Capital Market' match Screener's actual
+    breadcrumb label 'Capital Markets'.
+    """
     sector_n, listed_n = _normalise(sector), _normalise(listed)
     if sector_n == listed_n:
         return True
-    return re.search(rf"(?<!\w){re.escape(listed_n)}(?!\w)", sector_n) is not None
+    return re.search(rf"(?<!\w){re.escape(listed_n)}s?(?!\w)", sector_n) is not None
 
 
 def classify_sector(sector: str | None, context: dict | None = None) -> str:

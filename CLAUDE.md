@@ -9,7 +9,7 @@ Deep company analysis system for long-term investment in Indian markets, using t
 ## Architecture
 4-stage pipeline + service layer:
 - **Stage 1**: Data fetch (Screener.in, yfinance, BSE, Trendlyne) → `data_fetcher/`
-- **Stage 2**: Compute engine with YAML-driven metric registry (44 metrics) → `compute_engine/`
+- **Stage 2**: Compute engine with YAML-driven metric registry (51 metrics) → `compute_engine/`
 - **Stage 3**: SQGLP scoring + growth decomposition → `compute_engine/scorer.py`
 - **Stage 3.6**: 100x eligibility gates (conjunctive; separate from the additive composite) → `compute_engine/eligibility.py`
 - **Stage 4**: LLM analysis (2-pass: qualitative, synthesis) → `llm_layer/`
@@ -91,11 +91,14 @@ boundless100x/
 
 ## Key Patterns
 - **Metric registry**: YAML defines metrics in `elements/*.yaml`, Python functions in `builtin/*.py`. Engine auto-discovers both and rejects duplicate metric ids at startup. Adding a metric = 1 YAML entry + 1 function.
-- **Two outputs per company**: the additive SQGLP composite answers "is this a quality compounder?"; the conjunctive eligibility gates in `registry.yaml` answer "could this plausibly 100x?". A company can score well and still fail a gate — that is the point, not a bug.
+- **Two outputs per company**: the additive SQGLP composite answers "is this a quality compounder?"; the conjunctive eligibility gates in `registry.yaml` answer "could this plausibly 100x?". A company can score well and still fail a gate — that is the point, not a bug. Gates declare `veto_sources`: if the metric that would emit a veto flag (e.g. `reverse_dcf_growth`) is unavailable, the gate reads `indeterminate` rather than passing on ratios alone.
 - **Macro assumptions** (inflation, G-Sec yield, discount rate, terminal growth) live in `config.yaml` under `macro:` and reach metrics as parameter defaults; a metric's own YAML params override them.
 - **MetricResult**: Every compute function returns `MetricResult(value, raw_series, flags, metadata, error)`. Flags communicate data quality issues (e.g., `insufficient_history`, `possible_bonus_split`, `cfi_dominated_by_acquisitions`).
 - **Scoring**: Threshold-based (higher/lower_is_better), range_optimal, categorical, sector_relative_percentile, trend_direction modes. All defined in YAML. Scorer receives full MetricResult for trend analysis.
 - **Data contract**: Fetchers write to `raw_data/{TICKER}/` in standardized CSV/JSON. Compute engine reads from there. BSE codes auto-detected from Screener.in metadata.
+- **Screener page cache**: The company page HTML is cached via the TTL cache (`txt` entries), so repeat runs within the window do not re-scrape Screener. Parsing stays deterministic on the cached HTML.
+- **Price series**: `price_volume.csv` carries both `close` (raw traded) and `adj_close` (split/dividend-adjusted). Valuation metrics use the raw close against as-reported EPS and record `price_basis` in metadata; the backtest's realized return prefers `adj_close`. Files fetched before Aug 2026 hold a single legacy close — refetch to upgrade.
+- **Growth quality**: `_grade_growth_quality` in `builtin/growth.py` is the single grader for both the scored `growth_quality_grade` metric and the report/LLM lever table. YoY leverage ratios share one helper, `_mean_yoy_ratio`.
 - **FCF outlier detection**: MAD-based (Median Absolute Deviation) to identify M&A-dominated years. Applied in valuation.py, longevity.py, profitability.py via `_helpers.py`.
 - **Bonus/split detection**: YoY equity capital spikes >50% flagged as structural events. Organic dilution computed separately in growth.py.
 - **LLM prompt templates**: Use `.format()` with quadruple-braces `{{{{` for JSON schema escaping in prompt files.
@@ -121,6 +124,11 @@ boundless100x/
 - Test with: Astral, Bajaj Finance, TCS as reference companies
 - `.env` file at project root for `ANTHROPIC_API_KEY` (loaded by python-dotenv)
 
+## Known Issues (as of Aug 2026)
+- **BSE code extraction broken**: Screener no longer renders bseindia.com links server-side, so `bse_code` is null on fresh fetches — annual report downloads and BSE shareholding degrade until a new source (Trendlyne or a ticker→code map) is wired.
+- **Sector metadata**: only tickers fetched after the breadcrumb fix carry `metadata.sector` (extracted from the `/market/` breadcrumb, Broad Industry preferred; study-bucket matching is plural-tolerant). Older `raw_data/*/metadata.json` files lack it — refetch, or the Trendlyne analyst-coverage merge may backfill.
+- **Reverse DCF bounds**: the implied-growth search is bounded to [-10%, +50%]; pinned results now carry the `reverse_dcf_saturated` flag with `saturated_at` in metadata instead of silently returning 50.0/-10.0.
+
 ## Commands
 ```bash
 python -m boundless100x analyze ASTRAL          # Full pipeline (fetch + compute + LLM + report)
@@ -140,9 +148,9 @@ python -m pytest tests/                         # Unit tests (the live-network S
                                                 # run it with `-m network`)
 ```
 
-**Environment note**: the checked-in `venv/` is broken — its symlinks point at a
-Homebrew `python@3.14` that no longer exists, and it was built at the project's
-pre-iCloud path. Create a fresh environment (Python 3.11+) before running anything.
+**Environment note**: the checked-in `venv/` works (Python 3.11.15). Run
+everything through `venv/bin/python`; the suite is 185 tests green
+(`venv/bin/python -m pytest tests/`).
 
 ## GitHub
 - **Repo**: https://github.com/rishisareen/boundless100x (private)

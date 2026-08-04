@@ -70,10 +70,14 @@ class CacheManager:
             if path.exists():
                 with open(path) as f:
                     return json.load(f)
+        elif fmt == "txt":
+            path = base.with_suffix(".txt")
+            if path.exists():
+                return path.read_text(encoding="utf-8")
 
         return None
 
-    def set(self, key: str, data: pd.DataFrame | dict) -> None:
+    def set(self, key: str, data: pd.DataFrame | dict | str) -> None:
         """Store data in cache."""
         base = self._key_to_path(key)
 
@@ -84,13 +88,16 @@ class CacheManager:
             with open(base.with_suffix(".json"), "w") as f:
                 json.dump(data, f, indent=2, default=str)
             self._write_meta(key, "json")
+        elif isinstance(data, str):
+            base.with_suffix(".txt").write_text(data, encoding="utf-8")
+            self._write_meta(key, "txt")
         else:
             raise TypeError(f"Unsupported cache type: {type(data)}")
 
     def invalidate(self, key: str) -> None:
         """Remove a cached entry."""
         base = self._key_to_path(key)
-        for suffix in [".csv", ".json", ".meta"]:
+        for suffix in [".csv", ".json", ".txt", ".meta"]:
             path = base.with_suffix(suffix)
             if path.exists():
                 path.unlink()
@@ -99,7 +106,7 @@ class CacheManager:
         """Remove all cached data. Returns count of removed entries."""
         count = 0
         for path in self.cache_dir.iterdir():
-            if path.suffix in (".csv", ".json", ".meta"):
+            if path.suffix in (".csv", ".json", ".txt", ".meta"):
                 path.unlink()
                 count += 1
         return count

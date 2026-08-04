@@ -187,14 +187,20 @@ class WalkForwardBacktest:
 
     @staticmethod
     def _realized_return(price: pd.DataFrame, truncation_date: pd.Timestamp) -> tuple[float | None, dict]:
-        """Annualised return from the truncation date to the latest close."""
+        """Annualised return from the truncation date to the latest close.
+
+        Uses the split/dividend-adjusted close when the series carries one —
+        a raw close would read a 1:5 split as an 80% loss. Falls back to the
+        raw close for legacy price files.
+        """
         at_or_before = price[price["date"] <= truncation_date]
         after = price[price["date"] > truncation_date]
         if at_or_before.empty or after.empty:
             return None, {"reason": "no price on both sides of the truncation date"}
 
+        column = "adj_close" if "adj_close" in price.columns else "close"
         start_row, end_row = at_or_before.iloc[-1], after.iloc[-1]
-        start, end = float(start_row["close"]), float(end_row["close"])
+        start, end = float(start_row[column]), float(end_row[column])
         days = (end_row["date"] - start_row["date"]).days
         if start <= 0 or end <= 0:
             return None, {"reason": "non-positive close price at a window endpoint"}
@@ -206,6 +212,7 @@ class WalkForwardBacktest:
             "from": str(start_row["date"].date()),
             "to": str(end_row["date"].date()),
             "years": round(years, 2),
+            "price_series": column,
         }
 
     # ── orchestration ────────────────────────────────────────────────────

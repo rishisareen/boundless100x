@@ -67,7 +67,13 @@ class PriceVolumeFetcher(BaseFetcher):
     def _fetch_yfinance(
         self, ticker: str, start: date, end: date
     ) -> pd.DataFrame | None:
-        """Primary: fetch from Yahoo Finance (append .NS for NSE tickers)."""
+        """Primary: fetch from Yahoo Finance (append .NS for NSE tickers).
+
+        auto_adjust=False keeps the raw traded Close alongside Adj Close.
+        Valuation metrics need the price anyone actually saw (raw) against
+        as-reported EPS; return measurement needs the split/dividend-adjusted
+        series. Storing both keeps each consumer honest.
+        """
         try:
             import yfinance as yf
 
@@ -78,6 +84,7 @@ class PriceVolumeFetcher(BaseFetcher):
                 start=start.isoformat(),
                 end=end.isoformat(),
                 progress=False,
+                auto_adjust=False,
             )
             if df.empty:
                 logger.warning(f"yfinance returned empty data for {yf_ticker}")
@@ -127,7 +134,12 @@ class PriceVolumeFetcher(BaseFetcher):
             return None
 
     def _normalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Normalize column names to standard format."""
+        """Normalize column names to standard format.
+
+        `close` is the raw traded close; `adj_close` is the split/dividend
+        adjusted close. Sources without an adjusted series (jugaad-data)
+        get adj_close = close.
+        """
         # Handle yfinance multi-level columns (e.g., ('Close', 'ASTRAL.NS'))
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
@@ -143,15 +155,20 @@ class PriceVolumeFetcher(BaseFetcher):
                 col_map[col] = "high"
             elif lower in ("low", "ch_trade_low_price"):
                 col_map[col] = "low"
-            elif lower in ("close", "adj close", "ch_closing_price"):
+            elif lower in ("close", "ch_closing_price"):
                 col_map[col] = "close"
+            elif lower == "adj close":
+                col_map[col] = "adj_close"
             elif lower in ("volume", "ch_tot_traded_qty"):
                 col_map[col] = "volume"
 
         df = df.rename(columns=col_map)
 
+        if "adj_close" not in df.columns and "close" in df.columns:
+            df["adj_close"] = df["close"]
+
         # Keep only standard columns
-        standard = ["date", "open", "high", "low", "close", "volume"]
+        standard = ["date", "open", "high", "low", "close", "adj_close", "volume"]
         available = [c for c in standard if c in df.columns]
         df = df[available].copy()
 

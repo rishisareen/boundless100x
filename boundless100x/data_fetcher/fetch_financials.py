@@ -171,11 +171,25 @@ class FinancialsFetcher(BaseFetcher):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def _get_company_page(self, ticker: str) -> BeautifulSoup:
-        """Fetch and parse the consolidated company page."""
+    def _get_company_page_html(self, ticker: str) -> str:
+        """Fetch the consolidated company page HTML (network call)."""
         url = f"{SCREENER_BASE}/company/{ticker}/consolidated/"
         resp = self._get(url)
-        return BeautifulSoup(resp.text, "html.parser")
+        return resp.text
+
+    def _get_company_page(self, ticker: str) -> BeautifulSoup:
+        """Return the parsed company page, using the TTL cache when fresh.
+
+        The page is the single source for every section (P&L, BS, CF, ratios,
+        shareholding, metadata), so the HTML itself is what gets cached —
+        parsing stays deterministic and the network is hit at most once per
+        TTL window per ticker.
+        """
+        html = self.fetch_with_cache(
+            f"screener_page_{ticker}",
+            lambda: self._get_company_page_html(ticker),
+        )
+        return BeautifulSoup(html, "html.parser")
 
     def _get_company_metadata(self, soup: BeautifulSoup) -> dict:
         """Extract company metadata from the page."""
@@ -206,12 +220,31 @@ class FinancialsFetcher(BaseFetcher):
         if title_el:
             meta["name"] = title_el.get_text(strip=True)
 
-        # Sector from company-info area
-        sub_el = soup.find("p", class_="sub")
-        if sub_el:
-            sector_link = sub_el.find("a")
-            if sector_link:
-                meta["sector"] = sector_link.get_text(strip=True)
+        # Sector from the market breadcrumb (Broad Sector → Sector → Broad
+        # Industry → Industry). The page carries several <p class="sub">
+        # blocks — one is a "pros and cons are machine generated" disclaimer —
+        # so locate the breadcrumb by its /market/ links and their title
+        # attributes, not by position. The tailwind buckets in
+        # sector_context.yaml name industry groups at the Broad Industry
+        # granularity ("Capital Market", "Finance"), so prefer that level —
+        # the hyper-specific Industry leaf ("Depositories, Clearing Houses
+        # and Other Intermediaries") matches no study bucket.
+        breadcrumb = {}
+        for a in soup.find_all("a", href=True):
+            title = (a.get("title") or "").strip()
+            if (
+                title in ("Broad Sector", "Sector", "Broad Industry", "Industry")
+                and a["href"].startswith("/market/")
+                and title not in breadcrumb
+            ):
+                breadcrumb[title] = a.get_text(strip=True)
+        if breadcrumb:
+            for level in ("Broad Industry", "Sector", "Industry", "Broad Sector"):
+                if breadcrumb.get(level):
+                    meta["sector"] = breadcrumb[level]
+                    break
+            meta["sector_broad"] = breadcrumb.get("Broad Sector")
+            meta["sector_industry"] = breadcrumb.get("Industry")
 
         # BSE code from bseindia.com link on the page
         # Pattern: https://www.bseindia.com/stock-share-price/.../TICKER/532830/
@@ -230,23 +263,10 @@ class FinancialsFetcher(BaseFetcher):
         """Fetch all financial data for a ticker.
 
         Returns dict with keys: financials, balance_sheet, cashflow, ratios,
-        metadata, growth_summary.
-
-        Also saves to CSV files in output_dir if provided.
+        metadata, growth_summary. The company page comes through the TTL cache
+        (see _get_company_page), so repeat runs within the window do not
+        re-scrape Screener. Saves to CSV files in output_dir if provided.
         """
-
-        def _do_fetch():
-            soup = self._get_company_page(ticker)
-            return self._parse_all(soup, ticker, output_dir)
-
-        cache_key = f"financials_{ticker}"
-        # We cache the metadata dict; individual DataFrames are saved to disk
-        # For cache, we just track that fetch was done
-        result = self._do_fetch_with_save(ticker, output_dir)
-        return result
-
-    def _do_fetch_with_save(self, ticker: str, output_dir: str | None) -> dict:
-        """Internal: fetch, parse, and optionally save all data."""
         soup = self._get_company_page(ticker)
         return self._parse_all(soup, ticker, output_dir)
 

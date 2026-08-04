@@ -88,39 +88,90 @@ def compute_cagr(data: dict, params: dict) -> MetricResult:
     )
 
 
+def _mean_yoy_ratio(
+    numerator: pd.Series, denominator: pd.Series, cap: float = 5.0
+) -> tuple[float | None, list[float]]:
+    """Mean of capped (%Δ numerator) / (%Δ denominator) across consecutive years.
+
+    The one implementation of the leverage-ratio loop: operating leverage is
+    %ΔEBIT / %Δrevenue, financial leverage is %ΔEPS / %ΔEBIT. Years where the
+    denominator did not change carry no signal and are skipped; each surviving
+    ratio is capped at ±cap so one distorted year cannot set the average.
+    """
+    num = pd.to_numeric(numerator, errors="coerce").dropna()
+    den = pd.to_numeric(denominator, errors="coerce").dropna()
+
+    n = min(len(num), len(den))
+    if n < 2:
+        return None, []
+
+    num_v = num.tail(n).values
+    den_v = den.tail(n).values
+
+    ratios = []
+    for i in range(1, n):
+        num_chg = (num_v[i] - num_v[i - 1]) / num_v[i - 1] if num_v[i - 1] != 0 else 0
+        den_chg = (den_v[i] - den_v[i - 1]) / den_v[i - 1] if den_v[i - 1] != 0 else 0
+        if den_chg != 0:
+            ratios.append(max(-cap, min(cap, num_chg / den_chg)))
+
+    if not ratios:
+        return None, []
+    return float(np.mean(ratios)), ratios
+
+
+def _grade_growth_quality(
+    vol_growth: float, price_signal: str, op_lever: float, fin_lever: float
+) -> tuple[str, list[str]]:
+    """The single source of truth for growth-quality grades.
+
+    Used by both the scored metric (compute_growth_quality) and the report/LLM
+    lever table (_synthesize_growth_quality), so a company can never receive
+    two different grades in one report. Returns (grade, primary_drivers).
+    """
+    drivers = []
+    if vol_growth >= 10:
+        drivers.append("Volume expansion")
+    if price_signal in ("strong_pricing_power", "moderate_pricing"):
+        drivers.append("Price realization")
+    if op_lever >= 1.1:
+        drivers.append("Operating leverage")
+    if fin_lever >= 1.3:
+        drivers.append("Financial leverage")
+
+    if "Volume expansion" in drivers and "Operating leverage" in drivers:
+        quality = "high_quality"
+    elif "Financial leverage" in drivers and len(drivers) == 1:
+        quality = "risky"
+    elif "Financial leverage" in drivers or not drivers:
+        quality = "low_quality"
+    else:
+        quality = "moderate"
+
+    return quality, drivers
+
+
 def compute_operating_leverage(data: dict, params: dict) -> MetricResult:
     """Operating Leverage = %Δ EBIT / %Δ Revenue (average over N years)."""
     years = params.get("years", 5)
     df = _get_annual_rows(data["financials"], years + 1)
 
+    if "revenue" not in df.columns or "operating_profit" not in df.columns:
+        return MetricResult(error="Missing revenue/operating_profit columns")
+
     revenue = pd.to_numeric(df["revenue"], errors="coerce").dropna()
     op = pd.to_numeric(df["operating_profit"], errors="coerce").dropna()
-
-    n = min(len(revenue), len(op))
-    if n < 3:
+    if min(len(revenue), len(op)) < 3:
         return MetricResult(error="Insufficient data for operating leverage")
 
-    rev = revenue.tail(n).values
-    ebit = op.tail(n).values
-
-    leverages = []
-    for i in range(1, len(rev)):
-        rev_chg = (rev[i] - rev[i - 1]) / rev[i - 1] if rev[i - 1] != 0 else 0
-        ebit_chg = (ebit[i] - ebit[i - 1]) / ebit[i - 1] if ebit[i - 1] != 0 else 0
-        if rev_chg != 0:
-            leverages.append(ebit_chg / rev_chg)
-
-    if not leverages:
+    avg, series = _mean_yoy_ratio(op, revenue)
+    if avg is None:
         return MetricResult(error="Cannot compute operating leverage")
-
-    # Trim outliers (cap at ±5x)
-    leverages = [max(-5, min(5, x)) for x in leverages]
-    avg = float(np.mean(leverages))
 
     return MetricResult(
         value=avg,
-        raw_series=leverages,
-        metadata={"years_used": len(leverages)},
+        raw_series=series,
+        metadata={"years_used": len(series)},
     )
 
 
@@ -129,43 +180,32 @@ def compute_financial_leverage(data: dict, params: dict) -> MetricResult:
     years = params.get("years", 5)
     df = _get_annual_rows(data["financials"], years + 1)
 
+    if "operating_profit" not in df.columns or "eps" not in df.columns:
+        return MetricResult(error="Missing operating_profit/eps columns")
+
     op = pd.to_numeric(df["operating_profit"], errors="coerce").dropna()
     eps = pd.to_numeric(df["eps"], errors="coerce").dropna()
-
-    n = min(len(op), len(eps))
-    if n < 3:
+    if min(len(op), len(eps)) < 3:
         return MetricResult(error="Insufficient data for financial leverage")
 
-    ebit = op.tail(n).values
-    eps_vals = eps.tail(n).values
-
-    leverages = []
-    for i in range(1, len(ebit)):
-        ebit_chg = (ebit[i] - ebit[i - 1]) / ebit[i - 1] if ebit[i - 1] != 0 else 0
-        eps_chg = (eps_vals[i] - eps_vals[i - 1]) / eps_vals[i - 1] if eps_vals[i - 1] != 0 else 0
-        if ebit_chg != 0:
-            leverages.append(eps_chg / ebit_chg)
-
-    if not leverages:
+    avg, series = _mean_yoy_ratio(eps, op)
+    if avg is None:
         return MetricResult(error="Cannot compute financial leverage")
-
-    leverages = [max(-5, min(5, x)) for x in leverages]
-    avg = float(np.mean(leverages))
 
     return MetricResult(
         value=avg,
-        raw_series=leverages,
-        metadata={"years_used": len(leverages)},
+        raw_series=series,
+        metadata={"years_used": len(series)},
     )
 
 
 def compute_growth_quality(data: dict, params: dict) -> MetricResult:
-    """Growth Quality Grade based on 4-lever decomposition.
+    """Growth Quality Grade from the 4-lever decomposition.
 
-    High Quality: Revenue growth + Operating leverage > 1
-    Moderate: Revenue growth + some pricing power
-    Low Quality: Financial leverage driven
-    Risky: Earnings growth primarily from financial leverage
+    Uses _grade_growth_quality — the same grading the report's lever table
+    and LLM Pass 2 see — so the scored metric and the narrative can never
+    disagree. The price/volume lever comes from compute_price_lever with the
+    metric's params (engine injects the macro block).
     """
     years = params.get("years", 5)
     df = _get_annual_rows(data["financials"], years + 1)
@@ -178,37 +218,25 @@ def compute_growth_quality(data: dict, params: dict) -> MetricResult:
     if n < 3:
         return MetricResult(error="Insufficient data for growth quality")
 
-    # Compute average operating and financial leverage
+    avg_op_lev, _ = _mean_yoy_ratio(op, revenue)
+    avg_fin_lev, _ = _mean_yoy_ratio(eps, op)
+    if avg_op_lev is None:
+        avg_op_lev = 1.0
+    if avg_fin_lev is None:
+        avg_fin_lev = 1.0
+
+    # Volume & price levers via the shared price-lever metric (macro params
+    # reach it here the same way they reach it when the engine runs it).
+    price_lever = compute_price_lever(data, {**params, "years": years})
+    price_signal = price_lever.value if price_lever.ok else "unknown"
+    vol_growth = (price_lever.metadata or {}).get("estimated_volume_growth", 0.0) \
+        if price_lever.ok else 0.0
+
+    grade, drivers = _grade_growth_quality(vol_growth, price_signal, avg_op_lev, avg_fin_lev)
+
+    # Revenue CAGR for metadata (unsmoothed, over the same window)
     rev = revenue.tail(n).values
-    ebit = op.tail(n).values
-    eps_vals = eps.tail(n).values
-
-    op_levs = []
-    fin_levs = []
-    for i in range(1, len(rev)):
-        rev_chg = (rev[i] - rev[i - 1]) / rev[i - 1] if rev[i - 1] != 0 else 0
-        ebit_chg = (ebit[i] - ebit[i - 1]) / ebit[i - 1] if ebit[i - 1] != 0 else 0
-        eps_chg = (eps_vals[i] - eps_vals[i - 1]) / eps_vals[i - 1] if eps_vals[i - 1] != 0 else 0
-
-        if rev_chg != 0:
-            op_levs.append(max(-5, min(5, ebit_chg / rev_chg)))
-        if ebit_chg != 0:
-            fin_levs.append(max(-5, min(5, eps_chg / ebit_chg)))
-
-    avg_op_lev = np.mean(op_levs) if op_levs else 1.0
-    avg_fin_lev = np.mean(fin_levs) if fin_levs else 1.0
-
-    # Revenue CAGR
     rev_cagr = ((rev[-1] / rev[0]) ** (1 / (len(rev) - 1)) - 1) if rev[0] > 0 and rev[-1] > 0 else 0
-
-    if rev_cagr > 0.10 and avg_op_lev > 1.0:
-        grade = "high_quality"
-    elif rev_cagr > 0.05 and avg_op_lev >= 0.8:
-        grade = "moderate"
-    elif avg_fin_lev > 1.5:
-        grade = "risky"
-    else:
-        grade = "low_quality"
 
     flags = [f"growth_quality_{grade}"]
 
@@ -219,6 +247,9 @@ def compute_growth_quality(data: dict, params: dict) -> MetricResult:
             "avg_operating_leverage": float(avg_op_lev),
             "avg_financial_leverage": float(avg_fin_lev),
             "revenue_cagr": float(rev_cagr * 100),
+            "price_lever_signal": price_signal,
+            "estimated_volume_growth": float(vol_growth),
+            "primary_drivers": drivers,
         },
     )
 
@@ -383,51 +414,29 @@ def compute_price_lever(data: dict, params: dict) -> MetricResult:
 
 
 def _compute_operating_leverage_avg(df: pd.DataFrame, years: int) -> float:
-    """Compute average operating leverage from financials DataFrame."""
+    """Average operating leverage, defaulting to neutral (1.0) when unknown."""
     if "revenue" not in df.columns or "operating_profit" not in df.columns:
         return 1.0
-    revenue = pd.to_numeric(df["revenue"], errors="coerce").dropna()
-    op = pd.to_numeric(df["operating_profit"], errors="coerce").dropna()
-
-    n = min(len(revenue), len(op))
-    if n < 3:
+    if min(
+        len(pd.to_numeric(df["revenue"], errors="coerce").dropna()),
+        len(pd.to_numeric(df["operating_profit"], errors="coerce").dropna()),
+    ) < 3:
         return 1.0
-
-    rev = revenue.tail(n).values
-    ebit = op.tail(n).values
-
-    leverages = []
-    for i in range(1, len(rev)):
-        rev_chg = (rev[i] - rev[i - 1]) / rev[i - 1] if rev[i - 1] != 0 else 0
-        ebit_chg = (ebit[i] - ebit[i - 1]) / ebit[i - 1] if ebit[i - 1] != 0 else 0
-        if rev_chg != 0:
-            leverages.append(max(-5, min(5, ebit_chg / rev_chg)))
-
-    return float(np.mean(leverages)) if leverages else 1.0
+    avg, _ = _mean_yoy_ratio(df["operating_profit"], df["revenue"])
+    return avg if avg is not None else 1.0
 
 
 def _compute_financial_leverage_avg(df: pd.DataFrame, years: int) -> float:
-    """Compute average financial leverage from financials DataFrame."""
+    """Average financial leverage, defaulting to neutral (1.0) when unknown."""
     if "operating_profit" not in df.columns or "eps" not in df.columns:
         return 1.0
-    op = pd.to_numeric(df["operating_profit"], errors="coerce").dropna()
-    eps = pd.to_numeric(df["eps"], errors="coerce").dropna()
-
-    n = min(len(op), len(eps))
-    if n < 3:
+    if min(
+        len(pd.to_numeric(df["operating_profit"], errors="coerce").dropna()),
+        len(pd.to_numeric(df["eps"], errors="coerce").dropna()),
+    ) < 3:
         return 1.0
-
-    ebit = op.tail(n).values
-    eps_vals = eps.tail(n).values
-
-    leverages = []
-    for i in range(1, len(ebit)):
-        ebit_chg = (ebit[i] - ebit[i - 1]) / ebit[i - 1] if ebit[i - 1] != 0 else 0
-        eps_chg = (eps_vals[i] - eps_vals[i - 1]) / eps_vals[i - 1] if eps_vals[i - 1] != 0 else 0
-        if ebit_chg != 0:
-            leverages.append(max(-5, min(5, eps_chg / ebit_chg)))
-
-    return float(np.mean(leverages)) if leverages else 1.0
+    avg, _ = _mean_yoy_ratio(df["eps"], df["operating_profit"])
+    return avg if avg is not None else 1.0
 
 
 def _compute_cagr_from_series(
@@ -557,37 +566,17 @@ def _synthesize_growth_quality(
     fin_lever: float,
     price_lever: MetricResult,
 ) -> dict:
-    """Determine the primary growth driver and flag quality."""
-    drivers = []
+    """Determine the primary growth driver and flag quality.
 
-    # Check volume
-    vol_growth = (price_lever.metadata or {}).get("estimated_volume_growth", 0)
-    if vol_growth >= 10:
-        drivers.append("Volume expansion")
+    Grades through _grade_growth_quality — the same function the scored
+    growth_quality_grade metric uses — so the report and the composite can
+    never show two different grades for one company.
+    """
+    vol_growth = (price_lever.metadata or {}).get("estimated_volume_growth", 0) \
+        if price_lever.ok else 0
+    price_signal = price_lever.value if price_lever.ok else "unknown"
 
-    # Check pricing power
-    if price_lever.value in ("strong_pricing_power", "moderate_pricing"):
-        drivers.append("Price realization")
-
-    # Check operating leverage
-    if op_lever >= 1.1:
-        drivers.append("Operating leverage")
-
-    # Check financial leverage
-    if fin_lever >= 1.3:
-        drivers.append("Financial leverage")
-
-    # Determine quality flag
-    if "Volume expansion" in drivers and "Operating leverage" in drivers:
-        quality = "high_quality"
-    elif "Volume expansion" in drivers and "Price realization" in drivers:
-        quality = "moderate"
-    elif "Financial leverage" in drivers and len(drivers) == 1:
-        quality = "risky"
-    elif "Financial leverage" in drivers:
-        quality = "low_quality"
-    else:
-        quality = "moderate"
+    quality, drivers = _grade_growth_quality(vol_growth, price_signal, op_lever, fin_lever)
 
     # Build narrative
     narrative_parts = []
@@ -611,8 +600,8 @@ def _synthesize_growth_quality(
         )
     elif quality == "low_quality":
         narrative_parts.append(
-            "FLAG: Significant financial leverage contribution detected. "
-            "Growth quality is compromised — not purely operating-driven."
+            "FLAG: Growth lacks operating drivers or relies on financial "
+            "leverage. Growth quality is compromised — not purely operating-driven."
         )
 
     return {

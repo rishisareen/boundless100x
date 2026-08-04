@@ -41,6 +41,9 @@ DEFAULT_GATES = {
             {"metric": "peg_ratio", "comparator": "lt", "threshold": 1.5},
         ],
         "veto_flags": ["reverse_dcf_overpriced"],
+        # Metrics expected to emit the veto flags. If they are unavailable, the
+        # absence of the flag proves nothing and the gate is indeterminate.
+        "veto_sources": ["reverse_dcf_growth"],
     },
     "reinvestment": {
         "label": "Incremental returns",
@@ -109,7 +112,8 @@ class EligibilityEvaluator:
         }
 
         # A veto flag disqualifies regardless of how the ratios read.
-        for flag in spec.get("veto_flags", []) or []:
+        veto_flags = spec.get("veto_flags", []) or []
+        for flag in veto_flags:
             carriers = [
                 mid for mid, result in metrics.items()
                 if getattr(result, "flags", None) and flag in result.flags
@@ -117,6 +121,25 @@ class EligibilityEvaluator:
             if carriers:
                 detail["passed"] = False
                 detail["reason"] = f"{label} vetoed by {flag} on {', '.join(sorted(carriers))}"
+                return detail
+
+        # No metric carried the veto — but that is only reassuring if the metric
+        # that would have emitted it actually ran. A veto whose source errored
+        # reads indeterminate, matching how missing conditions are handled.
+        veto_sources = spec.get("veto_sources", []) or []
+        if veto_flags and veto_sources:
+            unavailable = []
+            for mid in veto_sources:
+                result = metrics.get(mid)
+                if result is None or not getattr(result, "ok", False) or result.value is None:
+                    unavailable.append(mid)
+            if unavailable:
+                detail["passed"] = None
+                detail["reason"] = (
+                    f"{label} indeterminate: veto source(s) "
+                    f"{', '.join(sorted(unavailable))} unavailable — absence of "
+                    f"{', '.join(veto_flags)} cannot be confirmed"
+                )
                 return detail
 
         outcomes = []

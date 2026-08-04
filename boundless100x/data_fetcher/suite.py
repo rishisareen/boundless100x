@@ -72,8 +72,8 @@ class DataFetcherSuite:
 
         # 1. Screener.in financials (P&L, BS, CF, Ratios, Shareholding)
         try:
-            screener_data = self.financials._do_fetch_with_save(
-                ticker, self.raw_data_dir
+            screener_data = self.financials.fetch_all(
+                ticker, output_dir=self.raw_data_dir
             )
             data["financials"] = screener_data.get("financials", pd.DataFrame())
             data["balance_sheet"] = screener_data.get("balance_sheet", pd.DataFrame())

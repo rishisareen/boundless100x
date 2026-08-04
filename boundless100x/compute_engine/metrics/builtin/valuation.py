@@ -191,6 +191,15 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
     if price is None or len(price) == 0:
         return MetricResult(error="No price history for historical P/E band")
 
+    # The band divides each past year-end close by that year's as-reported
+    # EPS, so it needs the raw traded close. Fetches after the adj_close
+    # schema carry both series; older caches hold a single close whose
+    # adjustment status is unknown — the band is computed either way, but the
+    # basis is recorded so a distorted read is traceable.
+    price_basis = (
+        "raw_close" if "adj_close" in price.columns else "legacy_close_unknown_adjustment"
+    )
+
     price = price.copy()
     price["date"] = pd.to_datetime(price["date"], errors="coerce", utc=True).dt.tz_localize(None)
     price = price.dropna(subset=["date"]).sort_values("date")
@@ -238,6 +247,7 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
             "pe_max": round(max(historical_pes), 2),
             "pe_median": round(float(np.median(historical_pes)), 2),
             "current_pe": float(current_pe),
+            "price_basis": price_basis,
         },
     )
 
@@ -366,7 +376,10 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
     terminal_growth = float(params.get("terminal_growth", 0.04))
     projection_years = int(params.get("projection_years", 10))
 
-    # Binary search for implied growth
+    # Binary search for implied growth, bounded to [-10%, +50%]. A company
+    # priced beyond a bound pins to it — directionally meaningful, but the
+    # exact value is then an artifact of the bound rather than a measurement,
+    # and it feeds both scoring and the price-gate veto, so it must say so.
     low, high = -0.10, 0.50
     for _ in range(50):
         mid = (low + high) / 2
@@ -384,6 +397,11 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
             high = mid
 
     implied_growth = (low + high) / 2 * 100
+    saturated_at = None
+    if low > 0.50 - 1e-6:
+        saturated_at = "ceiling"  # market implies 50%+ growth — search ran out of room
+    elif high < -0.10 + 1e-6:
+        saturated_at = "floor"    # market prices below a 10% perpetual decline
 
     # Compare to actual revenue CAGR
     fin = _get_annual_rows(data["financials"], 6)
@@ -393,6 +411,8 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
         actual_cagr = ((revenue.iloc[-1] / revenue.iloc[0]) ** (1 / (len(revenue) - 1)) - 1) * 100
 
     flags = []
+    if saturated_at is not None:
+        flags.append("reverse_dcf_saturated")
     if actual_cagr is not None and implied_growth > actual_cagr * 1.5:
         flags.append("reverse_dcf_overpriced")
     elif actual_cagr is not None and implied_growth < actual_cagr * 0.7:
@@ -404,6 +424,8 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
         metadata={
             "actual_cagr": actual_cagr,
             "avg_fcf": avg_fcf,
+            "saturated_at": saturated_at,
+            "search_bounds_pct": [-10.0, 50.0],
         },
     )
 

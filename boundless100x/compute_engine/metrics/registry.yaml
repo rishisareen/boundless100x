@@ -36,6 +36,9 @@ eligibility_gates:
       - { metric: trailing_peg, comparator: lt, threshold: 2.0 }
       - { metric: peg_ratio, comparator: lt, threshold: 1.5 }
     veto_flags: ["reverse_dcf_overpriced"]
+    # Metrics expected to emit the veto flags. If one is unavailable, the
+    # absence of its flag proves nothing and the gate reads indeterminate.
+    veto_sources: ["reverse_dcf_growth"]
 
   reinvestment:
     label: "Incremental returns"
