@@ -10,7 +10,10 @@ against the real cached data.
 
 ## Correctness / design
 
-- **The 4-lever decomposition bypasses the macro config.**
+- **The 4-lever decomposition bypasses the macro config.** *(Partly addressed:
+  the narrative text now quotes the inflation assumption actually used, but the
+  decomposition still calls `compute_price_lever` without the macro dict, so a
+  changed `inflation_pct` reaches the registry metric and not the table.)*
   `compute_lever_decomposition_table` calls `compute_price_lever(data, {"years": years})`
   directly, so a changed `macro.inflation_pct` reaches the registry-scored
   `price_lever_signal` metric but not the narrative table in the report. The two
@@ -29,11 +32,9 @@ against the real cached data.
   threshold that silently drops the metric instead of scoring the gap. Base the
   flag on rows available rather than on the post-`dropna` count.
 
-- **`short_history_smallcap` is emitted but never displayed.**
-  The scorer surfaces it in `scores["flags"]`, and nothing reads it. A waived
-  composite is presented on the same 0–10 scale as a fully evidenced one with no
-  visible marker. Consider a coverage ratio (scored weight / total weight) beside
-  the composite whenever the waiver fires.
+- ~~**`short_history_smallcap` is emitted but never displayed.**~~ **Resolved.**
+  Scores now carry a coverage block (share of declared weight, per element and
+  overall) that the report and CLI render, and waived metrics count as absent.
 
 - **The backtest never exercises the production scorer's history waiver.**
   Market cap is withheld under truncation, so `_waived_for_history` always
