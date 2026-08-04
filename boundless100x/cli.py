@@ -452,13 +452,26 @@ def _print_llm_summary(result):
 
     p2 = llm.get("pass2", {})
     if p2 and not p2.get("error") and not p2.get("skipped"):
+        # The guarded action, never the raw p2 one — the console is a decision
+        # surface too, and it prints the eligibility gates just above this.
+        decision = result.final_action or {}
+        action = decision.get("action", p2.get("suggested_action", "N/A"))
+
         console.print("\n[bold]Investment Thesis:[/bold]")
         console.print(f"  {p2.get('thesis', 'N/A')}")
         console.print(
             f"  Conviction: [bold]{p2.get('conviction_level', 'N/A')}[/bold] | "
-            f"Action: [bold]{p2.get('suggested_action', 'N/A')}[/bold] | "
+            f"Action: [bold]{action}[/bold] | "
             f"Period: {p2.get('target_holding_period', 'N/A')}"
         )
+        if decision.get("constraints"):
+            if decision.get("capped"):
+                console.print(
+                    f"  [yellow]Capped from {decision['llm_action']} "
+                    f"to {decision['ceiling']}:[/yellow]"
+                )
+            for reason in decision["constraints"]:
+                console.print(f"    [yellow]- {reason}[/yellow]")
 
     usage = llm.get("usage", {})
     if usage:

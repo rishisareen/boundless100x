@@ -724,6 +724,28 @@ class ReportGenerator:
             ],
         }
 
+    @staticmethod
+    def _resolve_action(result) -> dict:
+        """The action this report may display, guarded at the render boundary.
+
+        Prefers the service's already-resolved decision, and recomputes it the
+        same way when absent — mirroring _compute_growth_decomposition, so a
+        report built from a hand-assembled AnalysisResult cannot slip an
+        unchecked action past the eligibility verdict shown beside it.
+        """
+        decision = getattr(result, "final_action", None)
+        if decision:
+            return decision
+
+        from boundless100x.action_policy import resolve_final_action
+
+        p2 = (getattr(result, "llm_analysis", None) or {}).get("pass2") or {}
+        return resolve_final_action(
+            p2.get("suggested_action"),
+            getattr(result, "eligibility", None),
+            getattr(result, "scores", None),
+        )
+
     def _build_executive_summary(self, result) -> dict:
         """Build executive summary data for the decision dashboard."""
         metadata = result.data.get("metadata", {})
@@ -740,6 +762,7 @@ class ReportGenerator:
             "market_cap": metadata.get("Market Cap"),
             "has_llm": False,
             "suggested_action": None,
+            "action_constraint": {},
             "conviction_level": None,
             "thesis": None,
             "holding_period": None,
@@ -751,8 +774,14 @@ class ReportGenerator:
         if llm and not llm.get("skipped"):
             p2 = llm.get("pass2", {})
             if p2 and not p2.get("error") and not p2.get("skipped"):
+                # Never the raw p2 action: it has not been checked against the
+                # eligibility verdict rendered beside it. Recomputed here when
+                # the service did not supply one, so the guard holds for any
+                # AnalysisResult handed to the generator.
+                decision = self._resolve_action(result)
                 summary["has_llm"] = True
-                summary["suggested_action"] = p2.get("suggested_action")
+                summary["suggested_action"] = decision.get("action")
+                summary["action_constraint"] = decision
                 summary["conviction_level"] = p2.get("conviction_level")
                 summary["thesis"] = p2.get("thesis")
                 summary["holding_period"] = p2.get("target_holding_period")

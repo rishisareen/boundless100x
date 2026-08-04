@@ -14,6 +14,7 @@ import anthropic
 
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.llm_layer.checklist import (
+    build_eligibility_context,
     build_flags_context,
     build_growth_decomposition_context,
     build_key_metrics_context,
@@ -70,8 +71,14 @@ class LLMOrchestrator:
         annual_report_text: str | None = None,
         sector_context: str = "",
         growth_decomposition: dict | None = None,
+        eligibility: dict | None = None,
     ) -> dict:
         """Run the full 2-pass LLM analysis.
+
+        `eligibility` is explanatory context for Pass 2 so its thesis reads
+        coherently against the 100x verdict. It is not a control: the action
+        the report displays is capped in deterministic code afterwards (see
+        action_policy), never by trusting the model to comply.
 
         Returns dict with keys: pass1, pass2, usage.
         """
@@ -110,6 +117,7 @@ class LLMOrchestrator:
             scores=scores,
             pass1_output=results["pass1"],
             growth_decomposition=growth_decomposition,
+            eligibility=eligibility,
         )
 
         # Summarize usage
@@ -157,6 +165,7 @@ class LLMOrchestrator:
         scores: dict,
         pass1_output: dict,
         growth_decomposition: dict | None = None,
+        eligibility: dict | None = None,
     ) -> dict:
         template = self._load_template("pass2_synthesis.txt")
 
@@ -176,6 +185,7 @@ class LLMOrchestrator:
             qg_quadrant=build_qg_quadrant_context(metrics),
             pass1_output=pass1_text[:2000],  # Truncate
             growth_quality_report=build_growth_decomposition_context(growth_decomposition),
+            eligibility_context=build_eligibility_context(eligibility),
         )
 
         return self._call_api(self.pass2_model, prompt, "pass2")

@@ -25,6 +25,9 @@ Sector: {sector}
 ## Growth Quality Report (pre-computed 3-lever decomposition)
 {growth_quality_report}
 
+## 100x Eligibility (deterministic — already decided, not yours to revise)
+{eligibility_context}
+
 ## Instructions
 
 Synthesize an investment thesis weighing:
@@ -33,6 +36,13 @@ Synthesize an investment thesis weighing:
 - Longevity evidence (RoCE consistency, margin stability, reinvestment rate)
 - Management alignment (promoter stake trends, capital allocation history)
 - Risk/reward asymmetry
+
+Your thesis must be consistent with the 100x eligibility verdict above. Do not
+argue a company is a hundred-bagger candidate when the gates say otherwise —
+state instead what it is (e.g. a quality compounder that is simply too large,
+or too dearly priced, to multiply a hundredfold). When the verdict is not
+`eligible`, an unqualified `strong_buy`/`buy` will be capped to `watchlist`
+downstream regardless of what you return, so make your reasoning match.
 
 Respond ONLY with valid JSON matching this exact schema:
 ```json

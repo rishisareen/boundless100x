@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from boundless100x.action_policy import resolve_final_action
 from boundless100x.data_fetcher.suite import DataFetcherSuite
 from boundless100x.compute_engine.eligibility import EligibilityEvaluator
 from boundless100x.compute_engine.engine import ComputeEngine
@@ -34,6 +35,10 @@ class AnalysisResult:
     growth_decomposition: dict | None = None
     eligibility: dict | None = None
     llm_analysis: dict | None = None
+    # The action a report may display, resolved in code from the LLM's
+    # suggestion plus the deterministic eligibility verdict and score
+    # coverage. See action_policy.resolve_final_action.
+    final_action: dict | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -187,6 +192,8 @@ class Boundless100xService:
                     annual_report_text=ar_text,
                     sector_context=build_sector_context(metadata),
                     growth_decomposition=result.growth_decomposition,
+                    # Explanatory context only — the guard is Stage 4.5 below.
+                    eligibility=result.eligibility,
                 )
 
                 usage = result.llm_analysis.get("usage", {})
@@ -198,7 +205,32 @@ class Boundless100xService:
                 result.errors.append(f"LLM analysis failed: {e}")
                 logger.error(f"LLM analysis failed: {e}")
 
+        # Stage 4.5: Resolve the displayable action in deterministic code.
+        # Pass 2 is given the verdict above, but prompt compliance cannot be
+        # the guard that stops a `strong_buy` appearing beside a failed gate.
+        result.final_action = self.resolve_action(result)
+
         return result
+
+    @staticmethod
+    def resolve_action(result: AnalysisResult) -> dict | None:
+        """The action a report may display, or None when there is no LLM view.
+
+        Static and side-effect free so the report generator can call it on an
+        AnalysisResult it did not build — the guard has to hold at the render
+        boundary too, not only on the path that happens to run the pipeline.
+        """
+        llm = result.llm_analysis
+        if not llm or llm.get("skipped"):
+            return None
+
+        p2 = llm.get("pass2") or {}
+        if p2.get("error") or p2.get("skipped"):
+            return None
+
+        return resolve_final_action(
+            p2.get("suggested_action"), result.eligibility, result.scores
+        )
 
     def analyze_quick(self, ticker: str) -> AnalysisResult:
         """Quick analysis without LLM — for screening."""

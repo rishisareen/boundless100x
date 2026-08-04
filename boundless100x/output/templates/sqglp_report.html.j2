@@ -231,7 +231,7 @@
     {% endif %}
     {% if executive_summary.has_llm %}
     {% if executive_summary.suggested_action %}
-    <span class="action-badge action-{{ executive_summary.suggested_action }}">{{ executive_summary.suggested_action | replace("_", " ") }}</span>
+    <span class="action-badge action-{{ executive_summary.suggested_action }}"{% if executive_summary.action_constraint and executive_summary.action_constraint.capped %} title="Capped from {{ executive_summary.action_constraint.llm_action | replace('_', ' ') | upper }} — the 100x verdict or the evidence behind the score does not support an unqualified buy"{% endif %}>{{ executive_summary.suggested_action | replace("_", " ") }}</span>
     {% endif %}
     {% if executive_summary.conviction_level %}
     <span class="conviction conviction-{{ executive_summary.conviction_level }}">{{ executive_summary.conviction_level | upper }} conviction</span>
@@ -241,6 +241,24 @@
     {% endif %}
     {% endif %}
   </div>
+
+  {% if executive_summary.action_constraint and executive_summary.action_constraint.constraints %}
+  <div style="margin: 10px 0; padding: 10px 12px; border-left: 3px solid var(--gray); background: rgba(128,128,128,0.06); font-size: 0.88em;">
+    <strong>
+      {%- if executive_summary.action_constraint.capped -%}
+      Action capped to {{ executive_summary.action_constraint.ceiling | replace("_", " ") | upper }}
+      (model suggested {{ executive_summary.action_constraint.llm_action | replace("_", " ") | upper }})
+      {%- else -%}
+      Qualified action
+      {%- endif -%}
+    </strong>
+    <ul style="margin: 6px 0 0 18px;">
+      {% for reason in executive_summary.action_constraint.constraints %}
+      <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
 
   {% if executive_summary.eligibility and executive_summary.eligibility.gates %}
   <div style="margin: 12px 0; font-size: 0.88em;">
@@ -692,8 +710,9 @@
 <div class="thesis-box">
   <p><strong>{{ p2.get('thesis', 'No thesis generated.') }}</strong></p>
   <p style="margin-top: 10px;">
+    {% set decision = executive_summary.action_constraint or {} %}
     <span class="conviction conviction-{{ p2.get('conviction_level', 'low') }}">{{ p2.get('conviction_level', 'N/A')|upper }} conviction</span>
-    &nbsp; Action: <strong>{{ p2.get('suggested_action', 'N/A') | replace("_", " ") | upper }}</strong>
+    &nbsp; Action: <strong>{{ decision.get('action', p2.get('suggested_action', 'N/A')) | replace("_", " ") | upper }}</strong>{% if decision.get('capped') %}<span style="color: var(--gray);"> (capped from {{ decision.llm_action | replace("_", " ") | upper }})</span>{% endif %}
     &nbsp; Holding period: <strong>{{ p2.get('target_holding_period', 'N/A') }}</strong>
   </p>
 </div>

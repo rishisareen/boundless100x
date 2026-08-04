@@ -226,6 +226,53 @@ def build_growth_decomposition_context(growth_decomposition: dict | None) -> str
     return "\n".join(lines)
 
 
+def build_eligibility_context(eligibility: dict | None) -> str:
+    """The 100x verdict and its gate reasons, for Pass 2's narrative.
+
+    Given so the thesis reads coherently against a verdict the reader will
+    see beside it — not as a control. The action a report displays is capped
+    in deterministic code (action_policy), so nothing here needs the model to
+    comply for the guard to hold.
+    """
+    if not eligibility or not eligibility.get("verdict"):
+        return (
+            "100x eligibility: NOT EVALUATED. Do not assert the company is or "
+            "is not a hundred-bagger candidate — the gates did not run."
+        )
+
+    verdict = eligibility["verdict"]
+    gates = eligibility.get("gates", {})
+    lines = [f"100x eligibility verdict: {verdict.upper()}"]
+
+    headline = {
+        "eligible": "Clears every 100x gate.",
+        "not_eligible": (
+            "Fails at least one necessary condition for a hundredfold move. "
+            "This does not make it a bad investment — only an unlikely "
+            "100-bagger. Judge it as a compounder on its merits and say so "
+            "plainly."
+        ),
+        "indeterminate": (
+            "A gate could not be evaluated from available data. Treat 100x "
+            "potential as unproven rather than absent, and do not assume the "
+            "unevaluated gate would have passed."
+        ),
+    }.get(verdict)
+    if headline:
+        lines.append(headline)
+
+    for label, gate_ids in (
+        ("Failed", eligibility.get("failed", [])),
+        ("Could not evaluate", eligibility.get("indeterminate", [])),
+    ):
+        for gate_id in gate_ids:
+            reason = gates.get(gate_id, {}).get("reason")
+            if reason:
+                lines.append(f"  {label}: {reason}")
+
+    return "\n".join(lines)
+
+
 def build_sector_context(metadata: dict | None) -> str:
     """Sector classification plus the study findings that frame it, for Pass 1."""
     meta = metadata or {}

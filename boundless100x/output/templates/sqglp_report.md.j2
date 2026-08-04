@@ -27,6 +27,18 @@ Generated: {{ generation_date }}
 | **Conviction** | {{ executive_summary.conviction_level | default('—') | title }} |
 | **Holding Period** | {{ executive_summary.holding_period | default('—') }} |
 
+{% if executive_summary.action_constraint and executive_summary.action_constraint.constraints %}
+{% if executive_summary.action_constraint.capped %}
+> **Action capped to {{ executive_summary.action_constraint.ceiling | replace("_", " ") | upper }}**
+> (model suggested {{ executive_summary.action_constraint.llm_action | replace("_", " ") | upper }}):
+{% else %}
+> **Qualified action:**
+{% endif %}
+{% for reason in executive_summary.action_constraint.constraints %}
+> - {{ reason }}
+{% endfor %}
+{% endif %}
+
 > {{ executive_summary.thesis | default('No thesis generated.') }}
 
 {% if executive_summary.kill_risks %}
@@ -182,7 +194,8 @@ Current PE of **{{ "%.1f"|format(pe_band_summary.current_pe) }}x** is at the **{
 
 > {{ p2.get('thesis', 'No thesis generated.') }}
 
-**Conviction:** {{ p2.get('conviction_level', '—') }} | **Action:** {{ p2.get('suggested_action', '—') | replace("_", " ") | upper }} | **Holding period:** {{ p2.get('target_holding_period', '—') }}
+{% set decision = executive_summary.action_constraint or {} %}
+**Conviction:** {{ p2.get('conviction_level', '—') }} | **Action:** {{ decision.get('action', p2.get('suggested_action', '—')) | replace("_", " ") | upper }}{% if decision.get('capped') %} *(capped from {{ decision.llm_action | replace("_", " ") | upper }})*{% endif %} | **Holding period:** {{ p2.get('target_holding_period', '—') }}
 
 ### Bull Case
 {{ p2.get('bull_case', '—') }}
