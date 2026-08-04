@@ -752,12 +752,12 @@ class ReportGenerator:
         qg = result.metrics.get("quality_growth_quadrant")
         if qg and qg.ok and qg.value:
             qg_meta = qg.metadata or {}
+            # Keys must match the values compute_qg_quadrant emits.
             QUADRANT_LABELS = {
-                "compounder": ("Compounder", "good", "High quality + High growth"),
+                "true_wealth_creator": ("True Wealth Creator", "good", "High quality + High growth"),
                 "quality_trap": ("Quality Trap", "bad", "High quality but low growth"),
                 "growth_trap": ("Growth Trap", "bad", "High growth but low quality"),
-                "dog": ("Dog", "bad", "Low quality + Low growth"),
-                "emerging_compounder": ("Emerging Compounder", "neutral", "Improving quality & growth"),
+                "wealth_destroyer": ("Wealth Destroyer", "bad", "Low quality + Low growth"),
             }
             raw_val = qg.value
             label, sentiment, desc = QUADRANT_LABELS.get(
