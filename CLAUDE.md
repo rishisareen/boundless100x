@@ -125,7 +125,12 @@ boundless100x/
 - `.env` file at project root for `ANTHROPIC_API_KEY` (loaded by python-dotenv)
 
 ## Known Issues (as of Aug 2026)
-- **BSE code extraction broken**: Screener no longer renders bseindia.com links server-side, so `bse_code` is null on fresh fetches — annual report downloads and BSE shareholding degrade until a new source (Trendlyne or a ticker→code map) is wired.
+- **BSE code**: resolved from BSE's own active-equity scrip master
+  (`data_fetcher/bse_codes.py`), cached for a week — Screener stopped rendering
+  bseindia.com links. Matching is by BSE symbol, then normalised company name.
+  Companies genuinely not listed on BSE (CDSL, BSE Ltd — both NSE-only) record
+  `metadata.bse_listing = not_listed_on_bse` and skip BSE fetches; that is a
+  fact, not a failure. A lookup that could not run reports `lookup_failed`.
 - **Sector metadata**: only tickers fetched after the breadcrumb fix carry `metadata.sector` (extracted from the `/market/` breadcrumb, Broad Industry preferred; study-bucket matching is plural-tolerant). Older `raw_data/*/metadata.json` files lack it — refetch, or the Trendlyne analyst-coverage merge may backfill.
 - **Reverse DCF bounds**: the implied-growth search is bounded to [-10%, +50%]; pinned results now carry the `reverse_dcf_saturated` flag with `saturated_at` in metadata instead of silently returning 50.0/-10.0.
 

@@ -132,3 +132,28 @@ class TestDegradation:
         del data["metadata"]["Stock P/E"]
 
         assert not compute_pe_percentile(data, {"years": 10}).ok
+
+
+class TestPriceBasisIsVisible:
+    """Cached price files predate the raw/adjusted split. Adjusted closes
+    understate past prices, so the band reads cheap and today's percentile
+    reads high — the reader has to be told."""
+
+    def test_legacy_basis_raises_a_flag(self):
+        eps = [10.0 * 1.2 ** i for i in range(10)]
+        data = build(eps, [e * 20 for e in eps], current_pe=20.0)   # no adj_close column
+
+        result = compute_pe_percentile(data, {"years": 10})
+
+        assert result.metadata["price_basis"] == "legacy_close_unknown_adjustment"
+        assert "pe_band_legacy_price_basis" in result.flags
+
+    def test_raw_basis_raises_no_such_flag(self):
+        eps = [10.0 * 1.2 ** i for i in range(10)]
+        data = build(eps, [e * 20 for e in eps], current_pe=20.0)
+        data["price"]["adj_close"] = data["price"]["close"] * 0.9
+
+        result = compute_pe_percentile(data, {"years": 10})
+
+        assert result.metadata["price_basis"] == "raw_close"
+        assert "pe_band_legacy_price_basis" not in result.flags

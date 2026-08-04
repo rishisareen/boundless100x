@@ -63,6 +63,7 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "attractive_trailing_peg": ("Attractive Trailing PEG", "good"),
     "pe_above_historical_75th": ("PE Above 75th Percentile — Expensive", "bad"),
     "pe_below_historical_25th": ("PE Below 25th Percentile — Cheap", "good"),
+    "pe_band_legacy_price_basis": ("P/E Band Built on Adjusted Prices — Refetch to Correct", "neutral"),
     "dcf_undervalued": ("DCF: Undervalued", "good"),
     "dcf_overvalued": ("DCF: Overvalued", "bad"),
     "negative_average_fcf": ("Negative Average Free Cash Flow", "bad"),

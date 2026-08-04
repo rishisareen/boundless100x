@@ -236,6 +236,11 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
         flags.append("pe_above_historical_75th")
     elif percentile < 25:
         flags.append("pe_below_historical_25th")
+    if price_basis != "raw_close":
+        # Adjusted closes understate past prices, so the band reads cheaper
+        # than it was and today's percentile reads higher. Say so rather than
+        # presenting a distorted percentile as settled.
+        flags.append("pe_band_legacy_price_basis")
 
     return MetricResult(
         value=float(percentile),

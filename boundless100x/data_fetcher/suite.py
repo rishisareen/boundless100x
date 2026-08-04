@@ -11,6 +11,7 @@ from boundless100x.data_fetcher.fetch_shareholding import ShareholdingFetcher
 from boundless100x.data_fetcher.fetch_corporate_actions import CorporateActionsFetcher
 from boundless100x.data_fetcher.fetch_analyst_coverage import AnalystCoverageFetcher
 from boundless100x.data_fetcher.download_annual_reports import AnnualReportDownloader
+from boundless100x.data_fetcher.bse_codes import BseCodeResolver
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class DataFetcherSuite:
         self.corporate_actions = CorporateActionsFetcher(**common_kwargs)
         self.analyst_coverage = AnalystCoverageFetcher(**common_kwargs)
         self.annual_reports = AnnualReportDownloader(**common_kwargs)
+        # Screener no longer carries the scrip code; BSE's own list does.
+        self._bse_codes = BseCodeResolver()
 
         self.analysis_years = config.get("analysis_period", {}).get("financials_years", 10)
         self.price_years = config.get("analysis_period", {}).get("price_history_years", 10)
@@ -115,13 +118,44 @@ class DataFetcherSuite:
             logger.error(f"Analyst coverage fetch failed for {ticker}: {e}")
             data["analyst_coverage"] = {}
 
-        # 4. BSE-specific data (if BSE code provided or auto-detected)
+        # 4. BSE-specific data (if BSE code provided, cached, or resolvable)
         resolved_bse = bse_code or data.get("metadata", {}).get("bse_code")
+        if not resolved_bse:
+            resolved_bse = self._resolve_bse_code(data, ticker)
         if resolved_bse:
+            data.setdefault("metadata", {})["bse_code"] = resolved_bse
             self.fetch_bse_data(data, ticker, resolved_bse)
 
         logger.info(f"Data fetch complete for {ticker}")
         return data
+
+    def _resolve_bse_code(self, data: dict, ticker: str) -> str | None:
+        """Look the scrip code up on BSE when Screener no longer carries it.
+
+        Not being listed on BSE is a fact about the company, not a failure, so
+        it is recorded on the metadata and logged as information — otherwise
+        every run reports an error for a company that is perfectly fine.
+        """
+        meta = data.setdefault("metadata", {})
+        outcome = self._bse_codes.describe(ticker, meta.get("name"))
+        meta["bse_listing"] = outcome["status"]
+
+        if outcome["status"] == "resolved":
+            logger.info(
+                f"BSE code for {ticker}: {outcome['bse_code']} "
+                f"(matched on {outcome['matched_on']})"
+            )
+        elif outcome["status"] == "not_listed_on_bse":
+            logger.info(
+                f"{ticker} is not listed on BSE — annual reports and BSE "
+                f"shareholding are unavailable for it"
+            )
+        else:
+            logger.warning(
+                f"Could not look up a BSE code for {ticker}; annual reports "
+                f"and BSE shareholding will be missing this run"
+            )
+        return outcome["bse_code"]
 
     def fetch_bse_data(self, data: dict, ticker: str, bse_code: str) -> None:
         """Fetch BSE-specific data: shareholding, corporate actions, annual report.
