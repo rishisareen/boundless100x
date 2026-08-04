@@ -11,6 +11,26 @@ metrics:
     scoring: { thresholds: [5, 10, 15, 20, 25, 30], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
 
+  roiic:
+    name: "ROIIC (Return on Incremental Capital)"
+    module: "builtin.profitability"
+    function: "compute_roiic"
+    inputs: ["financials", "balance_sheet"]
+    params: { years: 5 }
+    scoring: { thresholds: [0, 8, 15, 20, 30, 40], direction: "higher_is_better", weight: 0.10 }
+    display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+
+  # Distinct from longevity's reinvestment_rate, which measures capex intensity
+  # (|CFI| / depreciation). This one measures how much of NOPAT is redeployed.
+  capital_reinvestment_rate:
+    name: "Capital Reinvestment Rate (ΔCapital / NOPAT)"
+    module: "builtin.profitability"
+    function: "compute_capital_reinvestment_rate"
+    inputs: ["financials", "balance_sheet"]
+    params: { years: 5 }
+    scoring: { thresholds: [10, 25, 40, 60, 80, 100], direction: "higher_is_better", weight: 0.05 }
+    display: { format: "{:.0f}%", section: "quality_scorecard", peer_compare: true }
+
   roe_5yr_avg:
     name: "RoE (5yr Avg)"
     module: "builtin.profitability"

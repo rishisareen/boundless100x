@@ -15,6 +15,152 @@ def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
     return annual.tail(years)
 
 
+def _capital_employed(balance_sheet: pd.DataFrame) -> pd.Series | None:
+    """Equity + reserves + borrowings, the capital the business is run on."""
+    required = ("equity_capital", "reserves", "borrowings")
+    if any(col not in balance_sheet.columns for col in required):
+        return None
+    parts = [pd.to_numeric(balance_sheet[col], errors="coerce") for col in required]
+    return sum(parts[1:], parts[0]).dropna()
+
+
+def _nopat_series(financials: pd.DataFrame) -> pd.Series | None:
+    """Operating profit after tax — earnings before the capital structure."""
+    if "operating_profit" not in financials.columns:
+        return None
+    ebit = pd.to_numeric(financials["operating_profit"], errors="coerce")
+    if "tax_pct" in financials.columns:
+        tax = pd.to_numeric(financials["tax_pct"], errors="coerce").clip(0, 50)
+        tax_rate = float(tax.mean()) if tax.notna().any() else 25.0
+    else:
+        tax_rate = 25.0
+    return (ebit * (1 - tax_rate / 100.0)).dropna()
+
+
+def _smoothed_endpoints(values: pd.Series) -> tuple[float, float]:
+    """Average each end over two periods once the window is long enough.
+
+    A single acquisition or write-off year otherwise sets the whole delta.
+    """
+    if len(values) >= 6:
+        return float(values.iloc[:2].mean()), float(values.iloc[-2:].mean())
+    return float(values.iloc[0]), float(values.iloc[-1])
+
+
+def compute_roiic(data: dict, params: dict) -> MetricResult:
+    """Return on incremental invested capital: change in NOPAT per rupee of new capital.
+
+    Headline RoCE can stay high on a legacy asset base long after fresh capital
+    stops earning. ROIIC asks what the marginal rupee bought, which is the
+    signal that a company can keep compounding rather than merely look
+    profitable.
+    """
+    years = params.get("years", 5)
+    high_threshold = float(params.get("high_roiic_pct", 20.0))
+
+    capital = _capital_employed(_get_annual_rows(data["balance_sheet"], years + 1))
+    if capital is None:
+        return MetricResult(error="Balance sheet lacks equity/reserves/borrowings for ROIIC")
+
+    nopat = _nopat_series(_get_annual_rows(data["financials"], years + 1))
+    if nopat is None:
+        return MetricResult(error="No operating_profit column for ROIIC")
+
+    if len(capital) < 3 or len(nopat) < 3:
+        return MetricResult(error="Insufficient history for ROIIC")
+
+    cap_start, cap_end = _smoothed_endpoints(capital)
+    nopat_start, nopat_end = _smoothed_endpoints(nopat)
+
+    delta_capital = cap_end - cap_start
+    delta_nopat = nopat_end - nopat_start
+
+    avg_capital = (cap_start + cap_end) / 2
+    if avg_capital <= 0:
+        return MetricResult(error="Non-positive capital employed")
+
+    # A flat or shrinking base leaves no incremental capital to price.
+    if delta_capital <= 0.01 * avg_capital:
+        reason = (
+            "Capital base shrinking — ROIIC undefined"
+            if delta_capital < 0
+            else "Capital base flat — no incremental capital to measure"
+        )
+        return MetricResult(
+            error=reason,
+            flags=["capital_base_shrinking"] if delta_capital < 0 else ["capital_base_flat"],
+            metadata={"delta_capital": delta_capital, "avg_capital": avg_capital},
+        )
+
+    roiic = delta_nopat / delta_capital * 100
+
+    flags = []
+    if roiic < 0:
+        flags.append("negative_incremental_returns")
+    elif roiic >= high_threshold:
+        flags.append("high_roiic_compounder")
+
+    return MetricResult(
+        value=float(roiic),
+        raw_series=capital.tolist(),
+        flags=flags,
+        metadata={
+            "delta_nopat": float(delta_nopat),
+            "delta_capital": float(delta_capital),
+            "years_used": len(capital) - 1,
+            "endpoint_mode": "smoothed" if len(capital) >= 6 else "single",
+        },
+    )
+
+
+def compute_capital_reinvestment_rate(data: dict, params: dict) -> MetricResult:
+    """Share of NOPAT ploughed back into the capital base.
+
+    Pairs with ROIIC: high incremental returns only compound when the company
+    actually redeploys its earnings rather than paying them out. Distinct from
+    longevity's reinvestment_rate, which measures capex against depreciation.
+    """
+    years = params.get("years", 5)
+    low_threshold = float(params.get("low_reinvestment_pct", 20.0))
+
+    capital = _capital_employed(_get_annual_rows(data["balance_sheet"], years + 1))
+    if capital is None:
+        return MetricResult(error="Balance sheet lacks equity/reserves/borrowings")
+
+    nopat = _nopat_series(_get_annual_rows(data["financials"], years + 1))
+    if nopat is None:
+        return MetricResult(error="No operating_profit column for reinvestment rate")
+
+    if len(capital) < 3 or len(nopat) < 2:
+        return MetricResult(error="Insufficient history for reinvestment rate")
+
+    delta_capital = float(capital.iloc[-1] - capital.iloc[0])
+    # NOPAT earned across the same periods the capital change spans.
+    nopat_total = float(nopat.iloc[1:].sum())
+
+    if nopat_total <= 0:
+        return MetricResult(error="Non-positive cumulative NOPAT")
+
+    rate = delta_capital / nopat_total * 100
+
+    flags = []
+    if rate < low_threshold:
+        flags.append("capital_returned_not_reinvested")
+    elif rate > 80:
+        # Distinct from longevity's heavy_reinvestment (capex vs depreciation).
+        flags.append("high_capital_redeployment")
+
+    return MetricResult(
+        value=float(rate),
+        flags=flags,
+        metadata={
+            "delta_capital": delta_capital,
+            "nopat_total": nopat_total,
+            "years_used": len(capital) - 1,
+        },
+    )
+
+
 def compute_roce_avg(data: dict, params: dict) -> MetricResult:
     """Average RoCE over N years from ratios table."""
     years = params.get("years", 5)

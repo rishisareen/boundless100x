@@ -55,6 +55,13 @@ class ComputeEngine:
                 config = self._load_yaml(yaml_file)
                 element_name = config.get("element", "custom")
                 for metric_id, metric_def in config.get("metrics", {}).items():
+                    if metric_id in all_metrics:
+                        # Silently overwriting would drop a scored metric and
+                        # shift the element's weight normalisation unnoticed.
+                        raise ValueError(
+                            f"Duplicate metric id '{metric_id}' in {yaml_file.name}; "
+                            f"already defined by {all_metrics[metric_id]['_source_file']}"
+                        )
                     metric_def["element"] = element_name
                     metric_def["_source_file"] = yaml_file.name
                     all_metrics[metric_id] = metric_def
