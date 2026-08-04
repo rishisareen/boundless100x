@@ -384,7 +384,34 @@ def _print_scores(result, svc):
     table.add_row("[bold]COMPOSITE[/bold]", f"[bold]{composite}/10[/bold]", "100%")
 
     console.print(table)
+    _print_coverage(result)
     _print_eligibility(result)
+
+
+def _print_coverage(result):
+    """Say how much evidence the composite rests on — a renormalised score
+    otherwise looks identical to a fully measured one."""
+    coverage = (result.scores or {}).get("coverage") or {}
+    composite = coverage.get("composite")
+    if composite is None or composite >= 0.999:
+        return
+
+    colour = "red" if composite < 0.85 else "yellow"
+    console.print(
+        f"[{colour}]Scored on {composite * 100:.0f}% of metric weight[/{colour}]"
+    )
+    thin = [
+        f"{el} {cov * 100:.0f}%"
+        for el, cov in (coverage.get("elements") or {}).items()
+        if cov is not None and cov < 0.85
+    ]
+    if thin:
+        console.print(f"  [dim]thin elements: {', '.join(thin)}[/dim]")
+    unscored = coverage.get("unscored") or []
+    if unscored:
+        shown = ", ".join(unscored[:6])
+        more = f" (+{len(unscored) - 6} more)" if len(unscored) > 6 else ""
+        console.print(f"  [dim]unscored: {shown}{more}[/dim]")
 
 
 def _print_eligibility(result):

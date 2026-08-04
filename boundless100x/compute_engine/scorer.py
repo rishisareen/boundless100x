@@ -11,9 +11,14 @@ class SQGLPScorer:
     """Compute per-element scores (0-10) and weighted composite from metric results."""
 
     def __init__(self, metrics_config: dict, element_weights: dict,
-                 history_waiver_mcap: float | None = None):
+                 history_waiver_mcap: float | None = None,
+                 low_coverage_threshold: float = 0.85):
         self.metrics_config = metrics_config
         self.element_weights = element_weights
+        # Below this share of declared weight, the composite is flagged as
+        # resting on thin evidence rather than presented as a peer of a
+        # fully measured one.
+        self.low_coverage_threshold = low_coverage_threshold
         # Below this market cap, metrics capped by a short observation window
         # are treated as missing rather than scored low. See _waived_for_history.
         self.history_waiver_mcap = history_waiver_mcap
@@ -120,6 +125,10 @@ class SQGLPScorer:
             else:
                 elements[el] = None
 
+        coverage = self._coverage(element_total_weights, details)
+        if coverage["composite"] < self.low_coverage_threshold:
+            score_flags.append("low_data_coverage")
+
         # Weighted composite (exclude None elements)
         total_weight = 0.0
         composite = 0.0
@@ -138,6 +147,49 @@ class SQGLPScorer:
             "composite": round(composite, 2),
             "details": details,
             "flags": score_flags,
+            "coverage": coverage,
+        }
+
+    def _declared_weights(self) -> dict[str, float]:
+        """Total weight each element would carry if every metric computed."""
+        declared: dict[str, float] = {}
+        for config in self.metrics_config.values():
+            weight = config.get("scoring", {}).get("weight", 0) or 0
+            if weight > 0:
+                declared[config["element"]] = declared.get(config["element"], 0) + weight
+        return declared
+
+    def _coverage(self, scored_weights: dict, details: dict) -> dict:
+        """How much of the declared evidence actually reached the score.
+
+        A renormalised composite reads like a full one, so the share of weight
+        behind it has to travel with it. Both errored and deliberately waived
+        metrics count as absent — the score is thinner either way.
+        """
+        declared = self._declared_weights()
+
+        by_element = {}
+        for element in self.element_weights:
+            total = declared.get(element, 0)
+            by_element[element] = (
+                round(scored_weights.get(element, 0) / total, 3) if total > 0 else None
+            )
+
+        weighted, total_weight = 0.0, 0.0
+        for element, element_weight in self.element_weights.items():
+            if declared.get(element, 0) <= 0:
+                continue
+            weighted += (by_element[element] or 0) * element_weight
+            total_weight += element_weight
+
+        return {
+            "composite": round(weighted / total_weight, 3) if total_weight else 0.0,
+            "elements": by_element,
+            "unscored": sorted(
+                mid for mid, d in details.items()
+                if d.get("score") is None and self.metrics_config.get(mid, {})
+                .get("scoring", {}).get("weight", 0)
+            ),
         }
 
     def _compute_raw_score(self, result: MetricResult, config: dict) -> float:

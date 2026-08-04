@@ -493,7 +493,9 @@ def _generate_volume_analysis(rev_cagr: float | None, price_lever: MetricResult,
     rev_str = f"{rev_cagr:.1f}%" if rev_cagr is not None else "N/A"
     return (
         f"Revenue CAGR of {rev_str} with estimated real volume growth of "
-        f"{est_vol:.1f}% (after deflating for ~5% inflation assumption)."
+        f"{est_vol:.1f}% (after deflating for a "
+        f"{(price_lever.metadata or {}).get('inflation_assumption', 5.0):.1f}% "
+        f"inflation assumption)."
     )
 
 

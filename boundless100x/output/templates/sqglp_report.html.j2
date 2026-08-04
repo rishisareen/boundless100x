@@ -212,6 +212,12 @@
         {{ executive_summary.composite_score or 'N/A' }}<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
       </div>
       <div style="color: var(--gray); font-size: 0.85em;">SQGLP Composite</div>
+      {% if executive_summary.coverage and executive_summary.coverage.composite is not none and executive_summary.coverage.composite < 0.999 %}
+      <div style="color: {% if executive_summary.coverage.composite < 0.85 %}var(--red){% else %}var(--gray){% endif %}; font-size: 0.78em; margin-top: 3px;"
+           title="Share of declared metric weight that actually computed. Missing metrics are excluded and the rest reweighted, so a thin score reads like a full one unless this is shown.">
+        scored on {{ '%.0f'|format(executive_summary.coverage.composite * 100) }}% of metric weight
+      </div>
+      {% endif %}
     </div>
   </div>
 

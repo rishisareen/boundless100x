@@ -1,5 +1,7 @@
 """Valuation metrics: P/E, PEG, trailing PEG, EV/EBITDA, DCF, reverse DCF."""
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -137,10 +139,47 @@ def compute_ev_ebitda(data: dict, params: dict) -> MetricResult:
     )
 
 
-def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
-    """Current P/E percentile within its own 10yr range.
+MONTH_NUMBERS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
 
-    Uses annual EPS and average price to construct historical P/E range.
+# How far back a fiscal year end may reach for a traded price before the year
+# is treated as uncovered — comfortably more than any exchange holiday run.
+PRICE_LOOKBACK_DAYS = 45
+
+
+def _period_end(label: str) -> pd.Timestamp | None:
+    """Turn a Screener column label such as 'Mar 2020' into that period's end."""
+    match = re.match(r"\s*([A-Za-z]{3})\w*\s+(\d{4})", str(label))
+    if not match:
+        return None
+    month = MONTH_NUMBERS.get(match.group(1).lower())
+    if month is None:
+        return None
+    return pd.Timestamp(year=int(match.group(2)), month=month, day=1) + pd.offsets.MonthEnd(0)
+
+
+def _close_on_or_before(price: pd.DataFrame, when: pd.Timestamp) -> float | None:
+    """The last traded close at or before a date, within the lookback window."""
+    prior = price[price["date"] <= when]
+    if prior.empty:
+        return None
+    row = prior.iloc[-1]
+    if (when - row["date"]).days > PRICE_LOOKBACK_DAYS:
+        return None
+    close = float(row["close"])
+    return close if close > 0 else None
+
+
+def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
+    """Where today's P/E sits in the company's own traded P/E history.
+
+    The band must be built from the price at each past year end divided by that
+    year's EPS. Dividing today's price by past EPS instead produces a rescaled
+    reciprocal of the earnings series, so the percentile tracks earnings growth
+    rather than valuation — and any company earning near a high scores as
+    maximally cheap however dearly it actually trades.
     """
     years = params.get("years", 10)
     meta = data.get("metadata", {})
@@ -148,31 +187,36 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
     if current_pe is None:
         return MetricResult(error="No current P/E")
 
+    price = data.get("price")
+    if price is None or len(price) == 0:
+        return MetricResult(error="No price history for historical P/E band")
+
+    price = price.copy()
+    price["date"] = pd.to_datetime(price["date"], errors="coerce", utc=True).dt.tz_localize(None)
+    price = price.dropna(subset=["date"]).sort_values("date")
+    if price.empty:
+        return MetricResult(error="No usable price dates for historical P/E band")
+
     df = _get_annual_rows(data["financials"], years)
-    eps_series = pd.to_numeric(df["eps"], errors="coerce").dropna()
+    if "eps" not in df.columns or "year" not in df.columns:
+        return MetricResult(error="Financials lack eps/year for PE percentile")
 
-    if len(eps_series) < 5:
-        return MetricResult(error="Insufficient EPS history for PE percentile")
+    historical_pes = []
+    for label, raw_eps in zip(df["year"], pd.to_numeric(df["eps"], errors="coerce")):
+        if pd.isna(raw_eps) or raw_eps <= 0:
+            continue
+        period_end = _period_end(label)
+        if period_end is None:
+            continue
+        close = _close_on_or_before(price, period_end)
+        if close is None:
+            continue
+        historical_pes.append(close / float(raw_eps))
 
-    # Use current PE vs distribution of historical implied PE range
-    # Percentile = rank of current PE in estimated range
-    # Simple: if PE is between min and max of historical band
-    historical_eps = eps_series.values
-    min_eps = historical_eps.min()
-    max_eps = historical_eps.max()
-    avg_eps = historical_eps.mean()
-
-    if avg_eps <= 0:
-        return MetricResult(error="Non-positive average EPS")
-
-    # Estimate PE range using current price and historical EPS values
-    current_price = meta.get("Current Price")
-    if current_price is None:
-        return MetricResult(error="No current price")
-
-    historical_pes = [current_price / e for e in historical_eps if e > 0]
-    if not historical_pes:
-        return MetricResult(error="Cannot compute historical PE range")
+    if len(historical_pes) < 5:
+        return MetricResult(
+            error=f"Only {len(historical_pes)} years with both price and positive EPS"
+        )
 
     # Percentile of current PE in historical distribution
     below = sum(1 for pe in historical_pes if pe <= current_pe)
@@ -186,8 +230,15 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
 
     return MetricResult(
         value=float(percentile),
+        raw_series=[round(pe, 2) for pe in historical_pes],
         flags=flags,
-        metadata={"historical_pes": len(historical_pes)},
+        metadata={
+            "years_used": len(historical_pes),
+            "pe_min": round(min(historical_pes), 2),
+            "pe_max": round(max(historical_pes), 2),
+            "pe_median": round(float(np.median(historical_pes)), 2),
+            "current_pe": float(current_pe),
+        },
     )
 
 

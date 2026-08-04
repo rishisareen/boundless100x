@@ -106,8 +106,11 @@ metrics:
     scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
 
+  # Display-only (weight 0). Real volume is not in any source we fetch, so this
+  # deflates revenue growth by a constant — which cannot separate pricing power
+  # from volume, and merely restates revenue CAGR, already scored twice above.
   price_lever_signal:
-    name: "Price Lever Signal"
+    name: "Real Revenue Growth (vs inflation)"
     module: "builtin.growth"
     function: "compute_price_lever"
     inputs: ["financials"]
@@ -117,5 +120,5 @@ metrics:
       # Insufficient data surfaces as an errored metric, which the scorer
       # already skips — there is no "unknown" value to score.
       categories: { "strong_pricing_power": 10, "moderate_pricing": 7, "discounting": 3 }
-      weight: 0.05
+      weight: 0
     display: { format: "{}", section: "growth_decomposition", peer_compare: false }

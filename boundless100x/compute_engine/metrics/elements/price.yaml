@@ -36,10 +36,11 @@ metrics:
     display: { format: "{:.1f}x", section: "valuation_analysis", peer_compare: true }
 
   pe_vs_historical:
-    name: "P/E Percentile (10yr range)"
+    name: "P/E Percentile (10yr traded range)"
     module: "builtin.valuation"
     function: "compute_pe_percentile"
-    inputs: ["financials", "metadata"]
+    # Needs price: the band is each year-end close over that year's EPS.
+    inputs: ["financials", "metadata", "price"]
     params: { years: 10 }
     scoring: { thresholds: [90, 75, 60, 50, 35, 20], direction: "lower_is_better", weight: 0.13 }
     display: { format: "{:.0f}th percentile", section: "valuation_analysis" }

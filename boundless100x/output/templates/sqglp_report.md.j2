@@ -8,7 +8,7 @@ Generated: {{ generation_date }}
 {% if executive_summary %}
 ## Executive Summary
 
-**Composite Score: {{ executive_summary.composite_score | default('—') }}/10**
+**Composite Score: {{ executive_summary.composite_score | default('—') }}/10**{% if executive_summary.coverage and executive_summary.coverage.composite is not none and executive_summary.coverage.composite < 0.999 %} — scored on {{ '%.0f'|format(executive_summary.coverage.composite * 100) }}% of metric weight{% endif %}
 {% if executive_summary.eligibility %}
 **100x Eligibility: {{ executive_summary.eligibility.label }}** — {{ executive_summary.eligibility.description }}
 
