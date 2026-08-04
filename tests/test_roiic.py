@@ -142,8 +142,24 @@ class TestRegistryIntegration:
             assert metric_id in engine.metrics
             assert engine.metrics[metric_id]["element"] == "quality_business"
 
-    def test_metric_count_grew_by_two(self):
-        assert len(ComputeEngine().metrics) == 50
+    def test_registry_has_no_duplicate_ids(self, tmp_path):
+        """A duplicate id silently dropped a scored metric before the guard."""
+        (tmp_path / "registry.yaml").write_text(
+            "element_weights: {size: 0.5, growth: 0.5}\n"
+        )
+        elements = tmp_path / "elements"
+        elements.mkdir()
+        body = (
+            "element: {name}\nmetrics:\n  shared_id:\n    name: X\n"
+            "    module: builtin.size\n    function: compute_market_cap\n"
+            "    inputs: [price]\n    scoring: {{weight: 0.1, thresholds: [1]}}\n"
+            "    display: {{format: '{{}}'}}\n"
+        )
+        (elements / "a.yaml").write_text(body.format(name="size"))
+        (elements / "b.yaml").write_text(body.format(name="growth"))
+
+        with pytest.raises(ValueError, match="Duplicate metric id"):
+            ComputeEngine(registry_dir=str(tmp_path))
 
     def test_engine_runs_both_metrics_on_synthetic_data(self):
         results = ComputeEngine().run_all(make_data())

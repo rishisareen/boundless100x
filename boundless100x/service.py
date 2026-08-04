@@ -14,6 +14,7 @@ from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
+from boundless100x.llm_layer.checklist import build_sector_context
 from boundless100x.llm_layer.orchestrator import LLMOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ class Boundless100xService:
                     metrics=result.metrics,
                     scores=result.scores,
                     annual_report_text=ar_text,
+                    sector_context=build_sector_context(metadata),
                     growth_decomposition=result.growth_decomposition,
                 )
 

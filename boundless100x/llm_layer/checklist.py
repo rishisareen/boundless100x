@@ -1,6 +1,7 @@
 """QGLP checklist — maps computed metrics to structured LLM context."""
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.sector import classify_sector, study_findings
 
 
 def build_quality_metrics_context(
@@ -221,5 +222,46 @@ def build_growth_decomposition_context(growth_decomposition: dict | None) -> str
     lines.append(f"  Trailing PEG: {peg:.2f}x" if peg is not None else "  Trailing PEG: N/A")
     if verdict:
         lines.append(f"  Verdict: {verdict}")
+
+    return "\n".join(lines)
+
+
+def build_sector_context(metadata: dict | None) -> str:
+    """Sector classification plus the study findings that frame it, for Pass 1."""
+    meta = metadata or {}
+    sector = meta.get("sector")
+    classification = classify_sector(sector)
+    findings = study_findings()
+
+    label = {
+        "strong_tailwind": "STRONG TAILWIND — a sector that produced compounders",
+        "moderate_tailwind": "MODERATE TAILWIND",
+        "non_consideration": "NON-CONSIDERATION — the study ruled this sector out",
+        "unknown": "UNKNOWN — sector not available or not in the study's lists",
+    }[classification]
+
+    lines = [
+        f"Sector: {sector or 'not available'}",
+        f"Classification: {label}",
+    ]
+
+    business = findings.get("business_type", {})
+    if business:
+        lines.append(
+            f"Business-type finding: 60% of compounders were {business.get('preferred', 'B2C')}; "
+            f"{business.get('acceptable', 'B2B')} acceptable, {business.get('caution', 'B2G')} warrants caution."
+        )
+
+    leadership = findings.get("leadership", {})
+    if leadership:
+        lines.append(
+            f"Leadership finding: 77% of compounders were market leaders "
+            f"(top {leadership.get('preferred_rank', 3)} in their category)."
+        )
+
+    if classification == "unknown":
+        lines.append(
+            "Treat sector as unverified — do not infer a tailwind the data does not support."
+        )
 
     return "\n".join(lines)

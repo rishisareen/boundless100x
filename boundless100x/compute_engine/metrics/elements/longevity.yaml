@@ -54,3 +54,16 @@ metrics:
     params: { years: 10 }
     scoring: { thresholds: [3, 5, 6, 7, 8, 9], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{}/10 years", section: "longevity_assessment", peer_compare: true }
+
+  # Dec 2025 study: compounders clustered in a few sectors and were largely
+  # absent from others. Scored modestly — it is context, not a verdict.
+  sector_tailwind:
+    name: "Sector Tailwind (MOSL Dec 2025)"
+    module: "builtin.longevity"
+    function: "compute_sector_tailwind"
+    inputs: ["metadata"]
+    scoring:
+      mode: "categorical"
+      categories: { "strong_tailwind": 10, "moderate_tailwind": 7, "unknown": 5, "non_consideration": 2 }
+      weight: 0.05
+    display: { format: "{}", section: "longevity_assessment", peer_compare: false }

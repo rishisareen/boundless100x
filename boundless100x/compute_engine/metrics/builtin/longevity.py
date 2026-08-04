@@ -6,6 +6,7 @@ import pandas as pd
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin._helpers import detect_fcf_outliers
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
+from boundless100x.compute_engine.sector import classify_sector
 
 
 def compute_threshold_consistency(data: dict, params: dict) -> MetricResult:
@@ -229,4 +230,30 @@ def compute_dividend_consistency(data: dict, params: dict) -> MetricResult:
     return MetricResult(
         value=float(count),
         metadata={"total_years": total},
+    )
+
+
+def compute_sector_tailwind(data: dict, params: dict) -> MetricResult:
+    """Classify the company's sector against the Dec 2025 study's buckets.
+
+    The study found compounders clustered in a handful of sectors and largely
+    absent from others, so the sector a company sits in is a longevity signal
+    independent of its own numbers.
+    """
+    sector = (data.get("metadata") or {}).get("sector")
+    classification = classify_sector(sector)
+
+    flags = []
+    if classification == "strong_tailwind":
+        flags.append("sector_strong_tailwind")
+    elif classification == "non_consideration":
+        flags.append("sector_non_consideration")
+    elif classification == "unknown":
+        # Common today: no cached ticker carries a sector until a re-fetch.
+        flags.append("sector_unclassified")
+
+    return MetricResult(
+        value=classification,
+        flags=flags,
+        metadata={"sector": sector or "unavailable"},
     )
