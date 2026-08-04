@@ -267,17 +267,226 @@ class TestPostReviewHardening:
         assert "size" not in bt.gate_evaluator.gates
         assert "size" not in report["companies"][0]["eligibility_then"]["gates_evaluated"]
 
-    def test_company_with_no_scorable_weight_is_not_ranked(self, backtest_factory):
+    def test_company_with_low_coverage_is_not_ranked(self, backtest_factory):
         bt = backtest_factory()
         rows = [
-            {"composite_then": 0.0, "scored_weight": 0.0, "realized_cagr_pct": -50.0,
+            {"composite_then": 0.0, "coverage_composite": 0.0, "realized_cagr_pct": -50.0,
              "elements_then": {}},
-            {"composite_then": 7.0, "scored_weight": 9.0, "realized_cagr_pct": 20.0,
+            {"composite_then": 7.0, "coverage_composite": 0.9, "realized_cagr_pct": 20.0,
              "elements_then": {}},
-            {"composite_then": 5.0, "scored_weight": 9.0, "realized_cagr_pct": 10.0,
+            {"composite_then": 5.0, "coverage_composite": 0.9, "realized_cagr_pct": 10.0,
              "elements_then": {}},
-            {"composite_then": 3.0, "scored_weight": 9.0, "realized_cagr_pct": 5.0,
+            {"composite_then": 3.0, "coverage_composite": 0.9, "realized_cagr_pct": 5.0,
              "elements_then": {}},
         ]
 
         assert bt._correlations(rows)["n"] == 3
+
+
+class TestDateAwareTruncation:
+    """A bare calendar-year comparison can't tell a fiscal year end from a
+    trailing part-year column that happens to share its year — only the
+    actual period-end date can. See period_end_date in builtin/_helpers.py."""
+
+    def test_interim_row_sharing_the_cutoff_year_does_not_leak(self, tmp_path, backtest_factory):
+        """Screener appends part-year balance-sheet columns (e.g. "Sep 2025").
+        One landing on the same calendar year as the cutoff row covers a later
+        period than it and was not yet public as of the truncation date — a
+        year-only comparison would let it leak in as "past" data anyway."""
+        d = tmp_path / "GOODCO"
+        d.mkdir(parents=True)
+        make_financials(10).to_csv(d / "financials.csv", index=False)
+        make_cashflow(10).to_csv(d / "cashflow.csv", index=False)
+        make_ratios(10).to_csv(d / "ratios.csv", index=False)
+        make_shareholding().to_csv(d / "shareholding.csv", index=False)
+        make_price(days=2600, end_close=400.0).to_csv(d / "price_volume.csv", index=False)
+        (d / "metadata.json").write_text(json.dumps(make_metadata(name="GOODCO Ltd")))
+
+        bs = make_balance_sheet(10)
+        assert bs.iloc[4]["year"] == "Mar 2020"          # the row _truncate will cut on
+        leaking_row = bs.iloc[[4]].copy()
+        leaking_row["year"] = "Sep 2020"                 # same year, later period end
+        bs = pd.concat([bs, leaking_row], ignore_index=True)
+        bs.to_csv(d / "balance_sheet.csv", index=False)
+
+        bt = backtest_factory()
+        truncated, truncation_date, reason = bt._truncate(bt._load(d))
+
+        assert truncated is not None, reason
+        assert truncation_date == pd.Timestamp("2020-09-30")
+        assert "Sep 2020" not in list(truncated["balance_sheet"]["year"])
+
+    def test_non_march_fiscal_year_end_is_not_assumed_to_be_march(self, tmp_path, backtest_factory):
+        """The old cutoff was hardcoded to 31 March regardless of the label.
+        Deriving it from the parsed period end instead must track whatever
+        fiscal year end the company actually reports on."""
+        d = tmp_path / "DECCO"
+        d.mkdir(parents=True)
+        dec_labels = [f"Dec {y}" for y in range(2016, 2026)]
+        for name, builder in (
+            ("financials", make_financials), ("balance_sheet", make_balance_sheet),
+            ("cashflow", make_cashflow), ("ratios", make_ratios),
+        ):
+            frame = builder(10)
+            frame["year"] = dec_labels
+            frame.to_csv(d / f"{name}.csv", index=False)
+        make_shareholding().to_csv(d / "shareholding.csv", index=False)
+        make_price(days=2600, end_close=400.0).to_csv(d / "price_volume.csv", index=False)
+        (d / "metadata.json").write_text(json.dumps(make_metadata(name="DECCO Ltd")))
+
+        bt = backtest_factory()
+        truncated, truncation_date, reason = bt._truncate(bt._load(d))
+
+        assert truncated is not None, reason
+        # Cutoff row is "Dec 2020" (index 4 of 10) → period end 31 Dec 2020,
+        # + the 6-month reporting lag → 30 Jun 2021. A March-31 assumption
+        # would instead have produced 30 Sep 2020.
+        assert truncation_date == pd.Timestamp("2021-06-30")
+
+
+class TestCoverageThreshold:
+    """The backtest's own bar for a "comparable enough" composite must be the
+    same one production uses (scorer.low_coverage_threshold), not a second,
+    undocumented constant free to drift from it."""
+
+    def test_default_min_coverage_is_the_scorers_low_coverage_threshold(self, backtest_factory):
+        bt = backtest_factory()
+
+        assert bt.min_coverage == bt.scorer.low_coverage_threshold
+
+    def test_a_stricter_scorer_threshold_tightens_the_backtest_too(self, tmp_path):
+        engine = ComputeEngine()
+        strict_scorer = SQGLPScorer(engine.metrics, engine.element_weights,
+                                     low_coverage_threshold=0.95)
+
+        bt = WalkForwardBacktest(tmp_path, engine, strict_scorer)
+
+        assert bt.min_coverage == 0.95
+
+    def test_explicit_min_coverage_overrides_the_scorers_default(self, tmp_path):
+        engine = ComputeEngine()
+        scorer = SQGLPScorer(engine.metrics, engine.element_weights)
+
+        bt = WalkForwardBacktest(tmp_path, engine, scorer, min_coverage=0.5)
+
+        assert bt.min_coverage == 0.5
+
+    def test_coverage_exactly_at_threshold_is_included(self, backtest_factory):
+        bt = backtest_factory()
+        rows = [
+            {"composite_then": 6.0, "coverage_composite": bt.min_coverage, "realized_cagr_pct": 10.0, "elements_then": {}},
+            {"composite_then": 5.0, "coverage_composite": bt.min_coverage, "realized_cagr_pct": 8.0, "elements_then": {}},
+            {"composite_then": 4.0, "coverage_composite": bt.min_coverage, "realized_cagr_pct": 6.0, "elements_then": {}},
+        ]
+
+        assert bt._correlations(rows)["n"] == 3
+
+    def test_coverage_just_below_threshold_is_excluded(self, backtest_factory):
+        bt = backtest_factory()
+        rows = [
+            {"composite_then": 6.0, "coverage_composite": bt.min_coverage - 0.01, "realized_cagr_pct": 10.0, "elements_then": {}},
+            {"composite_then": 5.0, "coverage_composite": bt.min_coverage, "realized_cagr_pct": 8.0, "elements_then": {}},
+            {"composite_then": 4.0, "coverage_composite": bt.min_coverage, "realized_cagr_pct": 6.0, "elements_then": {}},
+        ]
+
+        assert bt._correlations(rows)["n"] == 2
+
+    def test_missing_coverage_field_fails_closed_not_included(self, backtest_factory):
+        bt = backtest_factory()
+        rows = [{"composite_then": 6.0, "realized_cagr_pct": 10.0, "elements_then": {}}]
+
+        assert bt._correlations(rows)["n"] == 0
+
+    def test_run_populates_coverage_composite_from_the_real_scorer(self, tmp_path, backtest_factory):
+        write_ticker(tmp_path, "GOODCO")
+
+        row = backtest_factory().run()["companies"][0]
+
+        assert "coverage_composite" in row
+        assert 0.0 <= row["coverage_composite"] <= 1.0
+        assert "scored_weight" not in row
+
+
+class TestEligibilityCohorts:
+    """The gates are a conjunctive filter, separate from the additive
+    composite — each row already carries its own eligibility_then.verdict,
+    but it was computed once per company and never rolled up. This is the
+    one place that checks whether "eligible" companies actually went on to
+    deliver bigger returns than "not_eligible" or "indeterminate" ones."""
+
+    @staticmethod
+    def eligibility_backtest(tmp_path):
+        from boundless100x.compute_engine.eligibility import EligibilityEvaluator
+
+        engine = ComputeEngine()
+        scorer = SQGLPScorer(engine.metrics, engine.element_weights)
+        return WalkForwardBacktest(tmp_path, engine, scorer, EligibilityEvaluator(engine.gates))
+
+    def test_returns_none_without_an_eligibility_evaluator(self, backtest_factory):
+        bt = backtest_factory()
+
+        cohorts = bt._eligibility_cohorts([
+            {"realized_cagr_pct": 10.0, "eligibility_then": {"verdict": "eligible"}}
+        ])
+
+        assert cohorts is None
+
+    def test_splits_returns_by_verdict(self, tmp_path):
+        bt = self.eligibility_backtest(tmp_path)
+        rows = [
+            {"realized_cagr_pct": 50.0, "eligibility_then": {"verdict": "eligible"}},
+            {"realized_cagr_pct": 70.0, "eligibility_then": {"verdict": "eligible"}},
+            {"realized_cagr_pct": 5.0, "eligibility_then": {"verdict": "not_eligible"}},
+            {"realized_cagr_pct": -10.0, "eligibility_then": {"verdict": "not_eligible"}},
+            {"realized_cagr_pct": 20.0, "eligibility_then": {"verdict": "indeterminate"}},
+        ]
+
+        cohorts = bt._eligibility_cohorts(rows)
+
+        assert cohorts["eligible"]["n"] == 2
+        assert cohorts["eligible"]["mean_cagr_pct"] == pytest.approx(60.0)
+        assert cohorts["not_eligible"]["n"] == 2
+        assert cohorts["not_eligible"]["mean_cagr_pct"] == pytest.approx(-2.5)
+        assert cohorts["indeterminate"]["n"] == 1
+
+    def test_min_and_max_are_reported_per_cohort(self, tmp_path):
+        bt = self.eligibility_backtest(tmp_path)
+        rows = [
+            {"realized_cagr_pct": -20.0, "eligibility_then": {"verdict": "eligible"}},
+            {"realized_cagr_pct": 90.0, "eligibility_then": {"verdict": "eligible"}},
+        ]
+
+        cohorts = bt._eligibility_cohorts(rows)
+
+        assert cohorts["eligible"]["min_cagr_pct"] == -20.0
+        assert cohorts["eligible"]["max_cagr_pct"] == 90.0
+
+    def test_rows_without_a_verdict_are_excluded_not_miscounted(self, tmp_path):
+        bt = self.eligibility_backtest(tmp_path)
+        rows = [
+            {"realized_cagr_pct": 10.0},
+            {"realized_cagr_pct": 20.0, "eligibility_then": {"verdict": "eligible"}},
+        ]
+
+        cohorts = bt._eligibility_cohorts(rows)
+
+        assert set(cohorts.keys()) == {"eligible"}
+        assert cohorts["eligible"]["n"] == 1
+
+    def test_run_populates_eligibility_cohorts_end_to_end(self, tmp_path):
+        bt = self.eligibility_backtest(tmp_path)
+        write_ticker(tmp_path, "GOODCO")
+
+        report = bt.run()
+
+        assert report["eligibility_cohorts"] is not None
+        verdict = report["companies"][0]["eligibility_then"]["verdict"]
+        assert report["eligibility_cohorts"][verdict]["n"] == 1
+
+    def test_run_without_eligibility_evaluator_reports_none(self, tmp_path, backtest_factory):
+        write_ticker(tmp_path, "GOODCO")
+        bt = backtest_factory()
+
+        report = bt.run()
+
+        assert report["eligibility_cohorts"] is None

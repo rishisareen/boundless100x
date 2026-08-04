@@ -25,11 +25,12 @@ The result is a diagnostic, not calibration evidence. See `LIMITATIONS`.
 
 import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from boundless100x.compute_engine.metrics.builtin._helpers import period_end_date
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,6 @@ MIN_TOTAL_YEARS = 8
 # year end itself would use figures that were not yet public.
 REPORTING_LAG_MONTHS = 6
 MIN_FORWARD_DAYS = 365
-# Minimum surviving metric weight before a company's composite is comparable.
-MIN_SCORED_WEIGHT = 1.5
 
 
 def _annual_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -59,23 +58,28 @@ def _annual_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[~df["year"].astype(str).str.contains("TTM", case=False, na=False)]
 
 
-def _year_of(label: str) -> int | None:
-    match = re.search(r"(\d{4})", str(label))
-    return int(match.group(1)) if match else None
-
-
 class WalkForwardBacktest:
     """Scores on the first half of history, measures the second half's return."""
 
     def __init__(self, raw_data_dir, engine, scorer, eligibility=None,
                  min_total_years: int = MIN_TOTAL_YEARS,
-                 reporting_lag_months: int = REPORTING_LAG_MONTHS):
+                 reporting_lag_months: int = REPORTING_LAG_MONTHS,
+                 min_coverage: float | None = None):
         self.raw_data_dir = Path(raw_data_dir)
         self.engine = engine
         self.scorer = scorer
         self.eligibility = eligibility
         self.min_total_years = min_total_years
         self.reporting_lag_months = reporting_lag_months
+        # Same bar production uses to flag a composite as resting on thin
+        # evidence (scorer.low_coverage_threshold, docstring in scorer.py) —
+        # a backtest row below it is not comparable to a fully-scored one on
+        # equal footing, so it must not enter the correlation either. Sourced
+        # from the scorer rather than a second constant here so the two
+        # cannot silently drift apart.
+        self.min_coverage = (
+            min_coverage if min_coverage is not None else scorer.low_coverage_threshold
+        )
         # The size gate needs a market cap that cannot be rebuilt without leaking.
         self.gate_evaluator = None
         if eligibility is not None:
@@ -123,27 +127,35 @@ class WalkForwardBacktest:
             return None, None, f"only {total_years} years of financials (need {self.min_total_years})"
 
         keep = total_years // 2
-        cutoff_year = _year_of(financials.iloc[keep - 1]["year"]) if "year" in financials else None
-        if cutoff_year is None:
+        cutoff_period_end = (
+            period_end_date(financials.iloc[keep - 1]["year"]) if "year" in financials else None
+        )
+        if cutoff_period_end is None:
             return None, None, "could not read a fiscal year label"
 
-        # Indian fiscal years end 31 March, but the accounts are not public
-        # until months later. Observing at the year end would score on figures
-        # nobody could have read — look-ahead by another name.
-        truncation_date = pd.Timestamp(year=cutoff_year, month=3, day=31) + pd.DateOffset(
-            months=self.reporting_lag_months
-        )
+        # The accounts are not public until months after the period end.
+        # Observing at the period end itself would score on figures nobody
+        # could have read — look-ahead by another name. Deriving this from
+        # the parsed label (rather than assuming March) also makes it correct
+        # for a non-March fiscal year end, not just the common case.
+        truncation_date = cutoff_period_end + pd.DateOffset(months=self.reporting_lag_months)
 
         truncated = {}
         for name in ANNUAL_FRAMES:
             if name not in data:
                 continue
             frame = _annual_rows(data[name])
-            # Cut on the fiscal-year label: frames do not all start in the same
-            # year, so a positional cut would leave post-cutoff rows in place.
-            years = frame["year"].map(_year_of) if "year" in frame.columns else None
-            if years is not None and years.notna().any():
-                frame = frame[years <= cutoff_year]
+            # Cut on the actual period-end date, not the bare calendar year: a
+            # trailing part-year column Screener appends (e.g. a "Sep 2025"
+            # balance-sheet column) can share a calendar year with the cutoff
+            # row while covering a later period. A year-only comparison would
+            # let that later, not-yet-public period leak in as "past" data;
+            # comparing real dates catches it. Frames do not all start in the
+            # same year either, so a positional cut alone would leave
+            # post-cutoff rows in place.
+            period_ends = frame["year"].map(period_end_date) if "year" in frame.columns else None
+            if period_ends is not None and period_ends.notna().any():
+                frame = frame[period_ends <= cutoff_period_end]
             else:
                 frame = frame.head(keep)
             truncated[name] = frame.reset_index(drop=True)
@@ -189,14 +201,26 @@ class WalkForwardBacktest:
     def _realized_return(price: pd.DataFrame, truncation_date: pd.Timestamp) -> tuple[float | None, dict]:
         """Annualised return from the truncation date to the latest close.
 
-        Uses the split/dividend-adjusted close when the series carries one —
-        a raw close would read a 1:5 split as an 80% loss. Falls back to the
-        raw close for legacy price files.
+        Uses the split/dividend-adjusted close when the series carries a
+        genuine one — a raw close would read a 1:5 split as an 80% loss.
+        `adj_close_is_estimated` marks fetches (jugaad-data fallback) where
+        `adj_close` is just `close` under another name; that aliasing is not
+        safe to score a realized return against, so those histories are
+        excluded rather than silently measured on an unadjusted series.
+        Legacy files predating the flag (single `close` column, no alias)
+        fall back to the raw close, same as before.
         """
         at_or_before = price[price["date"] <= truncation_date]
         after = price[price["date"] > truncation_date]
         if at_or_before.empty or after.empty:
             return None, {"reason": "no price on both sides of the truncation date"}
+
+        if "adj_close" in price.columns and "adj_close_is_estimated" in price.columns:
+            if bool(price["adj_close_is_estimated"].iloc[-1]):
+                return None, {
+                    "reason": "adj_close is an unadjusted-close fallback "
+                    "(jugaad-data source) — cannot validate a realized return"
+                }
 
         column = "adj_close" if "adj_close" in price.columns else "close"
         start_row, end_row = at_or_before.iloc[-1], after.iloc[-1]
@@ -251,12 +275,9 @@ class WalkForwardBacktest:
                 if not result.ok:
                     exclusions.setdefault(metric_id, set()).add(ticker)
 
-            scored_weight = sum(
-                d.get("weight", 0) or 0 for d in scores.get("details", {}).values()
-            )
             row = {
                 "ticker": ticker,
-                "scored_weight": round(scored_weight, 3),
+                "coverage_composite": scores.get("coverage", {}).get("composite"),
                 "truncation_date": str(truncation_date.date()),
                 "years_scored": len(truncated["financials"]),
                 "forward_span": span,
@@ -277,6 +298,7 @@ class WalkForwardBacktest:
             "generated_for": str(self.raw_data_dir),
             "companies": rows,
             "correlations": self._correlations(rows),
+            "eligibility_cohorts": self._eligibility_cohorts(rows),
             "excluded_metrics": self._describe_exclusions(exclusions),
             "skipped": skipped,
             "limitations": self._limitations(rows, skipped),
@@ -293,11 +315,13 @@ class WalkForwardBacktest:
         return round(float(np.corrcoef(rx, ry)[0, 1]), 3)
 
     def _correlations(self, rows: list[dict]) -> dict:
-        # A composite normalised over a sliver of surviving weight is not
-        # rank-comparable with a fully evidenced one.
+        # A composite whose coverage falls below the same bar production uses
+        # to flag thin evidence (self.min_coverage) is not rank-comparable
+        # with a fully evidenced one.
         usable = [
             r for r in rows
-            if r["composite_then"] is not None and r["scored_weight"] >= MIN_SCORED_WEIGHT
+            if r["composite_then"] is not None
+            and (r.get("coverage_composite") or 0) >= self.min_coverage
         ]
         returns = [r["realized_cagr_pct"] for r in usable]
 
@@ -319,6 +343,45 @@ class WalkForwardBacktest:
                 elements[element] = self._spearman([p[0] for p in pairs], [p[1] for p in pairs])
         correlations["elements_vs_return"] = elements
         return correlations
+
+    def _eligibility_cohorts(self, rows: list[dict]) -> dict | None:
+        """Forward-return distribution by 100x-eligibility verdict.
+
+        The gates are a conjunctive filter separate from the additive
+        composite above — "could this plausibly 100x?" rather than "is this
+        a quality compounder?". Each row already carries its own verdict
+        (eligibility_then.verdict), computed once per company and otherwise
+        never rolled up anywhere. This is the one place that checks whether
+        the verdict predicts anything: if the "eligible" cohort's returns
+        aren't better than "not_eligible", the gates are not doing their job
+        and the thresholds need to be revisited, not trusted on intuition.
+
+        Every row with a verdict counts, including ones _correlations()
+        would treat as too-thin-coverage for the composite comparison — the
+        gates read their own inputs and go indeterminate on missing data
+        independently of the general metric-coverage bar.
+        """
+        if not self.gate_evaluator:
+            return None
+
+        cohorts: dict[str, list[float]] = {}
+        for r in rows:
+            verdict = (r.get("eligibility_then") or {}).get("verdict")
+            if verdict is None:
+                continue
+            cohorts.setdefault(verdict, []).append(r["realized_cagr_pct"])
+
+        def summarize(returns: list[float]) -> dict:
+            arr = np.array(returns)
+            return {
+                "n": len(returns),
+                "mean_cagr_pct": round(float(arr.mean()), 2),
+                "median_cagr_pct": round(float(np.median(arr)), 2),
+                "min_cagr_pct": round(float(arr.min()), 2),
+                "max_cagr_pct": round(float(arr.max()), 2),
+            }
+
+        return {verdict: summarize(returns) for verdict, returns in sorted(cohorts.items())}
 
     @staticmethod
     def _describe_exclusions(exclusions: dict[str, set]) -> list[dict]:

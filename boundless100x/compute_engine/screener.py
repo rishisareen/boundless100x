@@ -43,6 +43,7 @@ class Screener:
         preset: str | None = None,
         filters: dict | None = None,
         rankings: dict | None = None,
+        eligibility: dict[str, dict] | None = None,
     ) -> list[dict]:
         """Screen a universe of companies.
 
@@ -52,10 +53,16 @@ class Screener:
             preset: Name of a preset filter set (e.g., "compounders").
             filters: Custom filter dict {metric_id: {min: X, max: Y}}.
             rankings: Custom ranking config {primary: metric_id, secondary: ...}.
+            eligibility: {ticker: eligibility_dict} from EligibilityEvaluator.
+                Consulted only when the preset (or caller) sets
+                `require_eligibility` — the additive filters above answer
+                "is this a quality compounder?"; this is the separate,
+                conjunctive "could this plausibly 100x?" check.
 
         Returns:
             Sorted list of dicts with ticker, metric values, and rank.
         """
+        require_eligibility = False
         if preset:
             preset_config = self.presets.get(preset)
             if not preset_config:
@@ -64,10 +71,17 @@ class Screener:
                 )
             filters = preset_config.get("filters", {})
             rankings = preset_config.get("rankings", {})
+            require_eligibility = preset_config.get("require_eligibility", False)
             logger.info(f"Using preset: {preset_config.get('name', preset)}")
 
         if not filters:
             filters = {}
+
+        if require_eligibility and eligibility is None:
+            raise ValueError(
+                f"Preset '{preset}' requires 100x eligibility, but no eligibility "
+                "data was supplied."
+            )
 
         # Apply filters
         survivors = []
@@ -99,6 +113,10 @@ class Screener:
                     passes = False
                     break
 
+            verdict = (eligibility or {}).get(ticker, {}).get("verdict")
+            if passes and require_eligibility and verdict != "eligible":
+                passes = False
+
             if passes:
                 # Collect all numeric metrics for the survivor
                 entry = {"ticker": ticker}
@@ -107,6 +125,8 @@ class Screener:
                         entry[mid] = result.value
                 if scores and ticker in scores:
                     entry["sqglp_composite"] = scores[ticker].get("composite")
+                if verdict:
+                    entry["eligibility_verdict"] = verdict
                 survivors.append(entry)
 
         logger.info(
@@ -155,12 +175,15 @@ class Screener:
         """
         universe = {}
         scores_map = {}
+        eligibility_map = {}
 
         for ticker in tickers:
             try:
                 result = service.analyze_quick(ticker)
                 universe[ticker] = result.metrics
                 scores_map[ticker] = result.scores
+                if result.eligibility is not None:
+                    eligibility_map[ticker] = result.eligibility
                 ok = sum(1 for m in result.metrics.values() if m.ok)
                 logger.info(f"  {ticker}: {ok} metrics computed")
             except Exception as e:
@@ -170,4 +193,5 @@ class Screener:
             universe=universe,
             scores=scores_map,
             preset=preset,
+            eligibility=eligibility_map,
         )

@@ -103,6 +103,23 @@ class Boundless100xService:
             logger.error(f"Data fetch failed for {ticker}: {e}")
             return result
 
+        # Financials and price are load-bearing for every downstream stage —
+        # scoring, eligibility, and the LLM synthesis all silently degrade to
+        # near-empty input rather than erroring, which can still produce a
+        # complete-looking report and recommendation from no real data. Stop
+        # here rather than let that happen.
+        CORE_SOURCES = ("financials", "price")
+        source_status = result.data.get("source_status", {})
+        missing_core = [s for s in CORE_SOURCES if not source_status.get(s, "").startswith("ok")]
+        if missing_core:
+            reasons = "; ".join(f"{s}: {source_status.get(s, 'no status recorded')}" for s in missing_core)
+            result.errors.append(
+                f"Fatal: core data missing ({reasons}) — stopping before scoring, "
+                "no recommendation can be produced from this."
+            )
+            logger.error(f"{ticker}: fatal — core data missing: {reasons}")
+            return result
+
         # Stage 2: Compute Engine (target)
         logger.info(f"[Stage 2] Running compute engine for {ticker}")
         try:

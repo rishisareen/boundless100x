@@ -142,4 +142,4 @@ class TestBankNbfcPath:
         table = compute_lever_decomposition_table(data, years=5)
 
         assert table["earnings_profile"]["pat_cagr_5yr"] is not None
-        assert len(table["lever_table"]) == 4
+        assert len(table["lever_table"]) == 3

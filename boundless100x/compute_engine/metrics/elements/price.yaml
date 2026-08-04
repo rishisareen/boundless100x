@@ -11,7 +11,10 @@ metrics:
     display: { format: "{:.1f}x", section: "valuation_analysis", peer_compare: true }
 
   peg_ratio:
-    name: "PEG Ratio (Forward)"
+    # Trailing PEG on a 5yr EPS CAGR window — no forward estimate feeds this.
+    # See compute_peg's docstring; distinct from trailing_peg only by window
+    # (5yr EPS here vs. 3yr PAT there), not by being forward-looking.
+    name: "PEG Ratio (5yr EPS, trailing)"
     module: "builtin.valuation"
     function: "compute_peg"
     inputs: ["financials", "metadata"]

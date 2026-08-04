@@ -138,7 +138,10 @@ class PriceVolumeFetcher(BaseFetcher):
 
         `close` is the raw traded close; `adj_close` is the split/dividend
         adjusted close. Sources without an adjusted series (jugaad-data)
-        get adj_close = close.
+        get adj_close = close — that alias is marked in `adj_close_is_estimated`
+        so a consumer computing returns can tell a genuine adjusted series
+        from a raw one wearing its name. Reading a 1:5 split off the aliased
+        column would otherwise read as an 80% loss.
         """
         # Handle yfinance multi-level columns (e.g., ('Close', 'ASTRAL.NS'))
         if isinstance(df.columns, pd.MultiIndex):
@@ -166,9 +169,15 @@ class PriceVolumeFetcher(BaseFetcher):
 
         if "adj_close" not in df.columns and "close" in df.columns:
             df["adj_close"] = df["close"]
+            df["adj_close_is_estimated"] = True
+        elif "close" in df.columns:
+            df["adj_close_is_estimated"] = False
 
         # Keep only standard columns
-        standard = ["date", "open", "high", "low", "close", "adj_close", "volume"]
+        standard = [
+            "date", "open", "high", "low", "close", "adj_close",
+            "adj_close_is_estimated", "volume",
+        ]
         available = [c for c in standard if c in df.columns]
         df = df[available].copy()
 

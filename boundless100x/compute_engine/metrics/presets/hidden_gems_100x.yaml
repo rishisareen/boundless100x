@@ -3,6 +3,12 @@ name: "Hidden Gems - 100x (MOSL 2014)"
 description: |
   Market cap < INR 30b, P/E < 25x, low institutional holding.
   Value migration or niche opportunity businesses.
+# These ratio filters are the additive "quality compounder" screen. A company
+# can pass them and still fail the conjunctive 100x eligibility gates in
+# registry.yaml (size headroom, entry price sanity, incremental returns) —
+# this flag makes screen() enforce those gates too, so this preset can't
+# surface a candidate the eligibility evaluator has already vetoed.
+require_eligibility: true
 filters:
   market_cap: { max: 30000 }
   pe_ttm: { max: 25 }

@@ -22,13 +22,13 @@ Sector: {sector}
 ## Qualitative Assessment (from prior analysis)
 {pass1_output}
 
-## Growth Quality Report (pre-computed 4-lever decomposition)
+## Growth Quality Report (pre-computed 3-lever decomposition)
 {growth_quality_report}
 
 ## Instructions
 
 Synthesize an investment thesis weighing:
-- Growth quality (4-lever decomposition: volume × price × operating leverage × financial leverage)
+- Growth quality (3-lever decomposition: real revenue growth × operating leverage × financial leverage — no unit-sales or ASP data exists to separate volume from pricing, so treat the first lever as one signal, not two)
 - Valuation reasonableness (PE, PEG, trailing PEG relative to growth)
 - Longevity evidence (RoCE consistency, margin stability, reinvestment rate)
 - Management alignment (promoter stake trends, capital allocation history)

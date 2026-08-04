@@ -14,14 +14,14 @@ from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import (
     compute_lever_decomposition_table,
 )
-from tests.conftest import make_data, make_financials
+from tests.conftest import compounding, make_data, make_financials
 
 
 class TestMacroReachesTheTable:
     def test_inflation_assumption_is_the_configured_one(self):
         table = compute_lever_decomposition_table(make_data(), macro={"inflation_pct": 9.0})
 
-        price_row = next(r for r in table["lever_table"] if r["lever"] == "Price Lever")
+        price_row = next(r for r in table["lever_table"] if r["lever"] == "Real Revenue Growth")
         assert "9.0%" in price_row["analysis"] or "9.0" in price_row["analysis"]
 
     def test_changing_inflation_changes_the_lever_verdict(self):
@@ -31,8 +31,8 @@ class TestMacroReachesTheTable:
         low = compute_lever_decomposition_table(data, macro={"inflation_pct": 2.0})
         high = compute_lever_decomposition_table(data, macro={"inflation_pct": 14.0})
 
-        low_row = next(r for r in low["lever_table"] if r["lever"] == "Price Lever")
-        high_row = next(r for r in high["lever_table"] if r["lever"] == "Price Lever")
+        low_row = next(r for r in low["lever_table"] if r["lever"] == "Real Revenue Growth")
+        high_row = next(r for r in high["lever_table"] if r["lever"] == "Real Revenue Growth")
         assert low_row["status"] != high_row["status"]
 
     def test_default_is_unchanged_when_no_macro_passed(self):
@@ -122,6 +122,63 @@ class TestMetricAndTableAgree:
         )
         for grade in ("high_quality", "moderate", "low_quality", "risky"):
             assert grade in categories
+
+
+class TestGrowthLeverIsNotDoubleCounted:
+    """revenue_cagr - inflation used to feed two separate drivers, "Volume
+    expansion" and "Price realization" — the same one estimate credited
+    twice, since no unit-sales or ASP data exists to actually tell volume
+    and pricing apart. It is now graded as a single "Real revenue growth"
+    driver."""
+
+    def test_strong_real_growth_produces_one_growth_driver_not_two(self):
+        from boundless100x.compute_engine.metrics.builtin.growth import (
+            compute_growth_quality,
+        )
+
+        data = make_data(financials={"revenue_growth": 0.30, "pat_growth": 0.30})
+        metric = compute_growth_quality(
+            data, {"inflation_pct": 5.0, "strong_real_growth_pct": 10.0}
+        )
+
+        drivers = metric.metadata["primary_drivers"]
+        assert drivers.count("Real revenue growth") <= 1
+        assert "Volume expansion" not in drivers
+        assert "Price realization" not in drivers
+
+    def test_lever_table_has_three_levers_not_four(self):
+        table = compute_lever_decomposition_table(make_data())
+
+        assert [r["lever"] for r in table["lever_table"]] == [
+            "Real Revenue Growth", "Operating Lever", "Financial Lever",
+        ]
+
+    def test_high_quality_still_requires_both_real_growth_and_operating_leverage(self):
+        """The merge must not make high_quality easier to reach — it still
+        needs the growth signal AND operating leverage together.
+
+        make_financials' default operating_profit is a constant 25% of
+        revenue, so it scales in lockstep with revenue (op_lever == 1.0
+        exactly) and never trips the >=1.1 operating-leverage threshold on
+        its own — operating_profit must be overridden to genuinely outgrow
+        revenue for that driver to fire.
+        """
+        from boundless100x.compute_engine.metrics.builtin.growth import (
+            compute_growth_quality,
+        )
+
+        data = make_data(financials={
+            "revenue_growth": 0.30, "pat_growth": 0.30,
+            "operating_profit": compounding(250.0, 0.40, 10),
+        })
+        metric = compute_growth_quality(
+            data, {"inflation_pct": 5.0, "strong_real_growth_pct": 10.0}
+        )
+
+        assert metric.value == "high_quality"
+        assert metric.metadata["primary_drivers"] == [
+            "Real revenue growth", "Operating leverage",
+        ]
 
 
 class TestReportAndModelSeeTheSameTable:

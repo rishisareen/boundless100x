@@ -158,6 +158,16 @@ def backtest(
         )
         for element, value in correlations.get("elements_vs_return", {}).items():
             console.print(f"   {element:20} {value}")
+
+        cohorts = report.get("eligibility_cohorts")
+        if cohorts:
+            console.print("\n[bold blue]Forward return by 100x-eligibility verdict[/bold blue]")
+            for verdict, stats in cohorts.items():
+                console.print(
+                    f"   {verdict:15} n={stats['n']:<3} "
+                    f"mean={stats['mean_cagr_pct']:+.1f}%  median={stats['median_cagr_pct']:+.1f}%  "
+                    f"range=[{stats['min_cagr_pct']:+.1f}%, {stats['max_cagr_pct']:+.1f}%]"
+                )
     else:
         console.print("[yellow]No company qualified.[/yellow]")
 

@@ -1,6 +1,31 @@
 """Shared helpers for metric computation."""
 
+import re
+
 import numpy as np
+import pandas as pd
+
+MONTH_NUMBERS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def period_end_date(label) -> pd.Timestamp | None:
+    """Turn a Screener column label such as 'Mar 2020' into that period's end.
+
+    Returns None for labels this cannot parse (e.g. 'TTM') — a period whose
+    actual end date is unknown must not be silently treated as any date, since
+    comparing it against a cutoff either way would be a guess dressed up as a
+    fact.
+    """
+    match = re.match(r"\s*([A-Za-z]{3})\w*\s+(\d{4})", str(label))
+    if not match:
+        return None
+    month = MONTH_NUMBERS.get(match.group(1).lower())
+    if month is None:
+        return None
+    return pd.Timestamp(year=int(match.group(2)), month=month, day=1) + pd.offsets.MonthEnd(0)
 
 
 def detect_fcf_outliers(

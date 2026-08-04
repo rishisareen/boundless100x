@@ -121,25 +121,30 @@ def _mean_yoy_ratio(
 
 
 def _grade_growth_quality(
-    vol_growth: float, price_signal: str, op_lever: float, fin_lever: float
+    real_growth_signal: str, op_lever: float, fin_lever: float
 ) -> tuple[str, list[str]]:
     """The single source of truth for growth-quality grades.
 
     Used by both the scored metric (compute_growth_quality) and the report/LLM
     lever table (_synthesize_growth_quality), so a company can never receive
     two different grades in one report. Returns (grade, primary_drivers).
+
+    `real_growth_signal` is compute_price_lever's banded verdict on revenue
+    growth net of an inflation assumption. It used to also feed a second,
+    separately-thresholded "Volume expansion" driver — but that and "Price
+    realization" were the same number read twice, since no unit-sales or ASP
+    data exists to actually tell volume and pricing apart (see
+    compute_price_lever's docstring). One number now grades as one driver.
     """
     drivers = []
-    if vol_growth >= 10:
-        drivers.append("Volume expansion")
-    if price_signal in ("strong_pricing_power", "moderate_pricing"):
-        drivers.append("Price realization")
+    if real_growth_signal in ("strong_pricing_power", "moderate_pricing"):
+        drivers.append("Real revenue growth")
     if op_lever >= 1.1:
         drivers.append("Operating leverage")
     if fin_lever >= 1.3:
         drivers.append("Financial leverage")
 
-    if "Volume expansion" in drivers and "Operating leverage" in drivers:
+    if "Real revenue growth" in drivers and "Operating leverage" in drivers:
         quality = "high_quality"
     elif "Financial leverage" in drivers and len(drivers) == 1:
         quality = "risky"
@@ -200,11 +205,11 @@ def compute_financial_leverage(data: dict, params: dict) -> MetricResult:
 
 
 def compute_growth_quality(data: dict, params: dict) -> MetricResult:
-    """Growth Quality Grade from the 4-lever decomposition.
+    """Growth Quality Grade from the 3-lever decomposition.
 
     Uses _grade_growth_quality — the same grading the report's lever table
     and LLM Pass 2 see — so the scored metric and the narrative can never
-    disagree. The price/volume lever comes from compute_price_lever with the
+    disagree. The real-growth lever comes from compute_price_lever with the
     metric's params (engine injects the macro block).
     """
     years = params.get("years", 5)
@@ -225,14 +230,14 @@ def compute_growth_quality(data: dict, params: dict) -> MetricResult:
     if avg_fin_lev is None:
         avg_fin_lev = 1.0
 
-    # Volume & price levers via the shared price-lever metric (macro params
-    # reach it here the same way they reach it when the engine runs it).
+    # Real-growth lever via the shared price-lever metric (macro params reach
+    # it here the same way they reach it when the engine runs it).
     price_lever = compute_price_lever(data, {**params, "years": years})
     price_signal = price_lever.value if price_lever.ok else "unknown"
     vol_growth = (price_lever.metadata or {}).get("estimated_volume_growth", 0.0) \
         if price_lever.ok else 0.0
 
-    grade, drivers = _grade_growth_quality(vol_growth, price_signal, avg_op_lev, avg_fin_lev)
+    grade, drivers = _grade_growth_quality(price_signal, avg_op_lev, avg_fin_lev)
 
     # Revenue CAGR for metadata (unsmoothed, over the same window)
     rev = revenue.tail(n).values
@@ -447,19 +452,6 @@ def _compute_cagr_from_series(
     return cagr
 
 
-def _classify_volume_status(rev_cagr_5: float, price_lever_result: MetricResult) -> str:
-    """Classify volume growth: Strong / Moderate / Weak / Declining."""
-    est_volume = (price_lever_result.metadata or {}).get("estimated_volume_growth", 0)
-    if est_volume >= 15:
-        return "Strong organic volume growth"
-    elif est_volume >= 8:
-        return "Moderate volume growth"
-    elif est_volume >= 0:
-        return "Weak volume growth"
-    else:
-        return "Volume declining"
-
-
 def _classify_op_lever(op_lever_avg: float, ebit_cagr: float | None, rev_cagr: float | None) -> str:
     """Classify operating leverage status."""
     if op_lever_avg >= 1.3:
@@ -484,55 +476,38 @@ def _classify_fin_lever(fin_lever_avg: float) -> str:
         return "Negative financial leverage (deleveraging)"
 
 
-def _classify_price_lever(price_lever: MetricResult) -> str:
-    """Classify price lever status into human-readable description."""
-    signal = price_lever.value if price_lever.ok else "unknown"
+def _classify_real_growth(price_lever: MetricResult) -> str:
+    """Classify revenue growth net of inflation.
+
+    This is one signal, not two. No unit-sales or ASP data exists anywhere in
+    this pipeline to actually separate "sold more" from "charged more" — see
+    compute_price_lever's docstring — so it is reported once, honestly, as
+    real revenue growth rather than as two levers built from one number.
+    """
+    if not price_lever.ok:
+        return "Insufficient data"
     labels = {
-        "strong_pricing_power": "Strong pricing power",
-        "moderate_pricing": "Moderate pricing power",
-        "discounting": "Weak — discounting to maintain volumes",
-        "unknown": "Insufficient data",
+        "strong_pricing_power": "Strong real growth (well above inflation)",
+        "moderate_pricing": "Moderate real growth",
+        "discounting": "Declining in real terms (below inflation)",
     }
+    signal = price_lever.value
     return labels.get(signal, signal.replace("_", " ").title() if isinstance(signal, str) else "Unknown")
 
 
-def _generate_volume_analysis(rev_cagr: float | None, price_lever: MetricResult, df: pd.DataFrame) -> str:
-    """Generate analysis text for volume lever."""
-    est_vol = (price_lever.metadata or {}).get("estimated_volume_growth", 0)
+def _generate_real_growth_analysis(rev_cagr: float | None, price_lever: MetricResult, df: pd.DataFrame) -> str:
+    """Generate analysis text for the combined real-growth lever."""
+    if not price_lever.ok:
+        return "Insufficient data to determine real revenue growth."
+    meta = price_lever.metadata or {}
+    est = meta.get("estimated_volume_growth", 0)
     rev_str = f"{rev_cagr:.1f}%" if rev_cagr is not None else "N/A"
     return (
-        f"Revenue CAGR of {rev_str} with estimated real volume growth of "
-        f"{est_vol:.1f}% (after deflating for a "
-        f"{(price_lever.metadata or {}).get('inflation_assumption', 5.0):.1f}% "
-        f"inflation assumption)."
+        f"Revenue CAGR of {rev_str} against a "
+        f"{meta.get('inflation_assumption', 5.0):.1f}% inflation assumption implies "
+        f"~{est:.1f}% real growth. This cannot be split into volume and pricing "
+        f"components without unit-sales or ASP data, which this pipeline does not fetch."
     )
-
-
-def _generate_price_analysis(rev_cagr: float | None, price_lever: MetricResult, df: pd.DataFrame) -> str:
-    """Generate analysis text for price lever."""
-    signal = price_lever.value
-    meta = price_lever.metadata or {}
-    est_vol = meta.get("estimated_volume_growth", 0)
-    rev = meta.get("revenue_cagr", 0)
-    price_contribution = rev - est_vol if rev and est_vol else 0
-
-    if signal == "strong_pricing_power":
-        return (
-            f"Revenue growth exceeds volume proxy by ~{price_contribution:.1f}pp, "
-            f"indicating strong pricing power or favorable product mix shift."
-        )
-    elif signal == "moderate_pricing":
-        return (
-            f"Revenue growth exceeds volume proxy by ~{price_contribution:.1f}pp, "
-            f"suggesting moderate pricing power — partly raw material pass-through."
-        )
-    elif signal == "discounting":
-        return (
-            f"Revenue growth below inflation proxy — company may be discounting "
-            f"to maintain volumes. Pricing power is weak."
-        )
-    else:
-        return "Insufficient data to determine pricing power signal."
 
 
 def _generate_op_lever_analysis(
@@ -572,11 +547,9 @@ def _synthesize_growth_quality(
     growth_quality_grade metric uses — so the report and the composite can
     never show two different grades for one company.
     """
-    vol_growth = (price_lever.metadata or {}).get("estimated_volume_growth", 0) \
-        if price_lever.ok else 0
     price_signal = price_lever.value if price_lever.ok else "unknown"
 
-    quality, drivers = _grade_growth_quality(vol_growth, price_signal, op_lever, fin_lever)
+    quality, drivers = _grade_growth_quality(price_signal, op_lever, fin_lever)
 
     # Build narrative
     narrative_parts = []
@@ -589,7 +562,7 @@ def _synthesize_growth_quality(
 
     if quality == "high_quality":
         narrative_parts.append(
-            "This is high-quality growth — organic volume expansion "
+            "This is high-quality growth — real revenue growth "
             "amplified by operating scale benefits."
         )
     elif quality == "risky":
@@ -678,7 +651,7 @@ def _ensure_operating_profit(df: pd.DataFrame) -> pd.DataFrame:
 def compute_lever_decomposition_table(
     data: dict, years: int = 5, macro: dict | None = None
 ) -> dict:
-    """Full 4-lever decomposition for the expanded report section.
+    """Full 3-lever decomposition for the expanded report section.
 
     Returns a structured dict with:
     - earnings_profile: {pat_cagr_3yr, pat_cagr_5yr}
@@ -708,7 +681,8 @@ def compute_lever_decomposition_table(
     # Financial Leverage = EPS Growth / EBIT Growth (YoY, averaged)
     fin_lever_avg = _compute_financial_leverage_avg(df, years)
 
-    # Volume & Price Lever (proxy-based)
+    # Real Growth Lever (proxy-based — see compute_price_lever's docstring for
+    # why this is one signal, not a separate volume lever and price lever)
     price_lever = compute_price_lever(data, {**(macro or {}), "years": years})
 
     # ─── 1. Earnings Growth Profile ───
@@ -720,14 +694,9 @@ def compute_lever_decomposition_table(
     # ─── 2. Lever Table ───
     lever_table = [
         {
-            "lever": "Volume Growth",
-            "status": _classify_volume_status(rev_cagr_5, price_lever),
-            "analysis": _generate_volume_analysis(rev_cagr_5, price_lever, df),
-        },
-        {
-            "lever": "Price Lever",
-            "status": _classify_price_lever(price_lever),
-            "analysis": _generate_price_analysis(rev_cagr_5, price_lever, df),
+            "lever": "Real Revenue Growth",
+            "status": _classify_real_growth(price_lever),
+            "analysis": _generate_real_growth_analysis(rev_cagr_5, price_lever, df),
         },
         {
             "lever": "Operating Lever",

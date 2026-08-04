@@ -130,9 +130,13 @@ def compute_promoter_trend(data: dict, params: dict) -> MetricResult:
 
 
 def compute_promoter_pledge(data: dict, params: dict) -> MetricResult:
-    """Promoter pledge percentage (from BSE data or estimated as 0)."""
-    sh = data["shareholding"]
+    """Promoter pledge percentage, from BSE data only.
 
+    An unpledged promoter and an unknown one look identical if absence scores
+    as 0 — the best possible outcome. Pledge is a risk flag; only a verified
+    observation may clear it. When BSE has not supplied the figure, this
+    reports unavailable rather than guessing.
+    """
     # Try BSE supplemental data first
     bse_sh = data.get("shareholding_bse")
     if bse_sh is not None and not bse_sh.empty and "promoter_pledge_pct" in bse_sh.columns:
@@ -144,11 +148,7 @@ def compute_promoter_pledge(data: dict, params: dict) -> MetricResult:
                 flags.append("promoter_pledge_red_flag")
             return MetricResult(value=val, flags=flags)
 
-    # Default: assume 0 if not available
-    return MetricResult(
-        value=0.0,
-        metadata={"note": "Pledge data not available, defaulting to 0"},
-    )
+    return MetricResult(error="Promoter pledge data not available from BSE")
 
 
 def compute_owner_operator(data: dict, params: dict) -> MetricResult:

@@ -81,13 +81,15 @@ class AnalystCoverageFetcher(BaseFetcher):
                 logger.debug(f"Trendlyne: no match for '{ticker}'")
                 return None
 
-            # Find exact NSE ticker match first, then fall back to first result
+            # Only an exact NSE ticker match is trustworthy — the search API
+            # returns fuzzy results, and the first hit for one company's
+            # ticker can be a different, similarly-named issuer.
             for entry in data:
                 if entry.get("NSEcode", "").upper() == ticker.upper():
                     return entry
 
-            # Fall back to first result if no exact match
-            return data[0]
+            logger.debug(f"Trendlyne: no exact NSE match for '{ticker}', discarding fuzzy results")
+            return None
 
         except Exception as e:
             logger.debug(f"Trendlyne search API failed for {ticker}: {e}")

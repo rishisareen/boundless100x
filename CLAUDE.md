@@ -97,7 +97,7 @@ boundless100x/
 - **Scoring**: Threshold-based (higher/lower_is_better), range_optimal, categorical, sector_relative_percentile, trend_direction modes. All defined in YAML. Scorer receives full MetricResult for trend analysis.
 - **Data contract**: Fetchers write to `raw_data/{TICKER}/` in standardized CSV/JSON. Compute engine reads from there. BSE codes auto-detected from Screener.in metadata.
 - **Screener page cache**: The company page HTML is cached via the TTL cache (`txt` entries), so repeat runs within the window do not re-scrape Screener. Parsing stays deterministic on the cached HTML.
-- **Price series**: `price_volume.csv` carries both `close` (raw traded) and `adj_close` (split/dividend-adjusted). Valuation metrics use the raw close against as-reported EPS and record `price_basis` in metadata; the backtest's realized return prefers `adj_close`. Files fetched before Aug 2026 hold a single legacy close — refetch to upgrade.
+- **Price series**: `price_volume.csv` carries both `close` (raw traded) and `adj_close` (split/dividend-adjusted). Valuation metrics use the raw close against as-reported EPS and record `price_basis` in metadata; the backtest's realized return prefers `adj_close`. When the fetch source has no real adjusted series (jugaad-data fallback), `adj_close` is aliased to `close` and `adj_close_is_estimated=True` marks the alias — the backtest refuses to score a realized return off it rather than risk reading a split as a crash. Files fetched before Aug 2026 hold a single legacy close with no alias flag at all — refetch to upgrade.
 - **Growth quality**: `_grade_growth_quality` in `builtin/growth.py` is the single grader for both the scored `growth_quality_grade` metric and the report/LLM lever table. YoY leverage ratios share one helper, `_mean_yoy_ratio`.
 - **FCF outlier detection**: MAD-based (Median Absolute Deviation) to identify M&A-dominated years. Applied in valuation.py, longevity.py, profitability.py via `_helpers.py`.
 - **Bonus/split detection**: YoY equity capital spikes >50% flagged as structural events. Organic dilution computed separately in growth.py.
@@ -154,8 +154,9 @@ python -m pytest tests/                         # Unit tests (the live-network S
 ```
 
 **Environment note**: the checked-in `venv/` works (Python 3.11.15). Run
-everything through `venv/bin/python`; the suite is 185 tests green
-(`venv/bin/python -m pytest tests/`).
+everything through `venv/bin/python`; the suite is green
+(`venv/bin/python -m pytest tests/`). Don't hardcode the test count here —
+it drifts every time a test is added and nobody remembers to update it.
 
 ## GitHub
 - **Repo**: https://github.com/rishisareen/boundless100x (private)

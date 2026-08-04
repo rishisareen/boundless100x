@@ -95,7 +95,7 @@ class TestAnyOfConditions:
     def test_either_peg_measure_can_satisfy_the_price_gate(self):
         verdict = evaluator().evaluate(passing_metrics(
             trailing_peg=MetricResult(value=2.6),   # fails on its own
-            peg_ratio=MetricResult(value=1.2),      # but forward PEG is fine
+            peg_ratio=MetricResult(value=1.2),      # but the 5yr-EPS trailing PEG is fine
         ))
 
         assert verdict["gates"]["price"]["passed"] is True

@@ -31,7 +31,10 @@ eligibility_gates:
   price:
     label: "Entry price sanity"
     rationale: "Growth already paid for cannot be earned twice."
-    mode: any              # trailing PEG or forward PEG may satisfy it
+    # Both conditions are trailing PEG (3yr PAT vs. 5yr EPS windows) — neither
+    # is a forward estimate. The reverse-DCF veto below is what actually
+    # checks the price against undelivered future growth.
+    mode: any
     conditions:
       - { metric: trailing_peg, comparator: lt, threshold: 2.0 }
       - { metric: peg_ratio, comparator: lt, threshold: 1.5 }

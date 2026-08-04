@@ -69,9 +69,16 @@ class DataFetcherSuite:
         Returns dict with keys matching compute engine expected inputs:
             financials, balance_sheet, cashflow, ratios, shareholding,
             price, analyst_coverage, metadata
+
+        Also carries `source_status`: {source: "ok" | "empty: <reason>" |
+        "failed: <exception>"} for financials, price, and analyst_coverage.
+        A source that failed or came back empty still leaves its DataFrame
+        in `data` (empty, never missing) so downstream code need not
+        special-case absence — but the caller can consult `source_status`
+        to decide whether the fetch was good enough to analyze at all.
         """
         logger.info(f"Fetching all data for {ticker}")
-        data = {"annual_report_text": None}
+        data = {"annual_report_text": None, "source_status": {}}
 
         # 1. Screener.in financials (P&L, BS, CF, Ratios, Shareholding)
         try:
@@ -85,6 +92,9 @@ class DataFetcherSuite:
             data["shareholding"] = screener_data.get("shareholding", pd.DataFrame())
             data["metadata"] = screener_data.get("metadata", {})
             data["growth_summary"] = screener_data.get("growth_summary", {})
+            data["source_status"]["financials"] = (
+                "ok" if not data["financials"].empty else "empty: Screener returned no rows"
+            )
         except Exception as e:
             logger.error(f"Screener.in fetch failed for {ticker}: {e}")
             data["financials"] = pd.DataFrame()
@@ -93,6 +103,7 @@ class DataFetcherSuite:
             data["ratios"] = pd.DataFrame()
             data["shareholding"] = pd.DataFrame()
             data["metadata"] = {}
+            data["source_status"]["financials"] = f"failed: {e}"
 
         # 2. Price & volume
         logger.info(f"Fetching price & volume for {ticker} (may take a moment)...")
@@ -100,9 +111,13 @@ class DataFetcherSuite:
             data["price"] = self.price_volume.fetch(
                 ticker, years=self.price_years, output_dir=self.raw_data_dir
             )
+            data["source_status"]["price"] = (
+                "ok" if not data["price"].empty else "empty: no price history returned"
+            )
         except Exception as e:
             logger.error(f"Price fetch failed for {ticker}: {e}")
             data["price"] = pd.DataFrame()
+            data["source_status"]["price"] = f"failed: {e}"
 
         # 3. Analyst coverage
         logger.info(f"Fetching analyst coverage for {ticker}...")
@@ -114,9 +129,11 @@ class DataFetcherSuite:
             ac = data["analyst_coverage"]
             if ac.get("sector") and not data.get("metadata", {}).get("sector"):
                 data.setdefault("metadata", {})["sector"] = ac["sector"]
+            data["source_status"]["analyst_coverage"] = "ok"
         except Exception as e:
             logger.error(f"Analyst coverage fetch failed for {ticker}: {e}")
             data["analyst_coverage"] = {}
+            data["source_status"]["analyst_coverage"] = f"failed: {e}"
 
         # 4. BSE-specific data (if BSE code provided, cached, or resolvable)
         resolved_bse = bse_code or data.get("metadata", {}).get("bse_code")

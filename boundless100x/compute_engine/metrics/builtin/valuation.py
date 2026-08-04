@@ -1,12 +1,13 @@
 """Valuation metrics: P/E, PEG, trailing PEG, EV/EBITDA, DCF, reverse DCF."""
 
-import re
-
 import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
-from boundless100x.compute_engine.metrics.builtin._helpers import detect_fcf_outliers
+from boundless100x.compute_engine.metrics.builtin._helpers import (
+    detect_fcf_outliers,
+    period_end_date,
+)
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
 
@@ -29,7 +30,14 @@ def compute_pe_ttm(data: dict, params: dict) -> MetricResult:
 
 
 def compute_peg(data: dict, params: dict) -> MetricResult:
-    """PEG = P/E / EPS CAGR (5yr forward estimate, using historical as proxy)."""
+    """PEG = P/E ÷ trailing 5yr EPS CAGR.
+
+    Despite the "forward" framing this used to carry, no forward estimate
+    feeds this: it is a trailing PEG, on a longer window than
+    `compute_trailing_peg`'s 3yr PAT CAGR, nothing more. A real forward PEG
+    would need timestamped analyst EPS estimates, which this pipeline does
+    not fetch.
+    """
     meta = data.get("metadata", {})
     pe = meta.get("Stock P/E")
     if pe is None or pe <= 0:
@@ -139,25 +147,9 @@ def compute_ev_ebitda(data: dict, params: dict) -> MetricResult:
     )
 
 
-MONTH_NUMBERS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-}
-
 # How far back a fiscal year end may reach for a traded price before the year
 # is treated as uncovered — comfortably more than any exchange holiday run.
 PRICE_LOOKBACK_DAYS = 45
-
-
-def _period_end(label: str) -> pd.Timestamp | None:
-    """Turn a Screener column label such as 'Mar 2020' into that period's end."""
-    match = re.match(r"\s*([A-Za-z]{3})\w*\s+(\d{4})", str(label))
-    if not match:
-        return None
-    month = MONTH_NUMBERS.get(match.group(1).lower())
-    if month is None:
-        return None
-    return pd.Timestamp(year=int(match.group(2)), month=month, day=1) + pd.offsets.MonthEnd(0)
 
 
 def _close_on_or_before(price: pd.DataFrame, when: pd.Timestamp) -> float | None:
@@ -214,7 +206,7 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
     for label, raw_eps in zip(df["year"], pd.to_numeric(df["eps"], errors="coerce")):
         if pd.isna(raw_eps) or raw_eps <= 0:
             continue
-        period_end = _period_end(label)
+        period_end = period_end_date(label)
         if period_end is None:
             continue
         close = _close_on_or_before(price, period_end)
