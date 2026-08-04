@@ -112,3 +112,33 @@ def resolve_final_action(
         decision["ceiling"] = CAP_CEILING
 
     return decision
+
+
+def resolve_for_result(result) -> dict | None:
+    """The decision for a whole AnalysisResult, or None when there is no LLM view.
+
+    The single derivation of "which action does this result get", so the
+    service and the render boundary cannot drift apart on the answer. Reads
+    only `llm_analysis`, `eligibility` and `scores` — never a stored
+    `final_action`, which is an output of this function and must never
+    become an input to it.
+
+    Recomputing rather than trusting a stored decision matters because
+    `final_action` is a mutable field that is also serialised into reports:
+    anything that re-evaluates eligibility or rescores after Stage 4.5 leaves
+    it stale, and a stale decision is exactly as dangerous as an absent one.
+    The function is pure over plain dicts, so recomputing costs nothing.
+    """
+    llm = getattr(result, "llm_analysis", None)
+    if not llm or llm.get("skipped"):
+        return None
+
+    p2 = llm.get("pass2") or {}
+    if p2.get("error") or p2.get("skipped"):
+        return None
+
+    return resolve_final_action(
+        p2.get("suggested_action"),
+        getattr(result, "eligibility", None),
+        getattr(result, "scores", None),
+    )

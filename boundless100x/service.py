@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from boundless100x.action_policy import resolve_final_action
+from boundless100x.action_policy import resolve_for_result
 from boundless100x.data_fetcher.suite import DataFetcherSuite
 from boundless100x.compute_engine.eligibility import EligibilityEvaluator
 from boundless100x.compute_engine.engine import ComputeEngine
@@ -216,21 +216,10 @@ class Boundless100xService:
     def resolve_action(result: AnalysisResult) -> dict | None:
         """The action a report may display, or None when there is no LLM view.
 
-        Static and side-effect free so the report generator can call it on an
-        AnalysisResult it did not build — the guard has to hold at the render
-        boundary too, not only on the path that happens to run the pipeline.
+        Derived from the metrics every time; see action_policy for why a
+        stored `final_action` is never an input here.
         """
-        llm = result.llm_analysis
-        if not llm or llm.get("skipped"):
-            return None
-
-        p2 = llm.get("pass2") or {}
-        if p2.get("error") or p2.get("skipped"):
-            return None
-
-        return resolve_final_action(
-            p2.get("suggested_action"), result.eligibility, result.scores
-        )
+        return resolve_for_result(result)
 
     def analyze_quick(self, ticker: str) -> AnalysisResult:
         """Quick analysis without LLM — for screening."""

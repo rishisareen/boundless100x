@@ -728,23 +728,28 @@ class ReportGenerator:
     def _resolve_action(result) -> dict:
         """The action this report may display, guarded at the render boundary.
 
-        Prefers the service's already-resolved decision, and recomputes it the
-        same way when absent — mirroring _compute_growth_decomposition, so a
-        report built from a hand-assembled AnalysisResult cannot slip an
-        unchecked action past the eligibility verdict shown beside it.
+        Always derived from `llm_analysis`, `eligibility` and `scores` — a
+        pre-populated `final_action` is never trusted. Trusting it would make
+        the guard only as strong as whoever set the field: a stale decision
+        left behind by a rescore, or one attached to a hand-built
+        AnalysisResult, would render straight through beside a verdict it
+        contradicts. Recomputing is a pure dict operation, so there is no
+        reason to accept that risk to save it.
         """
-        decision = getattr(result, "final_action", None)
-        if decision:
-            return decision
+        from boundless100x.action_policy import resolve_for_result
 
-        from boundless100x.action_policy import resolve_final_action
+        decision = resolve_for_result(result) or {}
 
-        p2 = (getattr(result, "llm_analysis", None) or {}).get("pass2") or {}
-        return resolve_final_action(
-            p2.get("suggested_action"),
-            getattr(result, "eligibility", None),
-            getattr(result, "scores", None),
-        )
+        stored = getattr(result, "final_action", None)
+        if stored and stored.get("action") != decision.get("action"):
+            logger.warning(
+                "Stored final_action (%s) disagrees with the action recomputed "
+                "at render time (%s) — rendering the recomputed one. The stored "
+                "decision is stale or was not produced by the action policy.",
+                stored.get("action"), decision.get("action"),
+            )
+
+        return decision
 
     def _build_executive_summary(self, result) -> dict:
         """Build executive summary data for the decision dashboard."""

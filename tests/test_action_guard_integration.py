@@ -146,18 +146,61 @@ class TestReportNeverShowsAnUnguardedAction:
 
         assert summary["suggested_action"] == "watchlist"
 
-    def test_service_resolved_decision_is_reused_not_recomputed(self, tmp_path):
-        """When the service already decided, the report shows that decision."""
+    def test_a_stored_decision_contradicting_the_verdict_is_not_trusted(self, tmp_path):
+        """`final_action` is an output of the policy, never an input to it.
+
+        Trusting a pre-populated decision would make the guard only as strong
+        as whoever set the field — a stale one left by a rescore, or one on a
+        hand-built result, would render straight through beside the verdict it
+        contradicts.
+        """
         result = result_with("strong_buy", failed_eligibility())
         result.final_action = {
-            "action": "hold", "llm_action": "strong_buy", "capped": True,
-            "ceiling": "hold", "constraints": ["sentinel reason"],
+            "action": "strong_buy", "llm_action": "strong_buy",
+            "capped": False, "ceiling": None, "constraints": [],
         }
 
         summary = self.build(tmp_path, result)
 
-        assert summary["suggested_action"] == "hold"
-        assert summary["action_constraint"]["constraints"] == ["sentinel reason"]
+        assert summary["eligibility"]["verdict"] == "not_eligible"
+        assert summary["suggested_action"] == "watchlist"
+
+    def test_a_stale_decision_is_replaced_by_the_current_one(self, tmp_path):
+        """Eligibility changed after Stage 4.5 ran; the render must follow the
+        current inputs, not the decision recorded against the old ones."""
+        result = result_with("strong_buy", clean_eligibility())
+        result.final_action = {
+            "action": "strong_buy", "llm_action": "strong_buy",
+            "capped": False, "ceiling": None, "constraints": [],
+        }
+        result.eligibility = failed_eligibility()   # rescored afterwards
+
+        summary = self.build(tmp_path, result)
+
+        assert summary["suggested_action"] == "watchlist"
+        assert summary["action_constraint"]["capped"] is True
+
+    def test_a_disagreeing_stored_decision_is_logged_not_swallowed(self, tmp_path, caplog):
+        result = result_with("strong_buy", failed_eligibility())
+        result.final_action = {
+            "action": "strong_buy", "llm_action": "strong_buy",
+            "capped": False, "ceiling": None, "constraints": [],
+        }
+
+        with caplog.at_level("WARNING"):
+            self.build(tmp_path, result)
+
+        assert any("disagrees" in r.message for r in caplog.records)
+
+    def test_an_agreeing_stored_decision_logs_nothing(self, tmp_path, caplog):
+        result = result_with("strong_buy", clean_eligibility())
+        result.final_action = Boundless100xService.resolve_action(result)
+
+        with caplog.at_level("WARNING"):
+            summary = self.build(tmp_path, result)
+
+        assert summary["suggested_action"] == "strong_buy"
+        assert not [r for r in caplog.records if "disagrees" in r.message]
 
     def test_low_coverage_caps_even_on_a_clean_verdict(self, tmp_path):
         thin = make_scores()
@@ -170,6 +213,48 @@ class TestReportNeverShowsAnUnguardedAction:
 
         assert summary["suggested_action"] == "watchlist"
         assert any("55%" in r for r in summary["action_constraint"]["constraints"])
+
+
+class TestConsoleOutputIsGuardedToo:
+    """The CLI prints the eligibility gates immediately above the action, so
+    it is a decision surface with the same contradiction risk as the report."""
+
+    def printed(self, result) -> str:
+        from unittest.mock import patch
+
+        from boundless100x import cli
+
+        captured = []
+        with patch.object(cli.console, "print", lambda *a, **k: captured.append(str(a[0]) if a else "")):
+            cli._print_llm_summary(result)
+        return "\n".join(captured)
+
+    def test_absent_final_action_does_not_fall_back_to_the_raw_model_action(self):
+        result = result_with("strong_buy", failed_eligibility())
+        assert result.final_action is None
+
+        output = self.printed(result)
+
+        assert "watchlist" in output
+        assert "Action: [bold]strong_buy" not in output
+
+    def test_stale_final_action_does_not_reach_the_console(self):
+        result = result_with("strong_buy", failed_eligibility())
+        result.final_action = {
+            "action": "strong_buy", "llm_action": "strong_buy",
+            "capped": False, "ceiling": None, "constraints": [],
+        }
+
+        output = self.printed(result)
+
+        assert "watchlist" in output
+
+    def test_clean_verdict_still_prints_the_models_action(self):
+        result = result_with("strong_buy", clean_eligibility())
+
+        output = self.printed(result)
+
+        assert "strong_buy" in output
 
 
 class TestRenderedReportIsConsistent:

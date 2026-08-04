@@ -454,8 +454,12 @@ def _print_llm_summary(result):
     if p2 and not p2.get("error") and not p2.get("skipped"):
         # The guarded action, never the raw p2 one — the console is a decision
         # surface too, and it prints the eligibility gates just above this.
-        decision = result.final_action or {}
-        action = decision.get("action", p2.get("suggested_action", "N/A"))
+        # Recomputed rather than read off result.final_action, so a stale or
+        # unset field cannot fall back to the unchecked model action here.
+        from boundless100x.action_policy import resolve_for_result
+
+        decision = resolve_for_result(result) or {}
+        action = decision.get("action") or "N/A"
 
         console.print("\n[bold]Investment Thesis:[/bold]")
         console.print(f"  {p2.get('thesis', 'N/A')}")
