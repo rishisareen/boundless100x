@@ -1,5 +1,6 @@
 """Boundless100x CLI — SQGLP Financial Research System."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -105,6 +106,77 @@ def compute(
             table.add_row(mid, f"[red]ERR: {mr.error}[/red]", "")
 
     console.print(table)
+
+
+@app.command()
+def backtest(
+    output_dir: str = typer.Option("output/backtests", help="Where to write the report"),
+    min_years: int = typer.Option(8, help="Minimum years of financials to qualify"),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Score companies on the first half of their history, check the second half."""
+    setup_logging(verbose)
+
+    from datetime import date
+
+    from boundless100x.compute_engine.backtest import WalkForwardBacktest
+    from boundless100x.service import Boundless100xService
+
+    svc = Boundless100xService()
+    raw_data_dir = Path(__file__).parent / "data_fetcher" / "raw_data"
+
+    console.print("\n[bold blue]Walk-forward backtest[/bold blue]")
+    report = WalkForwardBacktest(
+        raw_data_dir, svc.engine, svc.scorer, svc.eligibility, min_total_years=min_years
+    ).run()
+
+    companies = report["companies"]
+    if companies:
+        table = Table(title="Score then vs. return since")
+        table.add_column("Ticker", style="bold")
+        table.add_column("Scored on", justify="right")
+        table.add_column("Composite", justify="right")
+        table.add_column("Fwd yrs", justify="right")
+        table.add_column("Realized CAGR", justify="right")
+        for row in sorted(companies, key=lambda r: r["realized_cagr_pct"], reverse=True):
+            cagr = row["realized_cagr_pct"]
+            colour = "green" if cagr > 15 else "yellow" if cagr > 0 else "red"
+            table.add_row(
+                row["ticker"], row["truncation_date"],
+                f"{row['composite_then']}/10", str(row["forward_span"]["years"]),
+                f"[{colour}]{cagr:+.1f}%[/{colour}]",
+            )
+        console.print(table)
+
+        correlations = report["correlations"]
+        console.print(
+            f"\nSpearman (composite vs return): "
+            f"[bold]{correlations['composite_vs_return']}[/bold] over n={correlations['n']}"
+        )
+        for element, value in correlations.get("elements_vs_return", {}).items():
+            console.print(f"   {element:20} {value}")
+    else:
+        console.print("[yellow]No company qualified.[/yellow]")
+
+    if report["skipped"]:
+        console.print(f"\n[dim]Skipped {len(report['skipped'])}:[/dim]")
+        for entry in report["skipped"]:
+            console.print(f"   [dim]{entry['ticker']}: {entry['reason']}[/dim]")
+
+    if report["excluded_metrics"]:
+        console.print(
+            f"\n[dim]Metrics excluded to prevent look-ahead leakage "
+            f"({len(report['excluded_metrics'])}):[/dim]"
+        )
+        for entry in report["excluded_metrics"][:10]:
+            console.print(f"   [dim]{entry['metric']} ({entry['tickers_affected']} tickers)[/dim]")
+
+    console.print(f"\n[yellow]{report['limitations']['verdict']}[/yellow]")
+
+    out = Path(output_dir) / date.today().strftime("%Y%m%d")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "backtest.json").write_text(json.dumps(report, indent=2, default=str))
+    console.print(f"[green]Report written to {out / 'backtest.json'}[/green]")
 
 
 @app.command()
