@@ -16,6 +16,7 @@ boundless100x/data_fetcher/raw_data/
 
 # Generated reports
 boundless100x/output/reports/
+boundless100x/output/backtests/
 
 # Environment
 .env

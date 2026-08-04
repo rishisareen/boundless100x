@@ -110,7 +110,10 @@ def compute(
 
 @app.command()
 def backtest(
-    output_dir: str = typer.Option("output/backtests", help="Where to write the report"),
+    output_dir: str = typer.Option(
+        str(Path(__file__).parent / "output" / "backtests"),
+        help="Where to write the report",
+    ),
     min_years: int = typer.Option(8, help="Minimum years of financials to qualify"),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ):
