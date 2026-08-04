@@ -8,11 +8,27 @@ from boundless100x.compute_engine.metrics.builtin._helpers import smoothed_endpo
 
 
 def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
-    """Get the last N annual rows, excluding TTM."""
-    if "year" in df.columns:
-        annual = df[~df["year"].astype(str).str.contains("TTM", case=False, na=False)]
-    else:
-        annual = df
+    """Get the last N annual rows, excluding TTM and interim periods.
+
+    Screener appends a part-year column to the balance sheet — every cached
+    balance sheet here ends with one (`Sep 2025` for a March-year company).
+    Dropping only TTM leaves that interim row looking like a full year, which
+    silently pairs half a year of balance sheet against a full year of P&L.
+    Annual rows are those sharing the frame's dominant period label, so this
+    holds for companies whose financial year does not end in March.
+    """
+    if "year" not in df.columns:
+        return df.tail(years)
+
+    labels = df["year"].astype(str)
+    annual = df[~labels.str.contains("TTM", case=False, na=False)]
+    if annual.empty:
+        return annual
+
+    months = annual["year"].astype(str).str.extract(r"^([A-Za-z]{3})", expand=False)
+    if months.notna().any():
+        annual = annual[months == months.mode().iloc[0]]
+
     return annual.tail(years)
 
 

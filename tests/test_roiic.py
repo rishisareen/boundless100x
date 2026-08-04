@@ -166,3 +166,37 @@ class TestRegistryIntegration:
 
         assert results["roiic"].ok
         assert results["capital_reinvestment_rate"].ok
+
+
+class TestRealWorldFrameShapes:
+    """Screener's frames are ragged: the P&L ends with TTM, the balance sheet
+    with a part-year column. Dropping only TTM left half a year of balance
+    sheet paired against a full year of P&L in every cached company."""
+
+    def test_interim_balance_sheet_row_does_not_reach_the_calculation(self):
+        from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
+        from tests.conftest import make_balance_sheet
+
+        rows = _get_annual_rows(make_balance_sheet(10, interim=True), 6)
+
+        assert not rows["year"].astype(str).str.startswith("Sep").any()
+
+    def test_roiic_is_unchanged_by_a_trailing_interim_row(self):
+        clean = build([100.0 + 25.0 * i for i in range(8)], [400.0 + 100.0 * i for i in range(8)])
+        ragged = build([100.0 + 25.0 * i for i in range(8)], [400.0 + 100.0 * i for i in range(8)])
+        ragged["balance_sheet"] = make_balance_sheet(8, interim=True)
+        ragged["balance_sheet"]["reserves"] = [400.0 + 100.0 * i for i in range(8)] + [50.0]
+        ragged["balance_sheet"]["equity_capital"] = [100.0] * 9
+        ragged["balance_sheet"]["borrowings"] = [50.0] * 9
+
+        assert compute_roiic(ragged, {"years": 5}).value == pytest.approx(
+            compute_roiic(clean, {"years": 5}).value, abs=0.01
+        )
+
+    def test_ttm_row_still_excluded_from_the_pnl(self):
+        from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
+        from tests.conftest import make_financials as mf
+
+        rows = _get_annual_rows(mf(10, ttm=True), 6)
+
+        assert "TTM" not in rows["year"].astype(str).tolist()

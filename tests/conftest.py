@@ -23,7 +23,8 @@ def compounding(base: float, rate: float, n: int) -> list[float]:
 
 
 def make_financials(n: int = 10, revenue_growth: float = 0.20,
-                    pat_growth: float = 0.25, **overrides) -> pd.DataFrame:
+                    pat_growth: float = 0.25, ttm: bool = False,
+                    **overrides) -> pd.DataFrame:
     revenue = compounding(1000.0, revenue_growth, n)
     pat = compounding(150.0, pat_growth, n)
     operating_profit = [r * 0.25 for r in revenue]
@@ -44,10 +45,15 @@ def make_financials(n: int = 10, revenue_growth: float = 0.20,
     })
     for col, values in overrides.items():
         df[col] = values
+    if ttm:
+        # Screener appends a trailing TTM column to the P&L.
+        trailing = df.iloc[[-1]].copy()
+        trailing["year"] = "TTM"
+        df = pd.concat([df, trailing], ignore_index=True)
     return df
 
 
-def make_balance_sheet(n: int = 10, **overrides) -> pd.DataFrame:
+def make_balance_sheet(n: int = 10, interim: bool = False, **overrides) -> pd.DataFrame:
     reserves = compounding(500.0, 0.22, n)
     df = pd.DataFrame({
         "year": year_labels(n),
@@ -64,6 +70,12 @@ def make_balance_sheet(n: int = 10, **overrides) -> pd.DataFrame:
     })
     for col, values in overrides.items():
         df[col] = values
+    if interim:
+        # Screener appends a part-year balance sheet column (e.g. "Sep 2025").
+        part_year = df.iloc[[-1]].copy()
+        part_year["year"] = f"Sep {2025}"
+        part_year["reserves"] = float(part_year["reserves"].iloc[0]) * 0.5
+        df = pd.concat([df, part_year], ignore_index=True)
     return df
 
 

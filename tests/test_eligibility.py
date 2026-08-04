@@ -15,8 +15,15 @@ from boundless100x.compute_engine.eligibility import (
 from boundless100x.compute_engine.metrics.base import MetricResult
 
 
+def shipped_gates() -> dict:
+    """The YAML gates production actually runs, not the Python constant."""
+    from boundless100x.compute_engine.engine import ComputeEngine
+
+    return ComputeEngine().gates
+
+
 def evaluator(gates: dict | None = None) -> EligibilityEvaluator:
-    return EligibilityEvaluator(gates if gates is not None else DEFAULT_GATES)
+    return EligibilityEvaluator(gates if gates is not None else shipped_gates())
 
 
 def passing_metrics(**overrides) -> dict:
@@ -41,7 +48,7 @@ class TestVerdicts:
     def test_every_gate_reports_its_own_detail(self):
         gates = evaluator().evaluate(passing_metrics())["gates"]
 
-        assert set(gates) == set(DEFAULT_GATES)
+        assert set(gates) == set(shipped_gates())
         for detail in gates.values():
             assert "label" in detail and "passed" in detail and "reason" in detail
 
@@ -148,10 +155,9 @@ class TestYamlDriven:
 
         assert verdict["eligible"] is True
 
-    def test_registry_ships_the_gates(self):
-        from boundless100x.compute_engine.engine import ComputeEngine
-
-        assert ComputeEngine().gates
+    def test_shipped_yaml_matches_the_python_defaults(self):
+        """Two representations of the same contract must not drift apart."""
+        assert shipped_gates() == DEFAULT_GATES
 
     def test_unknown_comparator_is_indeterminate_not_a_silent_pass(self):
         broken = {"g": {"label": "G", "conditions": [

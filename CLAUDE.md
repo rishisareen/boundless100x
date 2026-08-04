@@ -1,7 +1,7 @@
 # Boundless100x — SQGLP Financial Research System
 
 ## Project Overview
-Deep company analysis system for long-term investment in Indian markets, using the SQGLP framework (Size, Quality, Growth, Longevity, Price). Computes 44 financial metrics locally, uses Claude API for qualitative analysis.
+Deep company analysis system for long-term investment in Indian markets, using the SQGLP framework (Size, Quality, Growth, Longevity, Price). Computes 51 financial metrics locally, uses Claude API for qualitative analysis.
 
 ## Design Document
 `Design/Financial Model v04.md` — The complete system design. Always reference this for architecture, metric definitions, data flows, and implementation details.
@@ -11,6 +11,7 @@ Deep company analysis system for long-term investment in Indian markets, using t
 - **Stage 1**: Data fetch (Screener.in, yfinance, BSE, Trendlyne) → `data_fetcher/`
 - **Stage 2**: Compute engine with YAML-driven metric registry (44 metrics) → `compute_engine/`
 - **Stage 3**: SQGLP scoring + growth decomposition → `compute_engine/scorer.py`
+- **Stage 3.6**: 100x eligibility gates (conjunctive; separate from the additive composite) → `compute_engine/eligibility.py`
 - **Stage 4**: LLM analysis (2-pass: qualitative, synthesis) → `llm_layer/`
 - **Stage 5**: Report generation (HTML/Plotly + Markdown) → `output/`
 - **Service layer**: `service.py` orchestrates everything; CLI and future GUI call it
@@ -89,7 +90,9 @@ boundless100x/
 ```
 
 ## Key Patterns
-- **Metric registry**: YAML defines metrics in `elements/*.yaml`, Python functions in `builtin/*.py`. Engine auto-discovers both. Adding a metric = 1 YAML entry + 1 function.
+- **Metric registry**: YAML defines metrics in `elements/*.yaml`, Python functions in `builtin/*.py`. Engine auto-discovers both and rejects duplicate metric ids at startup. Adding a metric = 1 YAML entry + 1 function.
+- **Two outputs per company**: the additive SQGLP composite answers "is this a quality compounder?"; the conjunctive eligibility gates in `registry.yaml` answer "could this plausibly 100x?". A company can score well and still fail a gate — that is the point, not a bug.
+- **Macro assumptions** (inflation, G-Sec yield, discount rate, terminal growth) live in `config.yaml` under `macro:` and reach metrics as parameter defaults; a metric's own YAML params override them.
 - **MetricResult**: Every compute function returns `MetricResult(value, raw_series, flags, metadata, error)`. Flags communicate data quality issues (e.g., `insufficient_history`, `possible_bonus_split`, `cfi_dominated_by_acquisitions`).
 - **Scoring**: Threshold-based (higher/lower_is_better), range_optimal, categorical, sector_relative_percentile, trend_direction modes. All defined in YAML. Scorer receives full MetricResult for trend analysis.
 - **Data contract**: Fetchers write to `raw_data/{TICKER}/` in standardized CSV/JSON. Compute engine reads from there. BSE codes auto-detected from Screener.in metadata.
@@ -127,7 +130,19 @@ python -m boundless100x compute ASTRAL          # Metrics only (no fetch, no LLM
 python -m boundless100x screen --preset compounders       # Screen universe against preset
 python -m boundless100x watchlist show          # View watchlist
 python -m boundless100x watchlist add ASTRAL    # Add ticker to watchlist
+
+python -m boundless100x backtest                # Walk-forward self-check: score on
+                                                # the first half of each cached ticker's
+                                                # history, compare to realized returns
+
+python -m pytest tests/                         # Unit tests (the live-network Screener
+                                                # test is deselected by pytest.ini;
+                                                # run it with `-m network`)
 ```
+
+**Environment note**: the checked-in `venv/` is broken — its symlinks point at a
+Homebrew `python@3.14` that no longer exists, and it was built at the project's
+pre-iCloud path. Create a fresh environment (Python 3.11+) before running anything.
 
 ## GitHub
 - **Repo**: https://github.com/rishisareen/boundless100x (private)

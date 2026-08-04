@@ -113,6 +113,8 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
     "daily_turnover_ratio": ("size", "Daily Turnover Ratio"),
     # Quality Business
     "roce_5yr_avg": ("quality_business", "RoCE 5yr Avg"),
+    "roiic": ("quality_business", "ROIIC (Incremental Capital)"),
+    "capital_reinvestment_rate": ("quality_business", "Capital Reinvestment Rate"),
     "roe_5yr_avg": ("quality_business", "ROE 5yr Avg"),
     "operating_margin_5yr": ("quality_business", "OPM 5yr Avg"),
     "dupont_margin": ("quality_business", "DuPont: Net Margin"),
@@ -148,7 +150,8 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
     "cap_proxy": ("longevity", "CAP Proxy"),
     "revenue_growth_streak": ("longevity", "Growth Streak"),
     "gross_margin_stability": ("longevity", "Margin Stability"),
-    "reinvestment_rate": ("longevity", "Reinvestment Rate"),
+    "reinvestment_rate": ("longevity", "Reinvestment Rate (Capex/Depn)"),
+    "sector_tailwind": ("longevity", "Sector Tailwind"),
     "fcf_consistency": ("longevity", "FCF+ Years"),
     # Price
     "pe_ttm": ("price", "PE TTM"),

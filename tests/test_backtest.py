@@ -73,10 +73,16 @@ class TestDiscovery:
         assert all(s["ticker"] != "500325" for s in report["skipped"])
         assert report["limitations"]["skipped_companies"] == 0
 
-    def test_directory_without_price_history_is_not_a_candidate(self, tmp_path, backtest_factory):
+    def test_ticker_missing_price_history_is_skipped_with_a_reason(self, tmp_path, backtest_factory):
+        """It is a real ticker (ASTRAL is one today), so it must not vanish."""
         write_ticker(tmp_path, "NOPRICE", omit=("price_volume",))
 
-        assert backtest_factory().discover_candidates() == []
+        report = backtest_factory().run()
+
+        assert report["companies"] == []
+        assert report["skipped"] == [
+            {"ticker": "NOPRICE", "reason": "missing price_volume.csv"}
+        ]
 
 
 class TestSkips:
@@ -98,12 +104,18 @@ class TestSkips:
         assert report["skipped"]
 
     def test_no_silent_drops(self, tmp_path, backtest_factory):
+        """Every genuine ticker lands in exactly one of companies or skipped."""
         write_ticker(tmp_path, "GOODCO")
         write_ticker(tmp_path, "YOUNGCO", years=5)
+        write_ticker(tmp_path, "NOPRICE", omit=("price_volume",))
+        write_bse_code_dir(tmp_path, "500325")
 
         report = backtest_factory().run()
 
-        assert len(report["companies"]) + len(report["skipped"]) == 2
+        accounted = {r["ticker"] for r in report["companies"]} | {
+            s["ticker"] for s in report["skipped"]
+        }
+        assert accounted == {"GOODCO", "YOUNGCO", "NOPRICE"}
 
 
 class TestLeakageGuards:
@@ -161,12 +173,14 @@ class TestRealizedReturn:
 
         realized, span = bt._realized_return(data["price"], truncation_date)
 
+        # Recompute independently — do not reuse the code's rounded span.
         price = data["price"]
-        start = float(price[price["date"] <= truncation_date].iloc[-1]["close"])
-        end = float(price.iloc[-1]["close"])
-        expected = ((end / start) ** (1 / span["years"]) - 1) * 100
+        start_row = price[price["date"] <= truncation_date].iloc[-1]
+        end_row = price.iloc[-1]
+        years = (end_row["date"] - start_row["date"]).days / 365.25
+        expected = ((float(end_row["close"]) / float(start_row["close"])) ** (1 / years) - 1) * 100
 
-        assert realized == pytest.approx(expected, abs=0.01)
+        assert realized == pytest.approx(expected, abs=1e-9)
 
     def test_span_is_reported(self, tmp_path, backtest_factory):
         write_ticker(tmp_path, "GOODCO")
@@ -211,3 +225,59 @@ class TestCorrelationAndOutput:
 
         assert report["companies"] == []
         assert report["limitations"]["qualifying_companies"] == 0
+
+
+class TestPostReviewHardening:
+    def test_stock_pe_is_not_reconstructed_from_adjusted_closes(self, tmp_path, backtest_factory):
+        """Stored closes are split/dividend-adjusted, so a rebuilt P/E is fiction."""
+        write_ticker(tmp_path, "GOODCO")
+        bt = backtest_factory()
+        truncated, _, _ = bt._truncate(bt._load(tmp_path / "GOODCO"))
+
+        assert "Stock P/E" not in truncated["metadata"]
+        assert "Market Cap" not in truncated["metadata"]
+
+    def test_observation_date_sits_after_the_reporting_lag(self, tmp_path, backtest_factory):
+        """Scoring at fiscal year end would use accounts nobody could read yet."""
+        write_ticker(tmp_path, "GOODCO")
+        bt = backtest_factory()
+        _, truncation_date, _ = bt._truncate(bt._load(tmp_path / "GOODCO"))
+
+        assert truncation_date.month != 3
+
+    def test_annual_frames_are_cut_by_fiscal_year_not_row_position(self, tmp_path, backtest_factory):
+        write_ticker(tmp_path, "GOODCO")
+        bt = backtest_factory()
+        truncated, _, _ = bt._truncate(bt._load(tmp_path / "GOODCO"))
+
+        cutoff = max(int(y.split()[-1]) for y in truncated["financials"]["year"])
+        for frame in ("balance_sheet", "cashflow", "ratios"):
+            assert all(int(y.split()[-1]) <= cutoff for y in truncated[frame]["year"])
+
+    def test_size_gate_is_actually_excluded_from_the_backtest_verdict(self, tmp_path):
+        from boundless100x.compute_engine.eligibility import EligibilityEvaluator
+
+        engine = ComputeEngine()
+        scorer = SQGLPScorer(engine.metrics, engine.element_weights)
+        write_ticker(tmp_path, "GOODCO")
+
+        bt = WalkForwardBacktest(tmp_path, engine, scorer, EligibilityEvaluator(engine.gates))
+        report = bt.run()
+
+        assert "size" not in bt.gate_evaluator.gates
+        assert "size" not in report["companies"][0]["eligibility_then"]["gates_evaluated"]
+
+    def test_company_with_no_scorable_weight_is_not_ranked(self, backtest_factory):
+        bt = backtest_factory()
+        rows = [
+            {"composite_then": 0.0, "scored_weight": 0.0, "realized_cagr_pct": -50.0,
+             "elements_then": {}},
+            {"composite_then": 7.0, "scored_weight": 9.0, "realized_cagr_pct": 20.0,
+             "elements_then": {}},
+            {"composite_then": 5.0, "scored_weight": 9.0, "realized_cagr_pct": 10.0,
+             "elements_then": {}},
+            {"composite_then": 3.0, "scored_weight": 9.0, "realized_cagr_pct": 5.0,
+             "elements_then": {}},
+        ]
+
+        assert bt._correlations(rows)["n"] == 3

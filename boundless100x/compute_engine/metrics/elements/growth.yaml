@@ -114,6 +114,8 @@ metrics:
     params: { years: 5 }
     scoring:
       mode: "categorical"
-      categories: { "strong_pricing_power": 10, "moderate_pricing": 7, "discounting": 3, "unknown": 5 }
+      # Insufficient data surfaces as an errored metric, which the scorer
+      # already skips — there is no "unknown" value to score.
+      categories: { "strong_pricing_power": 10, "moderate_pricing": 7, "discounting": 3 }
       weight: 0.05
     display: { format: "{}", section: "growth_decomposition", peer_compare: false }

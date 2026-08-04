@@ -1,5 +1,6 @@
 """Smoke test: fetch financials for ASTRAL from Screener.in and validate structure."""
 
+import pytest
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from boundless100x.data_fetcher.fetch_financials import FinancialsFetcher
 
 
+@pytest.mark.network
 def test_fetch_astral():
     """Fetch Astral Ltd financials and verify data structure."""
     fetcher = FinancialsFetcher(cache_ttl_hours=1, rate_limit_seconds=2)
