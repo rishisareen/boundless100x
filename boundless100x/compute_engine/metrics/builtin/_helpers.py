@@ -46,3 +46,19 @@ def detect_fcf_outliers(
             clean[i] = np.nan
 
     return clean, flags
+
+
+# Below this many observations, averaging endpoints leaves too little signal
+# to be worth the smoothing.
+SMOOTHING_MIN_POINTS = 6
+
+
+def smoothed_endpoints(values, min_points: int = SMOOTHING_MIN_POINTS) -> tuple[float, float, bool]:
+    """Average each end over two periods once the series is long enough.
+
+    A single acquisition, write-off or spike year otherwise sets the whole
+    change being measured. Returns (start, end, smoothed).
+    """
+    if len(values) >= min_points:
+        return float(values.iloc[:2].mean()), float(values.iloc[-2:].mean()), True
+    return float(values.iloc[0]), float(values.iloc[-1]), False

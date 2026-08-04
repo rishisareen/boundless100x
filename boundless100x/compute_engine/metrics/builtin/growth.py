@@ -8,11 +8,8 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.builtin._helpers import smoothed_endpoints
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
-
-# Below this many observations, averaging the endpoints leaves too little signal
-# to be worth the smoothing.
-SMOOTHING_MIN_POINTS = 6
 
 
 def _cagr_from_values(
@@ -41,15 +38,12 @@ def _cagr_from_values(
     if n < 2:
         return None, meta
 
-    if smooth and n >= SMOOTHING_MIN_POINTS:
-        start = float(vals.iloc[:2].mean())
-        end = float(vals.iloc[-2:].mean())
-        span = n - 2
-        meta["endpoint_mode"] = "smoothed"
-    else:
-        start = float(vals.iloc[0])
-        end = float(vals.iloc[-1])
-        span = n - 1
+    start, end, was_smoothed = (
+        smoothed_endpoints(vals) if smooth else (float(vals.iloc[0]), float(vals.iloc[-1]), False)
+    )
+    # Smoothed centroids sit half a period inside each end, so the span shrinks.
+    span = n - 2 if was_smoothed else n - 1
+    meta["endpoint_mode"] = "smoothed" if was_smoothed else "single"
 
     meta.update({"start": start, "end": end, "span_years": span})
 

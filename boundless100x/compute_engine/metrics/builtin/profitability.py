@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.builtin._helpers import smoothed_endpoints
 
 
 def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
@@ -37,16 +38,6 @@ def _nopat_series(financials: pd.DataFrame) -> pd.Series | None:
     return (ebit * (1 - tax_rate / 100.0)).dropna()
 
 
-def _smoothed_endpoints(values: pd.Series) -> tuple[float, float]:
-    """Average each end over two periods once the window is long enough.
-
-    A single acquisition or write-off year otherwise sets the whole delta.
-    """
-    if len(values) >= 6:
-        return float(values.iloc[:2].mean()), float(values.iloc[-2:].mean())
-    return float(values.iloc[0]), float(values.iloc[-1])
-
-
 def compute_roiic(data: dict, params: dict) -> MetricResult:
     """Return on incremental invested capital: change in NOPAT per rupee of new capital.
 
@@ -69,8 +60,8 @@ def compute_roiic(data: dict, params: dict) -> MetricResult:
     if len(capital) < 3 or len(nopat) < 3:
         return MetricResult(error="Insufficient history for ROIIC")
 
-    cap_start, cap_end = _smoothed_endpoints(capital)
-    nopat_start, nopat_end = _smoothed_endpoints(nopat)
+    cap_start, cap_end, smoothed = smoothed_endpoints(capital)
+    nopat_start, nopat_end, _ = smoothed_endpoints(nopat)
 
     delta_capital = cap_end - cap_start
     delta_nopat = nopat_end - nopat_start
@@ -108,7 +99,7 @@ def compute_roiic(data: dict, params: dict) -> MetricResult:
             "delta_nopat": float(delta_nopat),
             "delta_capital": float(delta_capital),
             "years_used": len(capital) - 1,
-            "endpoint_mode": "smoothed" if len(capital) >= 6 else "single",
+            "endpoint_mode": "smoothed" if smoothed else "single",
         },
     )
 
