@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from boundless100x.data_fetcher.suite import DataFetcherSuite
+from boundless100x.compute_engine.eligibility import EligibilityEvaluator
 from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
 from boundless100x.compute_engine.metrics.base import MetricResult
@@ -31,6 +32,7 @@ class AnalysisResult:
     metrics: dict[str, MetricResult] = field(default_factory=dict)
     scores: dict = field(default_factory=dict)
     growth_decomposition: dict | None = None
+    eligibility: dict | None = None
     llm_analysis: dict | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -55,6 +57,7 @@ class Boundless100xService:
 
         self.suite = DataFetcherSuite(self.config)
         self.engine = ComputeEngine(macro=self.config.get("macro", {}))
+        self.eligibility = EligibilityEvaluator(self.engine.gates or None)
         self.scorer = SQGLPScorer(self.engine.metrics, self.engine.element_weights)
 
         # LLM orchestrator (lazy init — only when API key is available)
@@ -119,6 +122,14 @@ class Boundless100xService:
         except Exception as e:
             result.errors.append(f"Scoring failed: {e}")
             logger.error(f"Scoring failed for {ticker}: {e}")
+
+        # Stage 3.6: 100x eligibility gates (conjunctive, separate from composite)
+        try:
+            result.eligibility = self.eligibility.evaluate(result.metrics)
+            logger.info(f"100x eligibility: {result.eligibility['verdict']}")
+        except Exception as e:
+            result.errors.append(f"Eligibility evaluation failed: {e}")
+            logger.error(f"Eligibility failed for {ticker}: {e}")
 
         # Stage 3.5: Growth Decomposition (v4)
         try:

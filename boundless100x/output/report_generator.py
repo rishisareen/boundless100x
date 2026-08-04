@@ -500,6 +500,10 @@ class ReportGenerator:
         if growth_decomposition:
             self._write_json(report_dir / "growth_decomposition.json", growth_decomposition)
 
+        # eligibility.json
+        if getattr(result, "eligibility", None):
+            self._write_json(report_dir / "eligibility.json", result.eligibility)
+
         # llm_analysis.json
         if result.llm_analysis:
             self._write_json(report_dir / "llm_analysis.json", result.llm_analysis)
@@ -686,6 +690,42 @@ class ReportGenerator:
 
     # ── Executive Summary ──
 
+    ELIGIBILITY_BADGES = {
+        "eligible": ("100x Candidate", "good",
+                     "Clears every eligibility gate"),
+        "not_eligible": ("Not a 100x Candidate", "bad",
+                         "Fails at least one necessary condition"),
+        "indeterminate": ("Eligibility Unknown", "neutral",
+                          "A gate could not be evaluated from available data"),
+    }
+
+    def _build_eligibility_badge(self, result) -> dict:
+        """The 100x verdict, kept separate from the composite it must not dilute."""
+        eligibility = getattr(result, "eligibility", None)
+        if not eligibility:
+            return {}
+
+        label, sentiment, description = self.ELIGIBILITY_BADGES.get(
+            eligibility.get("verdict"),
+            ("Eligibility Unknown", "neutral", ""),
+        )
+        gates = eligibility.get("gates", {})
+        return {
+            "verdict": eligibility.get("verdict"),
+            "label": label,
+            "sentiment": sentiment,
+            "description": description,
+            "failed_reasons": [
+                gates[g]["reason"] for g in eligibility.get("failed", []) if g in gates
+            ],
+            "unknown_reasons": [
+                gates[g]["reason"] for g in eligibility.get("indeterminate", []) if g in gates
+            ],
+            "gates": [
+                {"id": gid, **detail} for gid, detail in gates.items()
+            ],
+        }
+
     def _build_executive_summary(self, result) -> dict:
         """Build executive summary data for the decision dashboard."""
         metadata = result.data.get("metadata", {})
@@ -695,6 +735,7 @@ class ReportGenerator:
         summary = {
             "composite_score": scores.get("composite"),
             "element_scores": scores.get("elements", {}),
+            "eligibility": self._build_eligibility_badge(result),
             "company_name": metadata.get("name", result.ticker),
             "sector": metadata.get("sector", "N/A"),
             "market_cap": metadata.get("Market Cap"),

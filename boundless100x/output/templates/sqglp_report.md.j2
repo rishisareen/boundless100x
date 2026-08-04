@@ -9,6 +9,16 @@ Generated: {{ generation_date }}
 ## Executive Summary
 
 **Composite Score: {{ executive_summary.composite_score | default('—') }}/10**
+{% if executive_summary.eligibility %}
+**100x Eligibility: {{ executive_summary.eligibility.label }}** — {{ executive_summary.eligibility.description }}
+
+{% if executive_summary.eligibility.gates %}
+| Gate | Result | Detail |
+|---|---|---|
+{% for gate in executive_summary.eligibility.gates %}| {{ gate.label }} | {% if gate.passed is sameas true %}pass{% elif gate.passed is sameas false %}**fail**{% else %}unknown{% endif %} | {{ gate.reason }} |
+{% endfor %}
+{% endif %}
+{% endif %}
 
 {% if executive_summary.has_llm %}
 | | |

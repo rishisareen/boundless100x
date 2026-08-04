@@ -14,3 +14,36 @@ scoring_defaults:
   scale: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
   missing_data_score: null
   min_data_years: 3
+
+# ── 100x Eligibility Gates ──
+# Conjunctive, unlike the weighted composite above: a company must clear every
+# gate to be a 100x candidate, however strong the rest of its profile is.
+# Failing a gate does not make a company a bad investment — only an unlikely
+# hundred-bagger. Thresholds are starting points, to be tuned on backtest
+# evidence rather than intuition.
+eligibility_gates:
+  size:
+    label: "Size headroom"
+    rationale: "A hundredfold move needs room to grow into."
+    conditions:
+      - { metric: market_cap, comparator: lt, threshold: 30000 }
+
+  price:
+    label: "Entry price sanity"
+    rationale: "Growth already paid for cannot be earned twice."
+    mode: any              # trailing PEG or forward PEG may satisfy it
+    conditions:
+      - { metric: trailing_peg, comparator: lt, threshold: 2.0 }
+      - { metric: peg_ratio, comparator: lt, threshold: 1.5 }
+    veto_flags: ["reverse_dcf_overpriced"]
+
+  reinvestment:
+    label: "Incremental returns"
+    rationale: "Compounding requires new capital to earn, not just sit."
+    conditions:
+      - { metric: roiic, comparator: gte, threshold: 15.0 }
+
+# Short-history metrics stop being penalised below this market cap. Deliberately
+# NOT the size gate's ceiling: that asks "could this still 100x?", this asks
+# "is thin history excusable?". Matches the small_cap boundary in builtin/size.py.
+history_waiver_mcap: 5000

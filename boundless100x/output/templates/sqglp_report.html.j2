@@ -217,6 +217,9 @@
 
   <!-- Quadrant badge + action badges row -->
   <div style="margin-top: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+    {% if executive_summary.eligibility %}
+    <span class="conviction conviction-{% if executive_summary.eligibility.sentiment == 'good' %}high{% elif executive_summary.eligibility.sentiment == 'bad' %}low{% else %}medium{% endif %}" title="{{ executive_summary.eligibility.description }}">{{ executive_summary.eligibility.label }}</span>
+    {% endif %}
     {% if executive_summary.quadrant %}
     <span class="conviction conviction-{% if executive_summary.quadrant.sentiment == 'good' %}high{% elif executive_summary.quadrant.sentiment == 'bad' %}low{% else %}medium{% endif %}" title="{{ executive_summary.quadrant.description }}{% if executive_summary.quadrant.avg_roce is not none %} | RoCE: {{ '%.1f'|format(executive_summary.quadrant.avg_roce) }}%, PAT CAGR: {{ '%.1f'|format(executive_summary.quadrant.pat_cagr) }}%{% endif %}">{{ executive_summary.quadrant.label }}</span>
     {% endif %}
@@ -232,6 +235,21 @@
     {% endif %}
     {% endif %}
   </div>
+
+  {% if executive_summary.eligibility and executive_summary.eligibility.gates %}
+  <div style="margin: 12px 0; font-size: 0.88em;">
+    <strong style="font-size: 0.9em;">100x Eligibility Gates</strong>
+    <span style="color: var(--gray);"> — necessary conditions, evaluated separately from the composite</span>
+    <ul style="margin: 6px 0 0 18px; padding: 0;">
+      {% for gate in executive_summary.eligibility.gates %}
+      <li style="margin-bottom: 3px; color: {% if gate.passed is sameas true %}var(--green){% elif gate.passed is sameas false %}var(--red){% else %}var(--gray){% endif %};">
+        {{ gate.label }}: {% if gate.passed is sameas true %}pass{% elif gate.passed is sameas false %}fail{% else %}unknown{% endif %}
+        <span style="color: var(--gray);">— {{ gate.reason }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
 
   {% if executive_summary.has_llm %}
   {% if executive_summary.thesis %}

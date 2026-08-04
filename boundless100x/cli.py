@@ -309,6 +309,28 @@ def _print_scores(result, svc):
     table.add_row("[bold]COMPOSITE[/bold]", f"[bold]{composite}/10[/bold]", "100%")
 
     console.print(table)
+    _print_eligibility(result)
+
+
+def _print_eligibility(result):
+    """The 100x verdict — necessary conditions the weighted composite cannot express."""
+    eligibility = getattr(result, "eligibility", None)
+    if not eligibility:
+        return
+
+    verdict = eligibility.get("verdict")
+    style, label = {
+        "eligible": ("green", "100x CANDIDATE"),
+        "not_eligible": ("red", "NOT A 100x CANDIDATE"),
+    }.get(verdict, ("yellow", "ELIGIBILITY UNKNOWN"))
+
+    console.print(f"\n[{style}][bold]{label}[/bold][/{style}]")
+    for gate_id, detail in eligibility.get("gates", {}).items():
+        mark, colour = {
+            True: ("PASS", "green"),
+            False: ("FAIL", "red"),
+        }.get(detail.get("passed"), ("????", "yellow"))
+        console.print(f"  [{colour}]{mark}[/{colour}]  {detail.get('reason', gate_id)}")
 
 
 def _print_llm_summary(result):

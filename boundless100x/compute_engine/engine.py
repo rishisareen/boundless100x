@@ -29,6 +29,7 @@ class ComputeEngine:
 
         self.master = self._load_yaml(self.registry_dir / "registry.yaml")
         self.element_weights = self.master["element_weights"]
+        self.gates = self.master.get("eligibility_gates", {})
         self.metrics = self._discover_metrics()
 
         # Validate on startup
