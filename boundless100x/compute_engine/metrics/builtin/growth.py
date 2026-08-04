@@ -10,11 +10,60 @@ import pandas as pd
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
+# Below this many observations, averaging the endpoints leaves too little signal
+# to be worth the smoothing.
+SMOOTHING_MIN_POINTS = 6
+
+
+def _cagr_from_values(
+    values: pd.Series, years: int | None = None, smooth: bool = True
+) -> tuple[float | None, dict]:
+    """Shared CAGR core: horizon slicing plus optional endpoint smoothing.
+
+    An N-year CAGR reads the last N+1 observations. With smoothing, each
+    endpoint becomes a 2-year mean whose centroid sits half a year inside the
+    series, so the compounding span shrinks by one year — this is what keeps a
+    single spike year from dominating the rate.
+
+    Returns (cagr_percent_or_None, metadata).
+    """
+    vals = pd.to_numeric(values, errors="coerce").dropna()
+    if years is not None:
+        vals = vals.tail(years + 1)
+
+    n = len(vals)
+    meta = {
+        "years_actual": max(n - 1, 0),
+        "years_requested": years,
+        "points_used": n,
+        "endpoint_mode": "single",
+    }
+    if n < 2:
+        return None, meta
+
+    if smooth and n >= SMOOTHING_MIN_POINTS:
+        start = float(vals.iloc[:2].mean())
+        end = float(vals.iloc[-2:].mean())
+        span = n - 2
+        meta["endpoint_mode"] = "smoothed"
+    else:
+        start = float(vals.iloc[0])
+        end = float(vals.iloc[-1])
+        span = n - 1
+
+    meta.update({"start": start, "end": end, "span_years": span})
+
+    if start <= 0 or end <= 0 or span <= 0:
+        return None, meta
+
+    return ((end / start) ** (1 / span) - 1) * 100, meta
+
 
 def compute_cagr(data: dict, params: dict) -> MetricResult:
     """Compute CAGR for any financial field over N years."""
     field = params.get("field", "revenue")
     years = params.get("years", 5)
+    smooth = params.get("smooth_endpoints", True)
     df = _get_annual_rows(data["financials"], years + 1)  # Need N+1 for N-year CAGR
 
     if field not in df.columns:
@@ -24,14 +73,11 @@ def compute_cagr(data: dict, params: dict) -> MetricResult:
     if len(values) < 2:
         return MetricResult(error=f"Insufficient {field} data for CAGR")
 
-    start = float(values.iloc[0])
-    end = float(values.iloc[-1])
-    actual_years = len(values) - 1
-
-    if start <= 0 or end <= 0:
+    cagr, meta = _cagr_from_values(values, years=years, smooth=smooth)
+    if cagr is None:
         return MetricResult(error=f"Non-positive values for {field} CAGR")
 
-    cagr = ((end / start) ** (1 / actual_years) - 1) * 100
+    actual_years = meta["years_actual"]
 
     # Data quality flags
     flags = []
@@ -44,12 +90,7 @@ def compute_cagr(data: dict, params: dict) -> MetricResult:
         value=float(cagr),
         raw_series=values.tolist(),
         flags=flags,
-        metadata={
-            "start": start,
-            "end": end,
-            "years_actual": actual_years,
-            "years_requested": years,
-        },
+        metadata=meta,
     )
 
 
@@ -396,17 +437,12 @@ def _compute_financial_leverage_avg(df: pd.DataFrame, years: int) -> float:
     return float(np.mean(leverages)) if leverages else 1.0
 
 
-def _compute_cagr_from_series(values: pd.Series, years: int) -> float | None:
+def _compute_cagr_from_series(
+    values: pd.Series, years: int | None = None, smooth: bool = True
+) -> float | None:
     """Compute CAGR from a numeric series. Returns percentage or None."""
-    vals = pd.to_numeric(values, errors="coerce").dropna()
-    if len(vals) < 2:
-        return None
-    start = float(vals.iloc[0])
-    end = float(vals.iloc[-1])
-    actual_years = len(vals) - 1
-    if start <= 0 or end <= 0:
-        return None
-    return ((end / start) ** (1 / actual_years) - 1) * 100
+    cagr, _ = _cagr_from_values(values, years=years, smooth=smooth)
+    return cagr
 
 
 def _classify_volume_status(rev_cagr_5: float, price_lever_result: MetricResult) -> str:
