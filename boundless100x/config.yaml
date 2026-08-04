@@ -6,6 +6,16 @@ target:
   bse_code: "532830"
   nse_symbol: "ASTRAL"
 
+# ── Macro Assumptions ──
+# Reach every metric as parameter defaults; a metric's own YAML params override.
+# Values are slow-moving but not constant — revisit when the rate cycle turns.
+macro:
+  inflation_pct: 5.0          # Deflates revenue growth for the price lever
+  strong_real_growth_pct: 10.0 # Real growth above this reads as strong pricing power
+  gsec_yield_pct: 7.0         # India 10yr, for the earnings-yield spread
+  discount_rate: 0.12         # WACC proxy for Indian mid-caps (DCF + reverse DCF)
+  terminal_growth: 0.04       # Gordon terminal rate
+
 # ── Analysis Period ──
 analysis_period:
   financials_years: 10

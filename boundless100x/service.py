@@ -53,7 +53,7 @@ class Boundless100xService:
                 self.config = yaml.safe_load(f)
 
         self.suite = DataFetcherSuite(self.config)
-        self.engine = ComputeEngine()
+        self.engine = ComputeEngine(macro=self.config.get("macro", {}))
         self.scorer = SQGLPScorer(self.engine.metrics, self.engine.element_weights)
 
         # LLM orchestrator (lazy init — only when API key is available)

@@ -338,16 +338,21 @@ def compute_share_dilution(data: dict, params: dict) -> MetricResult:
 
 
 def compute_price_lever(data: dict, params: dict) -> MetricResult:
-    """Detect pricing power by comparing revenue growth to volume proxy.
+    """Grade real (inflation-adjusted) revenue growth.
 
-    Uses inflation proxy: Real volume growth = Revenue growth - Inflation.
-    Categories:
-        - "strong_pricing_power": Revenue CAGR > Volume proxy + 3pp
-        - "moderate_pricing": Revenue CAGR > Volume proxy + 1-3pp
-        - "discounting": Revenue CAGR < inflation
-        - "unknown": Insufficient data
+    Indian filers rarely publish unit volumes, so real growth is proxied by
+    deflating revenue CAGR by an assumed inflation rate. Because that gap is
+    the inflation assumption by construction, this grades how far revenue
+    outruns inflation — it cannot separate true pricing power from volume.
+    Bands, on real growth:
+        - "strong_pricing_power": more than `strong_real_growth_pct` above inflation
+        - "moderate_pricing": positive but below that band
+        - "discounting": revenue failing to keep pace with inflation
+        - "unknown": insufficient data
     """
     years = params.get("years", 5)
+    inflation_avg = float(params.get("inflation_pct", 5.0))
+    strong_threshold = float(params.get("strong_real_growth_pct", 10.0))
     df = _get_annual_rows(data["financials"], years + 1)
 
     if "revenue" not in df.columns:
@@ -357,27 +362,19 @@ def compute_price_lever(data: dict, params: dict) -> MetricResult:
     if len(values) < 2:
         return MetricResult(error="Insufficient revenue data for price lever")
 
-    start = float(values.iloc[0])
-    end = float(values.iloc[-1])
-    actual_years = len(values) - 1
+    revenue_cagr, cagr_meta = _cagr_from_values(values, years=years)
 
-    if start <= 0 or end <= 0:
+    if revenue_cagr is None:
         return MetricResult(error="Non-positive revenue for price lever")
 
-    revenue_cagr = ((end / start) ** (1 / actual_years) - 1) * 100
-
-    # Proxy: Use average WPI/CPI to deflate revenue → estimate real volume growth
-    inflation_avg = 5.0  # Default assumption; can be parameterized
     real_volume_growth = revenue_cagr - inflation_avg
 
     if real_volume_growth <= 0:
-        signal = "discounting" if revenue_cagr < inflation_avg else "unknown"
-    elif revenue_cagr > real_volume_growth + 3:
+        signal = "discounting"
+    elif real_volume_growth > strong_threshold:
         signal = "strong_pricing_power"
-    elif revenue_cagr > real_volume_growth + 1:
-        signal = "moderate_pricing"
     else:
-        signal = "unknown"
+        signal = "moderate_pricing"
 
     return MetricResult(
         value=signal,
@@ -385,6 +382,8 @@ def compute_price_lever(data: dict, params: dict) -> MetricResult:
             "revenue_cagr": float(revenue_cagr),
             "estimated_volume_growth": float(real_volume_growth),
             "inflation_assumption": inflation_avg,
+            "strong_real_growth_pct": strong_threshold,
+            "endpoint_mode": cagr_meta["endpoint_mode"],
         },
     )
 

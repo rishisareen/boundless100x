@@ -19,10 +19,13 @@ class ComputeEngine:
     validates them on startup, and runs each registered function against data.
     """
 
-    def __init__(self, registry_dir: str | None = None):
+    def __init__(self, registry_dir: str | None = None, macro: dict | None = None):
         if registry_dir is None:
             registry_dir = str(Path(__file__).parent / "metrics")
         self.registry_dir = Path(registry_dir)
+        # Shared macro assumptions (inflation, G-Sec yield, discount rate) reach
+        # metrics as parameter defaults; a metric's own YAML params still win.
+        self.macro = macro or {}
 
         self.master = self._load_yaml(self.registry_dir / "registry.yaml")
         self.element_weights = self.master["element_weights"]
@@ -101,7 +104,8 @@ class ComputeEngine:
             module_path = f"boundless100x.compute_engine.metrics.{config['module']}"
             module = importlib.import_module(module_path)
             func = getattr(module, config["function"])
-            result = func(data, config.get("params", {}))
+            params = {**self.macro, **config.get("params", {})}
+            result = func(data, params)
 
             if not isinstance(result, MetricResult):
                 return MetricResult(

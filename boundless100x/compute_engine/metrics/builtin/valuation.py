@@ -311,9 +311,9 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
             flags=outlier_flags,
         )
 
-    discount_rate = 0.12
-    terminal_growth = 0.04
-    projection_years = 10
+    discount_rate = float(params.get("discount_rate", 0.12))
+    terminal_growth = float(params.get("terminal_growth", 0.04))
+    projection_years = int(params.get("projection_years", 10))
 
     # Binary search for implied growth
     low, high = -0.10, 0.50
@@ -358,14 +358,14 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
 
 
 def compute_earnings_yield_spread(data: dict, params: dict) -> MetricResult:
-    """Earnings Yield (1/PE) minus India 10yr G-Sec yield (assumed ~7%)."""
+    """Earnings Yield (1/PE) minus the India 10yr G-Sec yield."""
     meta = data.get("metadata", {})
     pe = meta.get("Stock P/E")
     if pe is None or pe <= 0:
         return MetricResult(error="No P/E for earnings yield")
 
     earnings_yield = 100.0 / pe
-    gsec_yield = 7.0  # Approximate India 10yr
+    gsec_yield = float(params.get("gsec_yield_pct", 7.0))
     spread = earnings_yield - gsec_yield
 
     flags = []

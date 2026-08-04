@@ -49,7 +49,8 @@ metrics:
     module: "builtin.valuation"
     function: "compute_dcf_margin"
     inputs: ["financials", "cashflow", "metadata"]
-    params: { projection_years: 10, terminal_growth: 0.04, discount_rate: 0.12 }
+    # discount_rate and terminal_growth come from config.yaml's macro block
+    params: { projection_years: 10 }
     scoring: { thresholds: [-30, -10, 0, 10, 20, 35], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{:.0f}%", section: "valuation_analysis" }
 
