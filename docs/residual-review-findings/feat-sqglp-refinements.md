@@ -10,15 +10,13 @@ against the real cached data.
 
 ## Correctness / design
 
-- **The 4-lever decomposition bypasses the macro config.** *(Partly addressed:
-  the narrative text now quotes the inflation assumption actually used, but the
-  decomposition still calls `compute_price_lever` without the macro dict, so a
-  changed `inflation_pct` reaches the registry metric and not the table.)*
-  `compute_lever_decomposition_table` calls `compute_price_lever(data, {"years": years})`
-  directly, so a changed `macro.inflation_pct` reaches the registry-scored
-  `price_lever_signal` metric but not the narrative table in the report. The two
-  can disagree about the same company. Fix: thread `macro` through the
-  decomposition call in `service.py` and `report_generator`.
+- ~~**The 4-lever decomposition bypasses the macro config.**~~ **Resolved.**
+  The table now takes a `macro` argument that the service passes from the
+  engine, and it resolves the current P/E from metadata rather than a `pe_ratio`
+  column Screener never publishes — so its valuation verdict is real instead of
+  permanently "cannot be computed". The report reuses the service's table rather
+  than recomputing and patching its own, so the reader and LLM Pass 2 can no
+  longer be shown different verdicts for one company.
 
 - **Veto flags disappear when their source metric errors.**
   `EligibilityEvaluator` scans all metrics for `reverse_dcf_overpriced`. If the

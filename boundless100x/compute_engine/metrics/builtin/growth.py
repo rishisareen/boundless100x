@@ -686,7 +686,9 @@ def _ensure_operating_profit(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
+def compute_lever_decomposition_table(
+    data: dict, years: int = 5, macro: dict | None = None
+) -> dict:
     """Full 4-lever decomposition for the expanded report section.
 
     Returns a structured dict with:
@@ -695,7 +697,9 @@ def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
     - growth_synthesis: {primary_drivers, quality_flag, narrative}
     - valuation_check: {current_pe, pat_cagr_5yr, trailing_peg, verdict}
 
-    This is consumed by the Jinja2 report template.
+    This is consumed by the Jinja2 report template and by LLM Pass 2, so both
+    must be handed the same table — `macro` carries the shared assumptions
+    (inflation in particular) that the scored metrics already use.
     """
     df = _get_annual_rows(data["financials"], years + 1)
     df = _ensure_operating_profit(df)
@@ -716,7 +720,7 @@ def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
     fin_lever_avg = _compute_financial_leverage_avg(df, years)
 
     # Volume & Price Lever (proxy-based)
-    price_lever = compute_price_lever(data, {"years": years})
+    price_lever = compute_price_lever(data, {**(macro or {}), "years": years})
 
     # ─── 1. Earnings Growth Profile ───
     earnings_profile = {
@@ -754,11 +758,19 @@ def compute_lever_decomposition_table(data: dict, years: int = 5) -> dict:
     )
 
     # ─── 4. Valuation Reality Check ───
+    # Screener publishes no pe_ratio column, so the P/E lives in metadata like
+    # it does for every other valuation metric. Reading only the column left
+    # this check permanently unresolved for the model, while the report quietly
+    # patched a P/E into its own copy — two verdicts for one company.
     current_pe = None
     if "pe_ratio" in df.columns:
         pe_vals = pd.to_numeric(df["pe_ratio"], errors="coerce").dropna()
         if not pe_vals.empty:
             current_pe = float(pe_vals.iloc[-1])
+    if current_pe is None:
+        meta_pe = (data.get("metadata") or {}).get("Stock P/E")
+        if meta_pe is not None and float(meta_pe) > 0:
+            current_pe = float(meta_pe)
 
     trailing_peg = (current_pe / pat_cagr_5) if (current_pe and pat_cagr_5 and pat_cagr_5 > 0) else None
 

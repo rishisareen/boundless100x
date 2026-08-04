@@ -139,7 +139,9 @@ class Boundless100xService:
         try:
             financials = result.data.get("financials")
             if financials is not None and not financials.empty:
-                result.growth_decomposition = compute_lever_decomposition_table(result.data)
+                result.growth_decomposition = compute_lever_decomposition_table(
+                    result.data, macro=self.engine.macro
+                )
                 logger.info("Growth decomposition computed")
         except Exception as e:
             logger.warning(f"Growth decomposition failed: {e}")

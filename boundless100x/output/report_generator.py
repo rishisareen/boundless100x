@@ -665,28 +665,22 @@ class ReportGenerator:
     # ── Growth Decomposition ──
 
     def _compute_growth_decomposition(self, result) -> dict | None:
-        """Compute 4-lever growth decomposition from result data."""
+        """The 4-lever decomposition, preferring the one the service computed.
+
+        Recomputing here produced a second table built without the macro config
+        and then patched with a P/E the service's copy never received, so the
+        report and LLM Pass 2 could disagree about the same company. The
+        service's table is authoritative; this only builds one when the caller
+        used ReportGenerator directly.
+        """
+        if getattr(result, "growth_decomposition", None):
+            return result.growth_decomposition
+
         try:
             financials = result.data.get("financials")
             if financials is None or financials.empty:
                 return None
-
-            decomposition = compute_lever_decomposition_table(result.data)
-
-            # Enrich valuation check with PE from metrics if not in financials
-            val_check = decomposition.get("valuation_check", {})
-            if val_check.get("current_pe") is None:
-                pe_result = result.metrics.get("pe_ttm")
-                if pe_result and pe_result.ok:
-                    val_check["current_pe"] = pe_result.value
-                    pat_5 = val_check.get("pat_cagr_5yr")
-                    if pat_5 and pat_5 > 0:
-                        val_check["trailing_peg"] = pe_result.value / pat_5
-                        from boundless100x.compute_engine.metrics.builtin.growth import _peg_verdict
-                        quality = decomposition.get("growth_synthesis", {}).get("quality_flag", "moderate")
-                        val_check["verdict"] = _peg_verdict(val_check["trailing_peg"], quality)
-
-            return decomposition
+            return compute_lever_decomposition_table(result.data)
         except Exception as e:
             logger.warning(f"Growth decomposition failed: {e}")
             return None
