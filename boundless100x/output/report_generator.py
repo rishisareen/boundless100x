@@ -350,7 +350,6 @@ class ReportGenerator:
         growth_decomposition = self._compute_growth_decomposition(result)
         executive_summary = self._build_executive_summary(result)
         financial_snapshot = self._build_financial_snapshot(result)
-        sector_context = self._build_sector_context(result)
         dcf_summary = self._build_dcf_summary(result)
         cashflow_quality = self._build_cashflow_quality(result)
         pe_band_summary = self._build_pe_band_summary(result)
@@ -375,7 +374,6 @@ class ReportGenerator:
                 result, charts, growth_decomposition,
                 executive_summary=executive_summary,
                 financial_snapshot=financial_snapshot,
-                sector_context=sector_context,
                 dcf_summary=dcf_summary,
                 cashflow_quality=cashflow_quality,
                 shareholding_data=shareholding_data,
@@ -393,7 +391,6 @@ class ReportGenerator:
                 executive_summary=executive_summary,
                 financial_snapshot=financial_snapshot,
                 shareholding_data=shareholding_data,
-                sector_context=sector_context,
                 dcf_summary=dcf_summary,
                 cashflow_quality=cashflow_quality,
                 pe_band_summary=pe_band_summary,
@@ -412,7 +409,6 @@ class ReportGenerator:
     def _render_html(self, result, charts: dict, growth_decomposition: dict | None = None,
                      executive_summary: dict | None = None,
                      financial_snapshot: list | None = None,
-                     sector_context: dict | None = None,
                      dcf_summary: dict | None = None,
                      cashflow_quality: dict | None = None,
                      shareholding_data: list | None = None,
@@ -431,7 +427,6 @@ class ReportGenerator:
             growth=growth_decomposition,
             executive_summary=executive_summary or {},
             snapshot=financial_snapshot or [],
-            sector_context=sector_context or {},
             dcf_summary=dcf_summary or {},
             cashflow_quality=cashflow_quality or {},
             radar_chart=charts.get("radar", ""),
@@ -455,7 +450,6 @@ class ReportGenerator:
                          executive_summary: dict | None = None,
                          financial_snapshot: list | None = None,
                          shareholding_data: list | None = None,
-                         sector_context: dict | None = None,
                          dcf_summary: dict | None = None,
                          cashflow_quality: dict | None = None,
                          pe_band_summary: dict | None = None,
@@ -475,7 +469,6 @@ class ReportGenerator:
             executive_summary=executive_summary or {},
             snapshot=financial_snapshot or [],
             shareholding_data=shareholding_data or [],
-            sector_context=sector_context or {},
             dcf_summary=dcf_summary or {},
             cashflow_quality=cashflow_quality or {},
             pe_band_summary=pe_band_summary or {},
@@ -546,40 +539,7 @@ class ReportGenerator:
         if pe_hist:
             charts["pe_band_historical"] = pe_hist
 
-        # Peer radar removed — peer comparison table is clearer
-
         return charts
-
-    def _radar_chart(self, elements: dict) -> str:
-        categories = [
-            "Size", "Quality\n(Business)", "Quality\n(Mgmt)",
-            "Growth", "Longevity", "Price",
-        ]
-        keys = [
-            "size", "quality_business", "quality_management",
-            "growth", "longevity", "price",
-        ]
-        values = [elements.get(k, 0) or 0 for k in keys]
-        values.append(values[0])  # Close the polygon
-        categories.append(categories[0])
-
-        fig = go.Figure(data=go.Scatterpolar(
-            r=values,
-            theta=categories,
-            fill="toself",
-            line_color="#2563eb",
-            fillcolor="rgba(37, 99, 235, 0.2)",
-        ))
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(range=[0, 10], tickvals=[2, 4, 6, 8, 10]),
-            ),
-            showlegend=False,
-            margin=dict(l=60, r=60, t=30, b=30),
-            height=400,
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
 
     def _roce_trend_chart(self, ratios) -> str:
         import pandas as pd
@@ -1071,155 +1031,6 @@ class ReportGenerator:
 
     # ── Shareholding ──
 
-    def _shareholding_chart(self, result) -> str:
-        """Build Plotly shareholding chart with two vertically-stacked panels.
-
-        Top panel: Promoter & Public (large, stable holdings — narrow y-range).
-        Bottom panel: FII & DII (institutional flows — zoomed in to show real changes).
-        This avoids the "flat line" problem where Promoter at ~50% squishes
-        FII/DII movements into invisibility.
-        """
-        from plotly.subplots import make_subplots
-
-        sh_bse = result.data.get("shareholding_bse")
-        sh_screener = result.data.get("shareholding")
-
-        if sh_bse is not None and not sh_bse.empty and len(sh_bse) >= 2:
-            df = sh_bse.copy()
-            has_pledge = "promoter_pledge_pct" in df.columns
-        elif sh_screener is not None and not sh_screener.empty and len(sh_screener) >= 2:
-            df = sh_screener.copy()
-            has_pledge = False
-        else:
-            return ""
-
-        if "quarter" not in df.columns:
-            return ""
-
-        df["_sort_date"] = pd.to_datetime(df["quarter"], format="%b %Y", errors="coerce")
-        df = df.sort_values("_sort_date").reset_index(drop=True)
-        df = df.drop(columns=["_sort_date"])
-        quarters = df["quarter"].astype(str)
-
-        def _make_label(name: str, vals) -> str:
-            start_val, end_val = float(vals.iloc[0]), float(vals.iloc[-1])
-            delta = end_val - start_val
-            delta_str = f" ({delta:+.1f}pp)" if abs(delta) >= 0.1 else ""
-            return f"{name} {end_val:.1f}%{delta_str}"
-
-        def _y_range(vals, padding_pct: float = 0.3) -> list:
-            """Compute y-axis range with padding so lines don't hug the edges."""
-            vmin, vmax = float(vals.min()), float(vals.max())
-            spread = max(vmax - vmin, 1.0)
-            return [vmin - spread * padding_pct, vmax + spread * padding_pct]
-
-        # Determine which categories have data
-        top_traces = []  # (col, name, color) — Promoter & Public
-        bot_traces = []  # (col, name, color) — FII & DII & Govt
-        trace_defs = [
-            ("promoter_pct", "Promoter", "#2563eb", "top"),
-            ("public_pct", "Public", "#9ca3af", "top"),
-            ("fii_pct", "FII", "#16a34a", "bot"),
-            ("dii_pct", "DII", "#f59e0b", "bot"),
-            ("govt_pct", "Government", "#8b5cf6", "bot"),
-        ]
-        for col, name, color, panel in trace_defs:
-            if col in df.columns:
-                vals = pd.to_numeric(df[col], errors="coerce").fillna(0)
-                if vals.sum() > 0:
-                    bucket = top_traces if panel == "top" else bot_traces
-                    bucket.append((col, name, color, vals))
-
-        if not top_traces and not bot_traces:
-            return ""
-
-        # If only one panel has data, use single chart
-        has_both = bool(top_traces) and bool(bot_traces)
-        if has_both:
-            fig = make_subplots(
-                rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                subplot_titles=("Promoter & Public", "Institutional (FII & DII)"),
-                row_heights=[0.45, 0.55],
-            )
-        else:
-            fig = go.Figure()
-
-        # ── Top panel: Promoter & Public ──
-        for col, name, color, vals in top_traces:
-            row = 1 if has_both else None
-            fig.add_trace(
-                go.Scatter(
-                    x=quarters, y=vals,
-                    name=_make_label(name, vals),
-                    mode="lines+markers",
-                    line=dict(color=color, width=2.5),
-                    marker=dict(size=4),
-                    hovertemplate=f"{name}: %{{y:.1f}}%<extra></extra>",
-                    legendgroup="top",
-                ),
-                row=row, col=1 if has_both else None,
-            )
-
-        # ── Bottom panel: FII, DII, Govt ──
-        for col, name, color, vals in bot_traces:
-            row = 2 if has_both else None
-            fig.add_trace(
-                go.Scatter(
-                    x=quarters, y=vals,
-                    name=_make_label(name, vals),
-                    mode="lines+markers",
-                    line=dict(color=color, width=2.5),
-                    marker=dict(size=5),
-                    hovertemplate=f"{name}: %{{y:.1f}}%<extra></extra>",
-                    legendgroup="bot",
-                ),
-                row=row, col=1 if has_both else None,
-            )
-
-        # ── Promoter pledge overlay on top panel ──
-        if has_pledge:
-            pledge = pd.to_numeric(df["promoter_pledge_pct"], errors="coerce").fillna(0)
-            if pledge.sum() > 0:
-                row = 1 if has_both else None
-                fig.add_trace(
-                    go.Scatter(
-                        x=quarters, y=pledge,
-                        name=_make_label("Pledge", pledge),
-                        mode="lines+markers",
-                        line=dict(color="#dc2626", width=2, dash="dot"),
-                        marker=dict(size=5, symbol="x"),
-                        hovertemplate="Pledge: %{y:.1f}%<extra></extra>",
-                        legendgroup="top",
-                    ),
-                    row=row, col=1 if has_both else None,
-                )
-
-        # ── Y-axis ranges: zoom into actual data range so changes are visible ──
-        if has_both:
-            top_all = pd.concat([v for _, _, _, v in top_traces])
-            bot_all = pd.concat([v for _, _, _, v in bot_traces])
-            fig.update_yaxes(range=_y_range(top_all), title_text="Holding %", row=1, col=1,
-                             gridcolor="rgba(128,128,128,0.15)")
-            fig.update_yaxes(range=_y_range(bot_all), title_text="Holding %", row=2, col=1,
-                             gridcolor="rgba(128,128,128,0.15)")
-            fig.update_xaxes(showgrid=False, row=1, col=1)
-            fig.update_xaxes(showgrid=False, row=2, col=1)
-
-        fig.update_layout(
-            title="Shareholding Pattern Trend",
-            margin=dict(l=50, r=50, t=60, b=50),
-            height=520 if has_both else 350,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.18, font=dict(size=11)),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            hovermode="x unified",
-        )
-        if not has_both:
-            fig.update_xaxes(showgrid=False)
-            fig.update_yaxes(title_text="Holding %", gridcolor="rgba(128,128,128,0.15)")
-
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
-
     def _prepare_shareholding_data(self, result) -> list[dict]:
         """Prepare shareholding data as list of dicts for Markdown table."""
         sh_bse = result.data.get("shareholding_bse")
@@ -1252,81 +1063,6 @@ class ReportGenerator:
                 "promoter_pledge_pct": _safe_numeric(row.get("promoter_pledge_pct")),
             })
         return records
-
-    # ── Feature 8: Sector-Relative Context ──
-
-    # Metrics where lower values are better (valuation, leverage, volatility)
-    LOWER_IS_BETTER_METRICS = {
-        "pe_ttm", "peg_ratio", "trailing_peg", "ev_ebitda",
-        "debt_equity", "gross_margin_stability", "working_capital_days_trend",
-        "revenue_growth_consistency", "effective_tax_rate_variance",
-        "dupont_equity_multiplier",
-    }
-
-    def _build_sector_context(self, result) -> dict:
-        """Compute peer median/quartile context for key metrics.
-
-        Returns dict keyed by metric_id with:
-            {median, p25, p75, target_value, rank, total, vs_median, sentiment}
-        where sentiment accounts for metric direction (higher/lower is better).
-        """
-        comparison = result.comparison
-        if not comparison or not comparison.get("companies"):
-            return {}
-
-        companies = comparison["companies"]
-        ranks = comparison.get("ranks", {})
-        total = len(companies)
-        context = {}
-
-        for mid in comparison.get("metrics", []):
-            values = [
-                companies[t].get(mid)
-                for t in companies
-                if companies[t].get(mid) is not None
-            ]
-            if len(values) < 2:
-                continue
-
-            arr = np.array(values, dtype=float)
-            median = float(np.nanmedian(arr))
-            p25 = float(np.nanpercentile(arr, 25))
-            p75 = float(np.nanpercentile(arr, 75))
-
-            target_val = companies.get(result.ticker, {}).get(mid)
-            target_rank = ranks.get(result.ticker, {}).get(mid)
-
-            if target_val is not None:
-                if target_val > median * 1.02:
-                    vs = "above"
-                elif target_val < median * 0.98:
-                    vs = "below"
-                else:
-                    vs = "at"
-            else:
-                vs = None
-
-            # Determine sentiment: is being above/below median good or bad?
-            lower_better = mid in self.LOWER_IS_BETTER_METRICS
-            if vs == "above":
-                sentiment = "bad" if lower_better else "good"
-            elif vs == "below":
-                sentiment = "good" if lower_better else "bad"
-            else:
-                sentiment = "neutral"
-
-            context[mid] = {
-                "median": median,
-                "p25": p25,
-                "p75": p75,
-                "target_value": target_val,
-                "rank": target_rank,
-                "total": total,
-                "vs_median": vs,
-                "sentiment": sentiment,
-            }
-
-        return context
 
     # ── Feature 4: DCF Visualization ──
 
@@ -1689,117 +1425,6 @@ class ReportGenerator:
             "pe_min": float(min(implied_pes)),
             "pe_max": float(max(implied_pes)),
         }
-
-    # ── Feature 6: Peer Radar Overlay ──
-
-    def _peer_radar_chart(self, result) -> str:
-        """Create a radar chart overlaying target vs top peers on 6 normalized metrics."""
-        comparison = result.comparison
-        if not comparison or not comparison.get("companies"):
-            return ""
-
-        companies = comparison["companies"]
-        if len(companies) < 2:
-            return ""
-
-        # 6 radar axes: metric_id, display_label, direction
-        radar_axes = [
-            ("roce_5yr_avg", "RoCE 5yr", "higher"),
-            ("pat_cagr_5yr", "PAT CAGR 5yr", "higher"),
-            ("operating_margin_5yr", "OPM 5yr", "higher"),
-            ("pe_ttm", "Valuation\n(PE inv)", "lower"),
-            ("debt_equity", "Leverage\n(D/E inv)", "lower"),
-            ("fcf_consistency", "FCF Consistency", "higher"),
-        ]
-
-        # Check that at least 3 axes have data for the target
-        target = result.ticker
-        target_data = companies.get(target, {})
-        available_axes = [ax for ax in radar_axes if target_data.get(ax[0]) is not None]
-        if len(available_axes) < 3:
-            return ""
-
-        # Use available axes
-        axes = available_axes
-
-        # Select companies: target + up to 3 peers
-        peer_tickers = [t for t in companies if t != target][:3]
-        selected = [target] + peer_tickers
-
-        # Normalize each metric to 0-10 across all selected companies
-        normalized = {t: [] for t in selected}
-        labels = []
-
-        for mid, label, direction in axes:
-            vals = [companies[t].get(mid) for t in selected]
-            numeric_vals = [v for v in vals if v is not None]
-
-            if len(numeric_vals) < 2:
-                # Not enough data for normalization, skip this axis
-                continue
-
-            labels.append(label)
-            vmin = min(numeric_vals)
-            vmax = max(numeric_vals)
-            spread = vmax - vmin if vmax != vmin else 1.0
-
-            for t in selected:
-                v = companies[t].get(mid)
-                if v is not None:
-                    norm = (v - vmin) / spread * 10
-                    if direction == "lower":
-                        norm = 10 - norm
-                    normalized[t].append(max(0, min(10, norm)))
-                else:
-                    normalized[t].append(0)
-
-        if len(labels) < 3:
-            return ""
-
-        # Close polygon
-        labels_closed = labels + [labels[0]]
-
-        colors = ["#2563eb", "#16a34a", "#f59e0b", "#8b5cf6"]
-        fig = go.Figure()
-
-        # Build actual values per company for hover
-        actual_values = {t: [] for t in selected}
-        for mid, label, direction in axes:
-            for t in selected:
-                v = companies[t].get(mid)
-                actual_values[t].append(f"{v:.1f}" if v is not None else "N/A")
-
-        for i, t in enumerate(selected):
-            vals = normalized[t] + [normalized[t][0]]
-            hover_vals = actual_values[t] + [actual_values[t][0]]
-            hover_labels = labels + [labels[0]]
-            hover_text = [f"{t}<br>{l}: {v}" for l, v in zip(hover_labels, hover_vals)]
-            is_target = (t == target)
-            fig.add_trace(go.Scatterpolar(
-                r=vals, theta=labels_closed,
-                name=t,
-                fill="toself" if is_target else "none",
-                text=hover_text,
-                hoverinfo="text",
-                line=dict(
-                    color=colors[i % len(colors)],
-                    width=2.5 if is_target else 1.5,
-                    dash="solid" if is_target else "dash",
-                ),
-                fillcolor=f"rgba(37, 99, 235, 0.15)" if is_target else None,
-                opacity=1.0 if is_target else 0.7,
-            ))
-
-        fig.update_layout(
-            title="Competitive Positioning",
-            polar=dict(radialaxis=dict(range=[0, 10], tickvals=[2, 4, 6, 8, 10])),
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.2),
-            margin=dict(l=60, r=60, t=50, b=50),
-            height=450,
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
 
     # ── Helpers ──
 

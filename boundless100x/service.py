@@ -41,7 +41,7 @@ class Boundless100xService:
         svc = Boundless100xService()
         result = svc.analyze("ASTRAL")
         print(result.scores["composite"])  # 7.2
-        print(result.peers.direct_competitors)  # ["SUPREMEIND", ...]
+        print(result.scores["elements"]["growth"])  # 6.4
     """
 
     def __init__(self, config_path: str | None = None, config: dict | None = None):
