@@ -58,7 +58,11 @@ class Boundless100xService:
         self.suite = DataFetcherSuite(self.config)
         self.engine = ComputeEngine(macro=self.config.get("macro", {}))
         self.eligibility = EligibilityEvaluator(self.engine.gates or None)
-        self.scorer = SQGLPScorer(self.engine.metrics, self.engine.element_weights)
+        self.scorer = SQGLPScorer(
+            self.engine.metrics,
+            self.engine.element_weights,
+            history_waiver_mcap=self.engine.master.get("history_waiver_mcap"),
+        )
 
         # LLM orchestrator (lazy init — only when API key is available)
         self._llm = None

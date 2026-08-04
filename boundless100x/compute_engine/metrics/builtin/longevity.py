@@ -9,6 +9,19 @@ from boundless100x.compute_engine.metrics.builtin.profitability import _get_annu
 from boundless100x.compute_engine.sector import classify_sector
 
 
+def _short_window_flags(observed: int, designed: int) -> list[str]:
+    """Flag a count scored against a window the data cannot fill.
+
+    These metrics score an absolute count of good years against thresholds
+    calibrated for `designed` years, so a company with less history is capped
+    by arithmetic rather than by performance. The scorer decides what to do
+    about it — see SQGLPScorer's history waiver.
+    """
+    if observed < designed:
+        return [f"short_window_{observed}yr_of_{designed}yr"]
+    return []
+
+
 def compute_threshold_consistency(data: dict, params: dict) -> MetricResult:
     """Count years where a metric exceeds a threshold (e.g., RoCE > 15%)."""
     field = params.get("field", "roce")
@@ -26,7 +39,7 @@ def compute_threshold_consistency(data: dict, params: dict) -> MetricResult:
     count = int((values > threshold).sum())
     total = len(values)
 
-    flags = []
+    flags = _short_window_flags(total, years)
     if count >= 8 and total >= 10:
         flags.append(f"consistently_high_{field}")
 
@@ -60,7 +73,7 @@ def compute_cap_proxy(data: dict, params: dict) -> MetricResult:
         else:
             current = 0
 
-    flags = []
+    flags = _short_window_flags(len(values), params.get("designed_years", 10))
     if max_streak >= 8:
         flags.append("wide_moat_cap")
     elif max_streak >= 5:
@@ -103,6 +116,8 @@ def compute_growth_streak(data: dict, params: dict) -> MetricResult:
 
     return MetricResult(
         value=float(max_streak),
+        # A streak cannot exceed the observations available to grow it.
+        flags=_short_window_flags(len(values), params.get("designed_years", 10)),
         metadata={"threshold_pct": threshold_pct, "data_years": len(values)},
     )
 
@@ -194,7 +209,7 @@ def compute_fcf_consistency(data: dict, params: dict) -> MetricResult:
     organic_positive = int(np.sum(clean_fcf[organic_mask] > 0)) if organic_mask.any() else 0
     organic_total = int(organic_mask.sum())
 
-    flags = list(outlier_flags)
+    flags = list(outlier_flags) + _short_window_flags(total, years)
     if positive_count >= 8 and total >= 10:
         flags.append("consistent_fcf_generator")
     elif organic_positive >= 8 and organic_total >= 9:
@@ -229,6 +244,7 @@ def compute_dividend_consistency(data: dict, params: dict) -> MetricResult:
 
     return MetricResult(
         value=float(count),
+        flags=_short_window_flags(total, years),
         metadata={"total_years": total},
     )
 

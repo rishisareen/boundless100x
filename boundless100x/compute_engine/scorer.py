@@ -10,9 +10,34 @@ logger = logging.getLogger(__name__)
 class SQGLPScorer:
     """Compute per-element scores (0-10) and weighted composite from metric results."""
 
-    def __init__(self, metrics_config: dict, element_weights: dict):
+    def __init__(self, metrics_config: dict, element_weights: dict,
+                 history_waiver_mcap: float | None = None):
         self.metrics_config = metrics_config
         self.element_weights = element_weights
+        # Below this market cap, metrics capped by a short observation window
+        # are treated as missing rather than scored low. See _waived_for_history.
+        self.history_waiver_mcap = history_waiver_mcap
+
+    def _waived_for_history(self, results: dict) -> bool:
+        """Whether short-window metrics should be excused for this company.
+
+        Count-based longevity metrics score an absolute number of good years
+        against a ten-year window, so a young company is capped by arithmetic
+        rather than performance. For a small company that is a fact about the
+        data; for a large one, thin history is itself a red flag — hence a
+        threshold of its own, well below the 100x size gate. An unknown market
+        cap never earns the waiver.
+        """
+        if not self.history_waiver_mcap:
+            return False
+
+        mcap = results.get("market_cap")
+        if mcap is None or not getattr(mcap, "ok", False):
+            return False
+        if not isinstance(mcap.value, (int, float)):
+            return False
+
+        return mcap.value < self.history_waiver_mcap
 
     def score(self, results: dict[str, MetricResult]) -> dict:
         """Compute SQGLP scores.
@@ -27,6 +52,9 @@ class SQGLPScorer:
         element_weighted_scores: dict[str, float] = {}
         element_total_weights: dict[str, float] = {}
         details: dict[str, dict] = {}
+        score_flags: list[str] = []
+
+        waive_history = self._waived_for_history(results)
 
         for metric_id, result in results.items():
             if not result.ok:
@@ -54,6 +82,19 @@ class SQGLPScorer:
                     "weight": 0,
                     "flags": result.flags,
                 }
+                continue
+
+            if waive_history and any(f.startswith("short_window_") for f in result.flags):
+                # Excluded rather than scored low; remaining weights renormalise.
+                details[metric_id] = {
+                    "value": result.value,
+                    "score": None,
+                    "weight": 0,
+                    "waived": "short_history_smallcap",
+                    "flags": result.flags,
+                }
+                if "short_history_smallcap" not in score_flags:
+                    score_flags.append("short_history_smallcap")
                 continue
 
             raw_score = self._compute_raw_score(result, scoring_config)
@@ -96,6 +137,7 @@ class SQGLPScorer:
             "elements": elements,
             "composite": round(composite, 2),
             "details": details,
+            "flags": score_flags,
         }
 
     def _compute_raw_score(self, result: MetricResult, config: dict) -> float:
