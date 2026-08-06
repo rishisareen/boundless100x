@@ -10,6 +10,17 @@ execution: code
 
 # Phase 1 Lifecycle Foundation - Plan
 
+> **Rev 2026-08-06a (fresh-start decision, owner-directed):** old outputs are
+> discarded rather than migrated. `output/reports/` (141 MB of stale reports)
+> was deleted and `watchlist.json` reset to empty at commit `4334156`, whose
+> history still holds the two prior entries (ASTRAL "Pipe sector leader",
+> SUPREMEIND "Closest peer") should they be wanted back. **`raw_data/` was
+> deliberately kept** — it is fetched input, not output, and re-acquiring
+> 261 MB including 22 BSE annual-report PDFs would cost network time and
+> rate-limited scraping for no benefit. Consequences: R3 (lossless migration)
+> is struck, KTD5 becomes a fresh-schema decision, and U3 loses its migration
+> logic and tests.
+
 ## Goal Capsule
 
 - **Objective:** Turn the watchlist into the persistence layer for the v05
@@ -79,8 +90,11 @@ or as a string instead of a list.
 - R2. Each watchlist entry carries `lane`, `state`, `checkpoints`,
   `kill_switch_status`, `last_score_snapshot`, and an append-only
   `state_history` recording every transition with the evidence that caused it.
-- R3. Existing watchlist entries migrate losslessly; no entry is placed in a
-  state it did not earn.
+- R3. ~~Existing watchlist entries migrate losslessly~~ **struck (rev a)** —
+  the store starts empty and is written only in the new schema. Its
+  replacement obligation: a watchlist entry is created only by `watchlist
+  add` or by an `advance` transition, and no entry is ever placed in a state
+  it did not earn.
 - R4. Pass 2 emits each monitorable in two forms: the existing prose for the
   reader, plus a structured `{metric_id, comparator, threshold, due_date}`
   object. A structured checkpoint whose `metric_id` is outside the checkpoint
@@ -148,13 +162,17 @@ or as a string instead of a list.
   variants, and nothing else. Registry metrics are almost all annual-grain and
   therefore *not* checkpoint-evaluable at quarterly cadence — admitting them
   would produce checkpoints that can never come due.
-- **KTD5 — Migration starts every existing entry at `screen`.** The current
-  entries carry only `added/last_run/last_composite/notes`; nothing records
-  that they ever passed a gate. Placing them in `watch` would grant a state
-  they never earned, which is the same failure mode as a gate passing on
-  missing data. They migrate to `screen` and the first `advance` promotes them
-  through `qualify` and `watch` on real evaluation — auto-transitions that
-  move no money, so nothing is blocked by the choice.
+- **KTD5 — The store starts empty; there is no migration path (rev a).**
+  Old outputs were discarded by owner decision, so `watchlist.py` reads and
+  writes exactly one schema and needs no version detection, no defaulting of
+  absent fields, and no idempotent-migration tests. Entries are created by
+  `watchlist add` at state `screen`, and `advance` promotes them through
+  `qualify` and `watch` on real evaluation — so the "never grant an unearned
+  state" property comes free from the entry point rather than from migration
+  care. A file containing an unrecognised entry shape is a **loud error**,
+  not something to repair silently: with one schema in existence, an odd
+  entry means something is wrong, and guessing at it is how a company ends up
+  in a state nobody assigned it.
 - **KTD6 — Proposals are data, not prose.** `advance` returns a structured
   proposal list (`ticker, from, to, trigger_id, evidence, auto_applied`);
   the CLI renders it and the future GUI reads the same objects. Evidence is
@@ -238,15 +256,21 @@ llm_layer/      pass2 prompt emits structured monitorables; recorded via
 
 ### U3. Watchlist becomes the lifecycle store
 
-- Entry gains `lane` (`core`), `state`, `checkpoints`, `kill_switch_status`,
-  `last_score_snapshot`, `state_history` (append-only:
-  `{at, from, to, trigger_id, evidence, applied_by}`).
-- Forward-only migration on load: existing entries gain defaults with
-  `state: "screen"` (KTD5); every original field is preserved verbatim.
-  Migration is idempotent.
-- *Tests:* a pre-Phase-1 `watchlist.json` migrates with all four original
-  fields intact; migration is idempotent; `state_history` never rewrites an
-  existing entry; a corrupt entry is surfaced, not silently reset.
+*(Simplified by rev a — no migration path.)*
+
+- One schema. An entry carries `ticker`, `added`, `notes`, `lane` (`core`),
+  `state`, `checkpoints`, `kill_switch_status`, `last_score_snapshot`, and
+  `state_history` (append-only: `{at, from, to, trigger_id, evidence,
+  applied_by}`). `watchlist add` creates it at `screen`.
+- `last_run`/`last_composite` are absorbed into `last_score_snapshot`, which
+  also carries the `config_hash` — so the regime that produced a stored
+  composite is visible without cross-referencing `score_history.jsonl`.
+- An entry missing required keys raises with the ticker named (KTD5); the
+  loader never repairs, defaults, or drops it.
+- *Tests:* `add` creates a well-formed entry at `screen`; `state_history` is
+  append-only across several transitions and never rewrites an earlier row; a
+  malformed entry raises naming the ticker; an empty store loads cleanly;
+  `show` renders lane and state.
 
 ### U4. Structured monitorables from Pass 2
 
@@ -307,9 +331,10 @@ llm_layer/      pass2 prompt emits structured monitorables; recorded via
   lifecycle field — so scores, verdicts and actions cannot move. Confirm by
   re-running a cached ticker and diffing `scores.json` and `eligibility.json`.
 - **Replay validation (v05 §12 Phase 1):** refetch CDSL, RAIN and VBL (A1),
-  run `watchlist advance`, and confirm each proposed transition cites the
-  trigger evidence that caused it, with at least one buy-zone and one
-  kill-switch case exercised on real data.
+  `watchlist add` each, run `watchlist advance`, and confirm every proposed
+  transition cites the trigger evidence that caused it, with at least one
+  buy-zone and one kill-switch case exercised on real data. The store is now
+  empty (rev a), so this doubles as the fresh-schema end-to-end test.
 - Report the fired/indeterminate split across the replay tickers, the way U4
   of Phase 0 reported found/fallback — a phase that silently produces all
   indeterminates has not been validated.
