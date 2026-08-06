@@ -69,6 +69,9 @@ class LLMOrchestrator:
     """LLM analysis pipeline using Claude API."""
 
     def __init__(self, config: dict):
+        # Kept so a deep-mode override can be undone from the same source the
+        # defaults came from, rather than from remembered values.
+        self._config = config
         llm_config = config.get("llm", {})
         self.enabled = llm_config.get("enabled", True)
         self.pass1_model = llm_config.get("pass1_model", DEFAULT_MODEL)
@@ -110,6 +113,21 @@ class LLMOrchestrator:
             f"Deep mode: all passes → {DEEP_MODEL}, "
             f"max_tokens → {self.max_tokens}"
         )
+
+    def use_configured_models(self) -> None:
+        """Restore the configured models, undoing any deep-mode override.
+
+        `use_deep_models` mutates a long-lived instance, and the service is
+        documented as reusable — so without an undo, one `analyze(deep=True)`
+        silently made every later `deep=False` call on that instance run on
+        Opus too, at several times the cost and with nothing to say the flag
+        had been ignored.
+        """
+        llm_config = self._config.get("llm", {})
+        self.pass1_model = llm_config.get("pass1_model", DEFAULT_MODEL)
+        self.pass2_model = llm_config.get("pass2_model", DEFAULT_MODEL)
+        self.forward_growth_model = forward_growth_model(self._config)
+        self.max_tokens = llm_config.get("max_tokens", 2000)
 
     # ── Forward-growth extraction (Stage 1.5) ──
 

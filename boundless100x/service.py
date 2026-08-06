@@ -154,9 +154,15 @@ class Boundless100xService:
 
         # Deep mode is resolved here rather than at Stage 4 because Stage 1.5
         # below is also an LLM call, and the model it used is recorded in the
-        # extraction cache's version block.
-        if use_llm and self._llm and deep:
-            self._llm.use_deep_models()
+        # extraction cache's version block. Resolved per call in both
+        # directions: the orchestrator is long-lived and the service is
+        # documented as reusable, so without the reset one deep run would
+        # silently make every later shallow one deep as well.
+        if use_llm and self._llm:
+            if deep:
+                self._llm.use_deep_models()
+            else:
+                self._llm.use_configured_models()
 
         # Stage 1.5: Forward-growth extraction (Phase 2)
         try:
@@ -379,8 +385,26 @@ class Boundless100xService:
         raw = self._llm.run_forward_growth_extraction(ticker, company_name, submission)
         validated = forward_growth.validate_extraction(raw, submission, gated)
 
+        if validated.get("call_failed"):
+            # An outage is not a finding. Caching it would serve "nothing was
+            # extracted" as a determinate answer on every later run, since
+            # nothing re-extracts until the text, schema, prompt or model
+            # changes — so one rate-limit would disable this ticker for good.
+            raise RuntimeError(
+                f"extraction call failed for {ticker}; not cached so the next "
+                f"run retries"
+            )
+
         data["forward_growth"] = validated["years"]
-        forward_growth.write_sidecar(sidecar, validated["years"], submission, model)
+        # Keep the discard reasons. They are the only record of *why* a
+        # ticker's forward-growth coverage came up empty, and a log line does
+        # not survive the run — without this, an empty result is
+        # indistinguishable from a report that genuinely said nothing.
+        data["forward_growth_discarded"] = validated["discarded"]
+        forward_growth.write_sidecar(
+            sidecar, validated["years"], submission, model,
+            discarded=validated["discarded"],
+        )
 
     @staticmethod
     def resolve_action(result: AnalysisResult) -> dict | None:
@@ -392,8 +416,14 @@ class Boundless100xService:
         return resolve_for_result(result)
 
     def analyze_quick(self, ticker: str) -> AnalysisResult:
-        """Quick analysis without LLM — for screening."""
-        return self.analyze(ticker, use_llm=False)
+        """Quick analysis without LLM — for screening.
+
+        Skips the momentum read for the same reason `advance_ticker` does:
+        screening runs this once per candidate over the whole universe and
+        never reads `result.momentum`, so asking for it would re-parse the
+        entire score-history log per candidate for nothing.
+        """
+        return self.analyze(ticker, use_llm=False, include_momentum=False)
 
     def get_element_summary(self, result: AnalysisResult) -> dict:
         """Get a readable summary of SQGLP element scores."""

@@ -223,7 +223,25 @@ def advance(
     `pace_reading` lets a caller supply the corpus reading directly (tests, a
     future simulator) without touching `raw_data/`.
     """
-    evaluator, pace = _resolve_pace(service, evaluator, pace_reading)
+    # Defence in depth for the same guarantee: this resolves once, before the
+    # per-ticker loop's own isolation, so anything it raises would end the run
+    # for every tracked company. An unresolvable pace reading must cost the
+    # modulation, never the advance — and unmodulated is the safe direction,
+    # since an unknown macro reading may not tighten entry either.
+    try:
+        evaluator, pace = _resolve_pace(service, evaluator, pace_reading)
+    except Exception as e:
+        logger.error(f"Deployment pace could not be resolved: {e}")
+        evaluator = evaluator or TriggerEvaluator(
+            known_metric_ids=set(service.engine.metrics)
+        )
+        pace = {
+            "applied": False,
+            "reason": f"pace could not be resolved ({e}) — entry unmodulated",
+            "median_pp": None, "contributors": 0,
+            "adjusted": {}, "adjusted_states": (), "evidence": "",
+        }
+
     tickers = watchlist.get_stale(90) if quarterly else watchlist.tickers()
 
     outcomes: list[dict] = []

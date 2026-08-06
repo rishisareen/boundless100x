@@ -388,6 +388,101 @@ class TestGroundingAgainstTheSubmittedText:
         raw = response(**{"2025": {"guidance": [guidance_entry(source_sentence="   ")]}})
         assert self._validate(raw)["years"]["2025"]["guidance"] == []
 
+    def test_a_figure_in_the_wrong_unit_is_discarded(self):
+        """The digits being present proves nothing about what they denominate.
+
+        "capex of USD 500 million" genuinely contains 500, so a bare-numeral
+        check grounds an `amount_inr_cr: 500` entry that is wrong by two orders
+        of magnitude — and promises-kept would settle it against real INR-crore
+        financials.
+        """
+        payload = {"2025": {"mdna": (
+            "MANAGEMENT DISCUSSION AND ANALYSIS\nOUTLOOK\n"
+            "We expect capex of USD 500 million by FY2027."
+        )}}
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 500,
+            "commissioning_year": "FY2027",
+            "source_sentence": "We expect capex of USD 500 million by FY2027.",
+            "section": "mdna",
+        }]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+
+        assert result["years"]["2025"]["capex"] == []
+        assert any("INR crore" in d["reason"] for d in result["discarded"])
+
+    @pytest.mark.parametrize("phrasing", [
+        "capex of Rs 500 crore by FY2027",
+        "capex of 500 crore by FY2027",
+        "a Rs 500 cr programme commissioning in FY2027",
+    ])
+    def test_a_figure_in_the_right_unit_still_grounds(self, phrasing):
+        payload = {"2025": {"mdna": f"OUTLOOK\nWe expect {phrasing}."}}
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 500,
+            "commissioning_year": "FY2027",
+            "source_sentence": f"We expect {phrasing}.",
+            "section": "mdna",
+        }]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert len(result["years"]["2025"]["capex"]) == 1
+
+    def test_a_mixed_unit_sentence_grounds_on_the_right_occurrence(self):
+        """One foreign figure in a sentence must not condemn a sound one."""
+        sentence = "Revenue grew from USD 100 million to Rs 1,500 crore in FY2026."
+        payload = {"2025": {"mdna": f"OUTLOOK\n{sentence}"}}
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            source_sentence=sentence
+        )]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert len(result["years"]["2025"]["guidance"]) == 1
+
+    def test_a_percent_field_is_not_unit_checked(self):
+        """A margin carries its unit in the numeral; no scale word applies."""
+        sentence = "We target an operating margin of 18.5% in FY2026."
+        payload = {"2025": {"mdna": f"OUTLOOK\n{sentence}"}}
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            metric="operating_margin_pct", target_value=18.5,
+            source_sentence=sentence,
+        )]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert len(result["years"]["2025"]["guidance"]) == 1
+
+    def test_an_oversized_free_text_field_is_discarded(self):
+        """Optional prose is the one part of an entry nothing else constrains."""
+        sentence = "A new plant of Rs 500 crore commissions in FY2027."
+        payload = {"2025": {"mdna": f"OUTLOOK\n{sentence}"}}
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 500, "commissioning_year": "FY2027",
+            "description": "x" * 5000,
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert result["years"]["2025"]["capex"] == []
+
+    def test_a_non_string_free_text_field_is_discarded(self):
+        sentence = "A new plant of Rs 500 crore commissions in FY2027."
+        payload = {"2025": {"mdna": f"OUTLOOK\n{sentence}"}}
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 500, "commissioning_year": "FY2027",
+            "description": {"nested": "object"},
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert result["years"]["2025"]["capex"] == []
+
     def test_a_comma_formatted_number_still_grounds(self):
         """The filing writes 1,500; the model returns 1500. Both are the same claim."""
         assert self._validate(
@@ -554,8 +649,109 @@ class TestSidecar:
         fg.write_sidecar(path, {"2025": {}}, self.payload(), model="m")
 
         stored = json.loads(path.read_text())
-        assert set(stored) == {"version", "years"}
+        assert set(stored) == {"version", "years", "discarded"}
         assert stored["version"]["model"] == "m"
+
+    def test_discard_reasons_survive_the_run(self, tmp_path):
+        """A log line does not outlive the process; the reason for an empty
+        forward-growth result has to be inspectable afterwards."""
+        path = tmp_path / "fg.json"
+        reasons = [{"where": "2025.guidance", "reason": "not in the document"}]
+        fg.write_sidecar(path, {"2025": {}}, self.payload(), model="m",
+                         discarded=reasons)
+
+        assert fg.read_sidecar_discards(path) == reasons
+
+    def test_discards_do_not_invalidate_an_otherwise_current_cache(self, tmp_path):
+        path = tmp_path / "fg.json"
+        fg.write_sidecar(path, {"2025": {}}, self.payload(), model="m",
+                         discarded=[{"where": "x", "reason": "y"}])
+
+        assert fg.read_sidecar(path, self.payload(), model="m") == {"2025": {}}
+
+    def test_missing_or_unreadable_discards_read_as_empty(self, tmp_path):
+        assert fg.read_sidecar_discards(tmp_path / "absent.json") == []
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json")
+        assert fg.read_sidecar_discards(broken) == []
+
+
+# ── The real orchestrator method ───────────────────────────────────────────
+
+
+class TestPromptAssembly:
+    """Exercises the real template and the real `.format()` call.
+
+    Every Stage 1.5 test below substitutes a stub for the whole orchestrator,
+    so without this the actual prompt file, its placeholders, and the
+    keyword arguments passed to it are never executed by the suite — a renamed
+    placeholder or a typo would surface only in production.
+    """
+
+    @pytest.fixture
+    def orchestrator(self, monkeypatch):
+        from boundless100x.llm_layer.orchestrator import LLMOrchestrator
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
+        return LLMOrchestrator({})
+
+    def captured(self, orchestrator, monkeypatch, payload):
+        seen = {}
+        monkeypatch.setattr(
+            orchestrator, "_call_api",
+            lambda model, prompt, label: seen.update(prompt=prompt, model=model) or {},
+        )
+        orchestrator.run_forward_growth_extraction("ASTRAL", "Astral Ltd", payload)
+        return seen
+
+    def test_the_real_template_renders_with_the_real_arguments(
+        self, orchestrator, monkeypatch
+    ):
+        seen = self.captured(orchestrator, monkeypatch, submission())
+
+        assert "ASTRAL" in seen["prompt"]
+        assert "Astral Ltd" in seen["prompt"]
+        assert "MANAGEMENT DISCUSSION AND ANALYSIS" in seen["prompt"]
+        assert "=== REPORT YEAR 2025 ===" in seen["prompt"]
+        assert "--- SECTION: mdna ---" in seen["prompt"]
+
+    def test_the_closed_vocabulary_reaches_the_prompt(self, orchestrator, monkeypatch):
+        seen = self.captured(orchestrator, monkeypatch, submission())
+
+        for metric_id in schema.GUIDANCE_METRICS:
+            assert metric_id in seen["prompt"]
+
+    def test_the_json_schema_block_renders_with_single_braces(
+        self, orchestrator, monkeypatch
+    ):
+        """Doubled braces in the template must survive `.format()` as literals."""
+        seen = self.captured(orchestrator, monkeypatch, submission())
+
+        assert '"years": {' in seen["prompt"]
+        assert "{{" not in seen["prompt"].split("ANNUAL REPORT SECTIONS")[-1]
+
+    def test_braces_in_filing_text_do_not_break_rendering(
+        self, orchestrator, monkeypatch
+    ):
+        """Filing text is a substituted value, so `.format()` must not reparse it."""
+        hostile = {"2025": {"mdna": "Outlook {not_a_placeholder} and {{braces}}."}}
+        seen = self.captured(orchestrator, monkeypatch, hostile)
+
+        assert "{not_a_placeholder}" in seen["prompt"]
+
+    def test_the_configured_extraction_model_is_used(self, orchestrator, monkeypatch):
+        seen = self.captured(orchestrator, monkeypatch, submission())
+        assert seen["model"] == orchestrator.forward_growth_model
+
+    def test_deep_mode_moves_the_extraction_model_and_back(self, orchestrator):
+        from boundless100x.llm_layer.orchestrator import DEEP_MODEL
+
+        configured = orchestrator.forward_growth_model
+        orchestrator.use_deep_models()
+        assert orchestrator.forward_growth_model == DEEP_MODEL
+
+        orchestrator.use_configured_models()
+        assert orchestrator.forward_growth_model == configured
 
 
 # ── Stage 1.5 in the service ───────────────────────────────────────────────
@@ -570,12 +766,21 @@ class RecordingLLM:
         self.calls = []
         self._response = response if response is not None else {"years": {}}
 
+    @property
+    def _configured_model(self):
+        """Whatever the test set, so a reset restores that rather than a literal."""
+        return getattr(self, "_baseline_model", None) or self.forward_growth_model
+
     def run_forward_growth_extraction(self, ticker, company_name, submission):
         self.calls.append({"ticker": ticker, "submission": submission})
         return self._response
 
     def use_deep_models(self):
+        self._baseline_model = self._configured_model
         self.forward_growth_model = "stub-deep-model"
+
+    def use_configured_models(self):
+        self.forward_growth_model = self._configured_model
 
     def run_analysis(self, **kwargs):
         # Stage 4 is not what these tests are about; keep it quiet.
@@ -703,6 +908,57 @@ class TestStageOnePointFive:
         svc.analyze("ASTRAL", use_llm=True, deep=True)
 
         assert llm.forward_growth_model == "stub-deep-model"
+
+    def test_a_failed_api_call_is_not_cached_as_a_genuine_empty_result(
+        self, monkeypatch, tmp_path
+    ):
+        """An outage is not a finding.
+
+        `_call_api` turns any network or rate-limit failure into
+        `{"error": ...}` rather than raising. Cached, that would be served as a
+        confirmed-empty extraction on every later run — permanently, since
+        nothing re-extracts until the text, schema, prompt or model changes.
+        """
+        failing = RecordingLLM(response={"error": "rate limited", "pass": "forward_growth"})
+        svc = service_for(monkeypatch, tmp_path, analysable(provenance="found"), failing)
+
+        result = svc.analyze("ASTRAL", use_llm=True)
+
+        assert len(failing.calls) == 1
+        assert "forward_growth" not in result.data
+        assert any("Forward-growth" in e for e in result.errors)
+        # And the next run must actually retry rather than read an outage back.
+        working = RecordingLLM(response={"years": {"2025": {"guidance": [{
+            "metric": "revenue", "target_value": 1500, "target_period": "FY2026",
+            "source_sentence": GUIDANCE_SENTENCE, "section": "mdna",
+        }]}}})
+        retried = service_for(
+            monkeypatch, tmp_path, analysable(provenance="found"), working
+        )
+        assert retried.analyze("ASTRAL", use_llm=True).data["forward_growth"]
+
+    def test_a_call_failure_is_distinguishable_from_a_genuine_empty(self):
+        payload = submission()
+        gated = fg.gate_sections(make_ar_sections(provenance="found"))
+
+        outage = fg.validate_extraction({"error": "boom"}, payload, gated)
+        empty = fg.validate_extraction(response(**{"2025": {}}), payload, gated)
+
+        assert outage["call_failed"] is True
+        assert empty["call_failed"] is False
+
+    def test_deep_mode_does_not_leak_into_a_later_shallow_run(
+        self, monkeypatch, tmp_path
+    ):
+        """The service is documented as reusable; `deep=False` must mean it."""
+        llm = RecordingLLM()
+        svc = service_for(monkeypatch, tmp_path, analysable(provenance="found"), llm)
+
+        svc.analyze("ASTRAL", use_llm=True, deep=True)
+        assert llm.forward_growth_model == "stub-deep-model"
+
+        svc.analyze("ASTRAL", use_llm=True, deep=False)
+        assert llm.forward_growth_model == "stub-model"
 
     def test_an_extraction_failure_does_not_cost_the_caller_the_analysis(
         self, monkeypatch, tmp_path

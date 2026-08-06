@@ -512,6 +512,14 @@ def _current_multiple(data: dict) -> tuple[float | None, dict, str]:
         return None, {}, "Non-positive EPS — a re-rating multiple is undefined"
 
     latest_close = float(close.iloc[-1])
+    if latest_close <= 0:
+        # The same guard `_close_on_or_before` applies to this column. A zero
+        # raises deep inside the ratio and surfaces as an opaque exception
+        # string; a negative one produces a negative multiple that reads as a
+        # perfectly ordinary headroom figure. Both are scraping glitches, and
+        # neither may become a signal.
+        return None, {}, "Non-positive traded close — a re-rating multiple is undefined"
+
     return (
         latest_close / latest_eps,
         {

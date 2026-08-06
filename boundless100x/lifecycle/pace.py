@@ -103,16 +103,25 @@ def corpus_spread(raw_data_dir, macro: dict | None = None) -> dict:
         meta_path = directory / "metadata.json"
         if not meta_path.exists():
             continue
+        # The metric call is inside the guard, not after it. A `metadata.json`
+        # holding valid JSON of the wrong shape (a list, a null, a bare number)
+        # parses fine and then raises inside the metric — and because this runs
+        # once before `advance()`'s per-ticker loop, that exception would take
+        # down the whole run for every tracked company, breaking the one
+        # guarantee `advance()` makes: a failure on one company must not stop
+        # the rest. One unreadable directory costs one contributor.
         try:
             metadata = json.loads(meta_path.read_text())
             financials = pd.read_csv(directory / TICKER_MARKER)
+            result = compute_earnings_yield_spread(
+                {"metadata": metadata if isinstance(metadata, dict) else {},
+                 "financials": financials},
+                dict(macro or {}),
+            )
         except Exception as e:
             logger.warning(f"Pace: could not read {directory.name}: {e}")
             continue
 
-        result = compute_earnings_yield_spread(
-            {"metadata": metadata, "financials": financials}, dict(macro or {})
-        )
         if result.ok and isinstance(result.value, (int, float)):
             readings.append((directory.name, float(result.value)))
 
@@ -133,13 +142,34 @@ def _tighten(threshold, comparator: str, factor: float):
     Doing this by comparator rather than assuming "lower is stricter" means a
     future entry trigger declared the other way round is still tightened rather
     than quietly loosened.
+
+    **Direction is verified, not assumed.** Arithmetic alone does not guarantee
+    it: a factor above 1 inverts the whole operation, and multiplying a
+    *negative* `lte` threshold by a fraction moves it toward zero — looser, not
+    tighter. Both would silently make entry easier at the exact moment the
+    modulator judged the corpus expensive, while the evidence line attached to
+    the resulting buy still read "tightened". So the result is checked against
+    the comparator's own notion of stricter, and a threshold that did not get
+    harder is left exactly as declared.
     """
     if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
         return threshold
+    if not factor:
+        return threshold
+
+    # Move by a magnitude-scaled step rather than multiplying. Multiplying a
+    # *negative* `lte` threshold by a fraction moves it toward zero, which
+    # admits more values — a loosening — and this file's own domain is signed
+    # (its corpus reading today is -4.33pp), so a negative entry threshold is a
+    # foreseeable addition rather than a hypothetical. On positive thresholds
+    # this reproduces the multiplicative result exactly.
+    step = abs(threshold) * (1 - factor)
     if comparator in _LOWER_IS_TIGHTER:
-        return round(threshold * factor, 4)
-    if comparator in _HIGHER_IS_TIGHTER and factor:
-        return round(threshold / factor, 4)
+        candidate = round(threshold - step, 4)
+        return candidate if candidate < threshold else threshold
+    if comparator in _HIGHER_IS_TIGHTER:
+        candidate = round(threshold + step, 4)
+        return candidate if candidate > threshold else threshold
     return threshold
 
 
@@ -163,6 +193,20 @@ def modulate(
     """
     median_pp = reading.get("median_pp")
     contributors = reading.get("contributors", 0)
+
+    # A factor outside (0, 1] does not tighten anything — above 1 it loosens,
+    # and 0 or negative is meaningless here. "Tighten it more aggressively" is
+    # a natural misreading that would produce 1.5, so this is rejected at the
+    # boundary rather than trusted to arithmetic downstream.
+    if not isinstance(factor, (int, float)) or isinstance(factor, bool) or not (
+        0 < factor <= 1
+    ):
+        logger.warning(
+            f"Deployment pace: tighten_factor {factor!r} is outside (0, 1] — "
+            f"a factor above 1 would loosen entry. Falling back to "
+            f"{DEFAULT_TIGHTEN_FACTOR}."
+        )
+        factor = DEFAULT_TIGHTEN_FACTOR
 
     decision = {
         "applied": False,
@@ -233,8 +277,12 @@ def modulate(
                 sorted(set(decision["adjusted_states"]) | {spec["to"]})
             )
 
+    # Rendered from the values actually written, not from the intent: the
+    # evidence line is what justifies a buy, and it must never be able to claim
+    # a tightening that did not happen.
     rendered = "; ".join(
-        f"{c['metric']} {c['from']}->{c['to']}"
+        f"{c['metric']} {c['from']}->{c['to']} "
+        f"({'stricter' if c['to'] != c['from'] else 'unchanged'})"
         for changes in decision["adjusted"].values()
         for c in changes
     )

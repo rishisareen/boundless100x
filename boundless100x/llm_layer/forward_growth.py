@@ -417,38 +417,140 @@ def ground_text(text: str) -> str:
     )
 
 
-def _number_appears(sentence: str, value) -> bool:
-    """Whether a number is written somewhere in its own quoted sentence.
+# A scale word *follows* its numeral in both English and Indian usage —
+# "500 million", "1,500 crore" — so the multiplier is read from the text
+# immediately after. `lakh` and `million` are two orders of magnitude from a
+# crore, so either makes an `inr_cr` claim wrong.
+_WRONG_SCALE_AFTER_NUMBER = re.compile(
+    r"^\W{0,3}(?:million|mn|billion|bn|trillion|tn|lakhs?|thousand|k)\b", re.I
+)
 
-    Filings write `1,500` and models return `1500`; both are the same claim.
-    Grouping separators are stripped from the haystack rather than guessed at
-    in the needle, and both the integer and decimal renderings are tried.
+# A currency marker *precedes* its numeral — "USD 500", "$500", "EUR 12".
+_WRONG_CURRENCY_BEFORE_NUMBER = re.compile(
+    r"(?:\bus\s*\$|\busd|\beur|\bgbp|\bjpy|[$€£¥])\W{0,3}$", re.I
+)
+
+# Deliberately tight. A wide window makes any foreign figure elsewhere in the
+# sentence condemn a sound one — "revenue grew from USD 100 million to
+# Rs 1,500 crore" carries both, and the rupee figure in it is good evidence.
+_UNIT_WINDOW_BEFORE = 12
+_UNIT_WINDOW_AFTER = 18
+
+# Fields whose value must be an INR-crore (or plain INR) quantity. A percent
+# field is exempt: "18%" carries its unit in the numeral itself.
+_INR_UNITS = frozenset({"inr_cr", "inr"})
+
+# Ceiling on an optional free-text field. These are the only parts of an entry
+# nothing else constrains — not grounded, not settled against a number — so a
+# bound is what stops a malformed response putting an arbitrary payload into
+# the sidecar and into metric metadata.
+_MAX_FREE_TEXT = 300
+
+
+def _number_appears(sentence: str, value, unit: str | None = None) -> bool:
+    """Whether a number is written in its own quoted sentence, in the right unit.
+
+    Filings write `1,500` and models return `1500`; both are the same claim, so
+    grouping separators are stripped from the haystack rather than guessed at in
+    the needle, and both the integer and decimal renderings are tried.
+
+    **The unit check is the load-bearing half.** Matching the bare numeral
+    proves only that the digits occur somewhere — and "capex of USD 500 million
+    by FY2027" genuinely contains `500`, so an entry claiming
+    `amount_inr_cr: 500` grounds cleanly while being wrong by two orders of
+    magnitude. `compute_promises_kept` then settles that against real INR-crore
+    financials. The prompt does forbid non-INR figures, but a prompt rule
+    nothing enforces is not a rule; this is the enforcement.
+
+    So when `unit` is an INR quantity, at least one occurrence of the numeral
+    must carry neither a foreign currency before it nor a wrong scale word
+    after it. Checking per occurrence rather than per sentence matters:
+    "revenue grew from USD 100 million to Rs 1,500 crore" carries both, and the
+    rupee figure in it is perfectly good evidence.
     """
+    return bool(_number_positions(sentence, value, unit))
+
+
+def _number_positions(sentence: str, value, unit: str | None = None) -> list[tuple]:
+    """Every occurrence of a number that is also denominated as claimed."""
     haystack = re.sub(r"(?<=\d)[,\s](?=\d)", "", sentence or "")
     candidates = {f"{float(value):.10g}"}
     if float(value).is_integer():
         candidates.add(str(int(value)))
-    return any(candidate in haystack for candidate in candidates)
+
+    positions = sorted(
+        (match.start(), match.end())
+        for candidate in candidates
+        for match in re.finditer(re.escape(candidate), haystack)
+    )
+    if unit not in _INR_UNITS:
+        return positions
+
+    return [
+        (start, end)
+        for start, end in positions
+        if not _WRONG_SCALE_AFTER_NUMBER.match(haystack[end:end + _UNIT_WINDOW_AFTER])
+        and not _WRONG_CURRENCY_BEFORE_NUMBER.search(
+            haystack[max(0, start - _UNIT_WINDOW_BEFORE):start]
+        )
+    ]
 
 
-def _period_appears(sentence: str, period) -> bool:
-    """Whether a target period's year is named in its own quoted sentence.
+# How far apart a value and the period it is guided for may sit and still be
+# one claim. A clause, roughly — wide enough for "revenue of Rs 1,500 crore for
+# the financial year ending March 2026", narrow enough that a historical figure
+# at one end of a sentence cannot borrow a target year from the other.
+_CLAIM_WINDOW = 120
+
+
+def _period_positions(sentence: str, period) -> list[int]:
+    """Where a target period's year is named in its own quoted sentence.
 
     Grounds on the year rather than the exact string: a filing writes `FY26`,
     `FY2026`, or `financial year 2026` for one period, and demanding a literal
     match would discard correct readings far more often than fabricated ones.
     """
-    text = str(period or "")
-    years = re.findall(r"\d{2,4}", text)
+    years = re.findall(r"\d{2,4}", str(period or ""))
     if not years:
-        return False
+        return []
+
     haystack = str(sentence or "")
+    positions: list[int] = []
     for year in years:
-        if year in haystack:
-            return True
-        if len(year) == 4 and year[2:] in haystack:
-            return True
-    return False
+        positions.extend(m.start() for m in re.finditer(re.escape(year), haystack))
+        if len(year) == 4:
+            positions.extend(
+                m.start() for m in re.finditer(re.escape(year[2:]), haystack)
+            )
+    return sorted(positions)
+
+
+def _period_appears(sentence: str, period) -> bool:
+    return bool(_period_positions(sentence, period))
+
+
+def _value_and_period_cohere(sentence: str, value, unit, period) -> bool:
+    """Whether the value and the period read as *one* claim, not two.
+
+    Checking each independently against the whole sentence is not enough, and
+    the failure is not hypothetical: "We delivered 26% revenue growth in FY23
+    and separately target a capex commissioning by FY26" satisfies both checks
+    for a guidance entry claiming 26 in FY26 — a historical figure married to
+    an unrelated year, stored as a target and later settled against real
+    financials as though management had promised it.
+
+    So the two must also sit near each other. A number that came from one
+    clause and a period that came from another is two facts, not a promise.
+    """
+    numbers = _number_positions(sentence, value, unit)
+    periods = _period_positions(sentence, period)
+    if not numbers or not periods:
+        return False
+    return any(
+        abs(period_at - number_at) <= _CLAIM_WINDOW
+        for number_at, _ in numbers
+        for period_at in periods
+    )
 
 
 def _validate_entry(
@@ -496,8 +598,24 @@ def _validate_entry(
             f"for {year} — the claim is not in the document"
         )
 
+    # Optional free-text fields are the one part of an entry nothing else
+    # constrains: they are not grounded (they are genuinely free text) and
+    # nothing downstream settles them against a number. Bounding type and
+    # length is what stops a hostile or malformed response putting arbitrary
+    # content into the sidecar and into MetricResult.metadata, where the
+    # module's own "everything is grounded" claim would otherwise vouch for it.
+    for optional in schema.FIELDS[kind]["optional"]:
+        if optional in kept and optional != "target_value_high":
+            text = kept[optional]
+            if not isinstance(text, str) or len(text) > _MAX_FREE_TEXT:
+                return drop(
+                    f"{optional} must be a string of at most "
+                    f"{_MAX_FREE_TEXT} characters"
+                )
+
     if kind == schema.GUIDANCE:
-        if kept["metric"] not in schema.GUIDANCE_METRICS:
+        spec = schema.GUIDANCE_METRICS.get(kept["metric"])
+        if spec is None:
             return drop(
                 f"guidance metric {kept['metric']!r} is outside the closed set "
                 f"({', '.join(sorted(schema.GUIDANCE_METRICS))})"
@@ -506,24 +624,48 @@ def _validate_entry(
             return drop(f"target_value {kept['target_value']!r} is not a number")
         if "target_value_high" in kept and not _is_number(kept["target_value_high"]):
             return drop(f"target_value_high {kept['target_value_high']!r} is not a number")
-        if not _number_appears(sentence, kept["target_value"]):
-            return drop("target_value does not appear in its own source_sentence")
+        if not _number_appears(sentence, kept["target_value"], spec["unit"]):
+            return drop(
+                f"target_value does not appear in its own source_sentence as a "
+                f"{spec['unit']} figure"
+            )
         if not _period_appears(sentence, kept["target_period"]):
             return drop("target_period does not appear in its own source_sentence")
+        if not _value_and_period_cohere(
+            sentence, kept["target_value"], spec["unit"], kept["target_period"]
+        ):
+            return drop(
+                "target_value and target_period appear in the source_sentence but "
+                "too far apart to be one claim — a figure from one clause married "
+                "to a period from another is two facts, not a promise"
+            )
 
     elif kind == schema.CAPEX:
         if not _is_number(kept["amount_inr_cr"]):
             return drop(f"amount_inr_cr {kept['amount_inr_cr']!r} is not a number")
-        if not _number_appears(sentence, kept["amount_inr_cr"]):
-            return drop("amount_inr_cr does not appear in its own source_sentence")
+        if not _number_appears(sentence, kept["amount_inr_cr"], "inr_cr"):
+            return drop(
+                "amount_inr_cr does not appear in its own source_sentence as an "
+                "INR crore figure"
+            )
         if not _period_appears(sentence, kept["commissioning_year"]):
             return drop("commissioning_year does not appear in its own source_sentence")
+        if not _value_and_period_cohere(
+            sentence, kept["amount_inr_cr"], "inr_cr", kept["commissioning_year"]
+        ):
+            return drop(
+                "amount_inr_cr and commissioning_year appear in the source_sentence "
+                "but too far apart to be one claim"
+            )
 
     elif kind == schema.TAM:
         if not _is_number(kept["market_size_inr_cr"]):
             return drop(f"market_size_inr_cr {kept['market_size_inr_cr']!r} is not a number")
-        if not _number_appears(sentence, kept["market_size_inr_cr"]):
-            return drop("market_size_inr_cr does not appear in its own source_sentence")
+        if not _number_appears(sentence, kept["market_size_inr_cr"], "inr_cr"):
+            return drop(
+                "market_size_inr_cr does not appear in its own source_sentence as "
+                "an INR crore figure"
+            )
 
     return kept
 
@@ -536,11 +678,19 @@ def validate_extraction(raw, submission: dict, gated: dict) -> dict:
     validation of any kind, so a malformed, truncated, or simply older response
     reaches here unchecked and every shape must degrade rather than raise.
 
-    Returns `{"years": {year: {"sections", "guidance", "capex", "tam"}},
-    "discarded": [...]}`. Every submitted year is present even when it yielded
-    nothing, carrying the gated provenance of each of its sections — that is
-    what lets a sub-metric say *why* it is indeterminate rather than only that
-    it is.
+    Returns `{"years": {...}, "discarded": [...], "call_failed": bool}`. Every
+    submitted year is present even when it yielded nothing, carrying the gated
+    provenance of each of its sections — that is what lets a sub-metric say
+    *why* it is indeterminate rather than only that it is.
+
+    **`call_failed` separates a fourth outcome that otherwise hides inside the
+    third.** `_call_api` turns any network, rate-limit or auth failure into
+    `{"error": ...}` rather than raising, and an error response reduced to the
+    same empty result as "the model read the section and found nothing". They
+    are not the same thing: one is a finding, the other is an outage. Folded
+    together, a single transient failure would be written to the sidecar and
+    served as a confirmed-empty extraction on every later run — permanently, as
+    nothing re-extracts until the source text, schema, prompt or model changes.
     """
     discarded: list[dict] = []
 
@@ -551,6 +701,14 @@ def validate_extraction(raw, submission: dict, gated: dict) -> dict:
             **{kind: [] for kind in schema.ENTRY_KINDS},
         }
 
+    if isinstance(raw, dict) and raw.get("error"):
+        logger.error(
+            f"Forward-growth extraction call failed: {raw['error']} — not caching "
+            f"this result, so the next run retries rather than reading an outage "
+            f"back as a finding"
+        )
+        return {"years": years, "discarded": discarded, "call_failed": True}
+
     payload = raw.get("years") if isinstance(raw, dict) else None
     if not isinstance(payload, dict):
         if raw is not None:
@@ -558,7 +716,7 @@ def validate_extraction(raw, submission: dict, gated: dict) -> dict:
                 "Forward-growth response carried no 'years' mapping — "
                 "treating the extraction as empty"
             )
-        return {"years": years, "discarded": discarded}
+        return {"years": years, "discarded": discarded, "call_failed": False}
 
     for year, kinds in payload.items():
         year = str(year)
@@ -603,7 +761,7 @@ def validate_extraction(raw, submission: dict, gated: dict) -> dict:
     logger.info(
         f"Forward-growth extraction: {kept} entries kept, {len(discarded)} discarded"
     )
-    return {"years": years, "discarded": discarded}
+    return {"years": years, "discarded": discarded, "call_failed": False}
 
 
 # ── Sidecar cache ──────────────────────────────────────────────────────────
@@ -662,13 +820,43 @@ def read_sidecar(path, submission: dict, model: str) -> dict | None:
     return years if isinstance(years, dict) else None
 
 
-def write_sidecar(path, years: dict, submission: dict, model: str) -> None:
+def read_sidecar_discards(path) -> list:
+    """Why entries were dropped last time this ticker was extracted.
+
+    Diagnostic only — never gates anything, and deliberately not part of the
+    version block, so a reader can inspect it without a stale discard list
+    invalidating an otherwise-current cache.
+    """
+    target = Path(path)
+    if not target.exists():
+        return []
+    try:
+        stored = json.loads(target.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    discarded = stored.get("discarded") if isinstance(stored, dict) else None
+    return discarded if isinstance(discarded, list) else []
+
+
+def write_sidecar(
+    path, years: dict, submission: dict, model: str, discarded: list | None = None
+) -> None:
+    """Cache one ticker's validated extraction, with why anything was dropped.
+
+    Written whole rather than merged: the version block describes exactly the
+    question these `years` answer, so a partial update would leave a cache
+    claiming to answer a question half of it never saw.
+    """
     target = Path(path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(
-                {"version": _version_block(submission, model), "years": years},
+                {
+                    "version": _version_block(submission, model),
+                    "years": years,
+                    "discarded": discarded or [],
+                },
                 indent=2,
             ),
             encoding="utf-8",

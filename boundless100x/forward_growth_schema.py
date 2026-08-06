@@ -39,7 +39,12 @@ changes which entries survive belongs in this number.
 #     so every foreign-currency statement was extracted and then discarded.
 #     A filing that reports its market only in USD now yields nothing, which is
 #     the truth for a pipeline holding no FX rate.
-SCHEMA_VERSION = 3
+# 4 — a numeral must also be denominated as the field claims. Matching the bare
+#     digits proved only that they occur: "capex of USD 500 million" grounded an
+#     `amount_inr_cr: 500` entry, wrong by two orders of magnitude, and
+#     promises-kept settled it against real INR-crore financials. Optional
+#     free-text fields are also type- and length-bounded now.
+SCHEMA_VERSION = 4
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like

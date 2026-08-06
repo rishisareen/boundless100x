@@ -89,6 +89,41 @@ class TestCorpusSpread:
         assert result["contributors"] == 0
         assert result["median_pp"] is None
 
+    @pytest.mark.parametrize("payload", ["[]", "null", "42", '"text"'])
+    def test_a_wrong_shaped_metadata_file_costs_one_contributor_not_the_run(
+        self, tmp_path, payload
+    ):
+        """This runs once before advance()'s per-ticker isolation.
+
+        Valid JSON of the wrong shape parses fine and then raises inside the
+        metric, which would end the run for every tracked company — breaking
+        the one guarantee advance() makes.
+        """
+        path = corpus(tmp_path, {"A": 20.0, "B": 10.0, "C": 25.0})
+        broken = tmp_path / "BROKEN"
+        broken.mkdir()
+        make_financials(5).to_csv(broken / "financials.csv", index=False)
+        (broken / "metadata.json").write_text(payload)
+
+        result = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
+
+        assert result["contributors"] == 3
+        assert "BROKEN" not in result["tickers"]
+
+    def test_an_unreadable_corpus_leaves_advance_running(self, tmp_path, wm):
+        """Defence in depth: pace must cost the modulation, never the advance."""
+        watched(wm)
+        service = TestThroughAdvance().service(metrics=healthy_metrics())
+        service.suite = type(
+            "S", (), {"raw_data_dir": object()}  # explodes on Path()
+        )()
+
+        out = advance(service, wm)
+
+        assert out["pace"]["applied"] is False
+        assert "could not be resolved" in out["pace"]["reason"]
+        assert len(out["outcomes"]) == 1
+
     def test_one_expensive_name_does_not_move_a_wide_median(self, tmp_path):
         """The assertion that separates a regime reading from a per-name test."""
         path = corpus(tmp_path, {
@@ -191,6 +226,47 @@ class TestModulation:
         modulated, _ = pace.modulate(triggers, reading(median=-4.0), factor=0.8)
 
         assert modulated["entry"]["conditions"][0]["threshold"] > 20.0
+
+    @pytest.mark.parametrize("threshold,comparator", [
+        (-2.0, "lte"), (-2.0, "lt"), (-2.0, "gte"), (-2.0, "gt"),
+    ])
+    def test_a_negative_threshold_is_tightened_not_loosened(self, threshold, comparator):
+        """Multiplying a negative `lte` threshold moves it toward zero — looser.
+
+        This file's own domain is signed (its corpus reading today is -4.33pp),
+        so a negative entry threshold is a foreseeable addition, and the
+        multiplicative form would have done the exact opposite of R6 silently.
+        """
+        tightened = pace._tighten(threshold, comparator, 0.85)
+
+        if comparator in ("lt", "lte"):
+            assert tightened < threshold
+        else:
+            assert tightened > threshold
+
+    @pytest.mark.parametrize("factor", [1.5, 0.0, -0.5, 2, None, "0.85", True])
+    def test_a_factor_outside_zero_to_one_cannot_loosen_entry(self, factor):
+        """"Tighten it more aggressively" reads as 1.5, which would loosen."""
+        before = self.thresholds(self.triggers())
+        modulated, _ = pace.modulate(
+            self.triggers(), reading(median=-9.0), factor=factor
+        )
+        after = self.thresholds(modulated)
+
+        assert all(a <= b for a, b in zip(after, before))
+
+    def test_a_factor_above_one_falls_back_to_the_default(self):
+        modulated, decision = pace.modulate(
+            self.triggers(), reading(median=-9.0), factor=1.5
+        )
+        expected, _ = pace.modulate(self.triggers(), reading(median=-9.0))
+
+        assert self.thresholds(modulated) == self.thresholds(expected)
+        assert decision["applied"] is True
+
+    def test_the_evidence_reports_the_direction_actually_written(self):
+        _, decision = pace.modulate(self.triggers(), reading(median=-4.0))
+        assert "stricter" in decision["evidence"]
 
     def test_the_decision_records_the_median_and_its_contributor_count(self):
         _, decision = pace.modulate(self.triggers(), reading(median=-4.0, contributors=11))

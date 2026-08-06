@@ -44,7 +44,21 @@ class TestQuarterly:
         assert needed <= set(make_quarterly().columns)
 
     def test_columns_match_the_screener_quarterly_map(self):
-        assert list(make_quarterly().columns) == list(QUARTERLY_COLUMNS)
+        """Asserted against the real parser's map, not against our own copy.
+
+        `QUARTERLY_COLUMNS` claims parity with `QTR_LABEL_MAP`. Comparing the
+        builder only to that claim would let a rename in the live-scraper
+        adapter — the code most likely to change — pass silently while every
+        quarterly fixture in the suite started testing a shape production no
+        longer emits.
+        """
+        from boundless100x.data_fetcher.fetch_financials import QTR_LABEL_MAP
+
+        # dict.fromkeys dedupes the Sales/Revenue -> revenue alias in order.
+        expected = ["quarter"] + list(dict.fromkeys(QTR_LABEL_MAP.values()))
+
+        assert list(QUARTERLY_COLUMNS) == expected
+        assert list(make_quarterly().columns) == expected
 
     def test_period_count_is_what_was_asked_for(self):
         assert len(make_quarterly(periods=6)) == 6

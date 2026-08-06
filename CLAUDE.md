@@ -63,12 +63,14 @@ boundless100x/
 │       │   ├── size.yaml
 │       │   ├── quality_business.yaml
 │       │   ├── quality_management.yaml
+│       │   ├── forward_growth.yaml   # Phase 2 — element absent from element_weights
 │       │   ├── growth.yaml
 │       │   ├── longevity.yaml
 │       │   ├── price.yaml
 │       │   └── composite.yaml
 │       ├── builtin/              # Python metric implementations
 │       │   ├── _helpers.py       # Shared utilities (MAD-based FCF outlier detection)
+│       │   ├── forward_growth.py # Phase 2 sub-metrics (all weight 0)
 │       │   ├── size.py
 │       │   ├── profitability.py
 │       │   ├── efficiency.py
@@ -81,12 +83,22 @@ boundless100x/
 │       └── presets/              # Screening presets
 │           ├── compounders.yaml
 │           └── hidden_gems_100x.yaml
+├── lifecycle/                    # Phase 1 — the layer after the verdict
+│   ├── states.py                 # screen → qualify → watch → probe → scale
+│   ├── triggers.yaml             # Declared transitions + kill-switches
+│   ├── evaluator.py              # TriggerEvaluator (mirrors EligibilityEvaluator)
+│   ├── checkpoints.py            # Machine-checkable half of Pass 2 monitorables
+│   ├── checkpoint_vocabulary.yaml
+│   ├── advance.py                # Re-score, evaluate, propose
+│   └── pace.py                   # Phase 2 — corpus-median entry-pace modulator
 ├── llm_layer/
-│   ├── orchestrator.py           # 2-pass LLM pipeline with JSON parsing
+│   ├── orchestrator.py           # LLM pipeline (2 passes + extraction call)
 │   ├── checklist.py              # Pre-flight data quality checks
+│   ├── forward_growth.py         # Phase 2 — content gate, validator, sidecar
 │   └── prompts/
 │       ├── pass1_qualitative.txt # Annual report deep dive
-│       └── pass2_synthesis.txt   # Investment thesis
+│       ├── pass2_synthesis.txt   # Investment thesis
+│       └── forward_growth_extraction.txt  # Phase 2 extraction (Stage 1.5)
 └── output/
     ├── report_generator.py       # HTML dashboard + Markdown report
     ├── templates/
@@ -126,7 +138,7 @@ boundless100x/
 - **Growth quality**: `_grade_growth_quality` in `builtin/growth.py` is the single grader for both the scored `growth_quality_grade` metric and the report/LLM lever table. YoY leverage ratios share one helper, `_mean_yoy_ratio`.
 - **FCF outlier detection**: MAD-based (Median Absolute Deviation) to identify M&A-dominated years. Applied in valuation.py, longevity.py, profitability.py via `_helpers.py`.
 - **Bonus/split detection**: YoY equity capital spikes >50% flagged as structural events. Organic dilution computed separately in growth.py.
-- **LLM prompt templates**: Use `.format()` with quadruple-braces `{{{{` for JSON schema escaping in prompt files.
+- **LLM prompt templates**: rendered through a single `.format()` call, so a literal brace in the JSON schema block is escaped by **doubling** it (`{{` / `}}`). This entry previously said quadruple — it was wrong, and no prompt file in the repo has ever done it: quadrupling renders a literal `{{` into the prompt and corrupts the schema the model is shown. Match the sibling prompt files, not a remembered rule.
 
 ## Tech Stack
 - Python 3.11+
