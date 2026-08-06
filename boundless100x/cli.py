@@ -17,6 +17,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def setup_logging(verbose: bool = False):
@@ -259,6 +260,21 @@ watchlist_app = typer.Typer(help="Manage your company watchlist")
 app.add_typer(watchlist_app, name="watchlist")
 
 
+# Colour carries the lifecycle's own meaning: green where capital is
+# committed, red where a thesis is under review, dim before anything is at
+# stake.
+STATE_COLOURS = {
+    "screen": "dim",
+    "qualify": "cyan",
+    "watch": "yellow",
+    "probe": "green",
+    "scale": "green bold",
+    "exit_review": "red bold",
+    "exited": "red",
+    "dropped": "dim",
+}
+
+
 @watchlist_app.command("show")
 def watchlist_show():
     """Show all companies in the watchlist."""
@@ -273,9 +289,11 @@ def watchlist_show():
 
     table = Table(title="Watchlist")
     table.add_column("Ticker", style="cyan bold")
-    table.add_column("Added", style="dim")
+    table.add_column("Lane", style="dim")
+    table.add_column("State", style="bold")
     table.add_column("Last Run", style="dim")
     table.add_column("Composite", justify="right")
+    table.add_column("Checks", justify="right")
     table.add_column("Notes")
 
     for e in entries:
@@ -283,9 +301,11 @@ def watchlist_show():
         composite = f"{e['last_composite']}/10" if e["last_composite"] else "—"
         table.add_row(
             e["ticker"],
-            e["added"][:10] if e["added"] else "",
+            e["lane"],
+            f"[{STATE_COLOURS.get(e['state'], 'white')}]{e['state']}[/]",
             last_run,
             composite,
+            str(e["checkpoints"]) if e["checkpoints"] else "—",
             e.get("notes", ""),
         )
 
@@ -335,7 +355,16 @@ def watchlist_update(
     svc = Boundless100xService()
     wm = WatchlistManager()
 
-    results = wm.update_all(svc, quarterly=quarterly)
+    tickers = wm.get_stale(90) if quarterly else wm.tickers()
+    results: list[tuple[str, float | None]] = []
+    for ticker in tickers:
+        try:
+            result = svc.analyze(ticker, use_llm=False)
+            wm.record_snapshot(ticker, result, svc.engine.registry_hash)
+            results.append((ticker, (result.scores or {}).get("composite")))
+        except Exception as e:
+            logger.warning(f"Watchlist update failed for {ticker}: {e}")
+            results.append((ticker, None))
 
     if not results:
         console.print("[dim]No companies to update[/dim]")
