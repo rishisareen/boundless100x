@@ -43,9 +43,12 @@ class StubService:
         self._data = data or {}
         self.engine = type("E", (), {"registry_hash": "abc123", "metrics": {}})()
         self.calls: list[str] = []
+        # `advance` builds no report, so it must not pay for a momentum read.
+        self.momentum_requested: bool | None = None
 
-    def analyze(self, ticker, use_llm=True, **kw):
+    def analyze(self, ticker, use_llm=True, include_momentum=True, **kw):
         self.calls.append(ticker)
+        self.momentum_requested = include_momentum
         return AnalysisResult(
             ticker=ticker,
             data=self._data,

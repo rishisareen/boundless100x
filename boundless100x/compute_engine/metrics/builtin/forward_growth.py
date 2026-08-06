@@ -226,7 +226,7 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
     for report_year in sorted(by_year):
         for entry in by_year[report_year]:
             target = entry.get("target_value")
-            if not isinstance(target, (int, float)) or isinstance(target, bool):
+            if not schema.is_number(target):
                 discarded += 1
                 continue
 
@@ -316,7 +316,7 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
     for report_year in sorted(by_year):
         for entry in by_year[report_year]:
             amount = entry.get("amount_inr_cr")
-            if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            if not schema.is_number(amount):
                 continue
             commissioning = _year_of(entry.get("commissioning_year"))
             if commissioning is None or commissioning <= latest_year:
@@ -391,8 +391,7 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
     sizes = [
         float(entry["market_size_inr_cr"])
         for entry in by_year[newest]
-        if isinstance(entry.get("market_size_inr_cr"), (int, float))
-        and not isinstance(entry.get("market_size_inr_cr"), bool)
+        if schema.is_number(entry.get("market_size_inr_cr"))
     ]
     if not sizes:
         return MetricResult(error="No numeric addressable-market figure extracted")

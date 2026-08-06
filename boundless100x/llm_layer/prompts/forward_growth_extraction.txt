@@ -37,8 +37,12 @@ omitted than guessed:
   If management guided something outside that list, omit it rather than
   inventing an id or bending it into a neighbouring one.
 - Report each figure in the units named above — amounts in INR crore, margins
-  in percent. If a statement gives a figure in another unit (a lakh, a million,
-  a billion), convert it and quote the sentence as written.
+  in percent — and **only when the statement itself is already in that unit**.
+  Do NOT convert. A converted figure cannot appear in the sentence you quoted,
+  so it fails the grounding check above and is discarded anyway; and a
+  conversion this system cannot check is a number nobody can audit. If a
+  statement gives its figure in USD, in millions or billions, or in lakh, omit
+  the entry. Reporting nothing is correct; reporting a converted figure is not.
 - Report each year under the report year it was published in, using the
   `=== REPORT YEAR ... ===` headings below.
 - If a section contains none of these three kinds of statement, return empty

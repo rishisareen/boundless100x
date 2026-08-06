@@ -84,7 +84,10 @@ def advance_ticker(
     entry = watchlist.get(ticker)
     state = entry["state"]
 
-    result = service.analyze(ticker, use_llm=False)
+    # No report is built on this path, and momentum is only ever rendered into
+    # one — so asking for it would re-read and re-parse the whole append-only
+    # score-history log once per tracked ticker for a value nobody reads.
+    result = service.analyze(ticker, use_llm=False, include_momentum=False)
     watchlist.record_snapshot(ticker, result, service.engine.registry_hash)
 
     outcomes = evaluate_all(entry.get("checkpoints"), result.data, as_of)
@@ -190,9 +193,6 @@ def _resolve_pace(service, evaluator, pace_reading) -> tuple[TriggerEvaluator, d
     )
     triggers, decision = pace_module.modulate(
         load_triggers(), reading, **pace_module.config_from(getattr(service, "config", {}))
-    )
-    decision["adjusted_states"] = tuple(
-        {triggers[trigger_id]["to"] for trigger_id in decision["adjusted"]}
     )
     return (
         TriggerEvaluator(triggers, known_metric_ids=set(service.engine.metrics)),

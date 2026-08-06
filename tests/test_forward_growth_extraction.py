@@ -342,6 +342,52 @@ class TestGroundingAgainstTheSubmittedText:
         assert result["years"]["2025"]["guidance"] == []
         assert any("target_value" in d["reason"] for d in result["discarded"])
 
+    def test_a_sentence_the_filing_wrapped_across_lines_still_grounds(self):
+        """PDF extraction keeps the printed line breaks; a quote does not.
+
+        This is not a hypothetical: one MD&A slice in the corpus carries 320
+        hard breaks, and comparing raw bytes rejected 8 of 8 genuinely-present
+        statements on the first live run — catching typesetting, not
+        fabrication.
+        """
+        wrapped = (
+            "MANAGEMENT DISCUSSION AND ANALYSIS\nECONOMIC REVIEW\n"
+            "We expect revenue of Rs 1,500 crore \nin FY2026."
+        )
+        payload = {"2025": {"mdna": wrapped}}
+        raw = response(**{"2025": {"guidance": [guidance_entry()]}})
+
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert len(result["years"]["2025"]["guidance"]) == 1
+
+    def test_a_typographic_apostrophe_does_not_break_grounding(self):
+        payload = {"2025": {"mdna": "The Company’s outlook: revenue of "
+                                    "Rs 1,500 crore in FY2026."}}
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            source_sentence="The Company's outlook: revenue of Rs 1,500 crore in FY2026."
+        )]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert len(result["years"]["2025"]["guidance"]) == 1
+
+    def test_normalising_whitespace_does_not_weaken_the_guard(self):
+        """A sentence that was never in the document still does not appear."""
+        payload = {"2025": {"mdna": "We expect revenue of Rs 1,500 crore \nin FY2026."}}
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            source_sentence="We promise revenue of Rs 1,500 crore in FY2026."
+        )]}})
+        result = fg.validate_extraction(
+            raw, payload, fg.gate_sections(make_ar_sections(provenance="found"))
+        )
+        assert result["years"]["2025"]["guidance"] == []
+
+    def test_an_empty_source_sentence_is_discarded(self):
+        raw = response(**{"2025": {"guidance": [guidance_entry(source_sentence="   ")]}})
+        assert self._validate(raw)["years"]["2025"]["guidance"] == []
+
     def test_a_comma_formatted_number_still_grounds(self):
         """The filing writes 1,500; the model returns 1500. Both are the same claim."""
         assert self._validate(

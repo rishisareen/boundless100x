@@ -44,6 +44,7 @@ from statistics import median
 
 import pandas as pd
 
+from boundless100x.compute_engine.backtest import TICKER_MARKER
 from boundless100x.compute_engine.metrics.builtin.valuation import (
     compute_earnings_yield_spread,
 )
@@ -67,9 +68,11 @@ DEFAULT_TIGHTEN_FACTOR = 0.85
 # it may loosen it.
 DEFAULT_MIN_CONTRIBUTORS = 8
 
-# A directory with financials is a real ticker; BSE-code directories hold only
-# annual report PDFs. Same marker the backtest uses to discover the corpus.
-TICKER_MARKER = "financials.csv"
+# `TICKER_MARKER` is imported from the backtest rather than restated: both
+# modules mean the same thing by "the cached corpus" — a directory with
+# financials is a real ticker, while a BSE-code directory holds only annual
+# report PDFs — and two copies could drift into disagreeing about which
+# companies the corpus contains.
 
 # Comparators whose threshold gets *harder* to satisfy by moving down.
 _LOWER_IS_TIGHTER = ("lt", "lte")
@@ -169,6 +172,11 @@ def modulate(
         "floor_pp": floor_pp,
         "factor": factor,
         "adjusted": {},
+        # Which destination states were actually tightened. Recorded here
+        # rather than re-derived by the caller: only this loop knows, and a
+        # caller reconstructing it would have to reach into the trigger dict's
+        # internals to answer a question this function already settled.
+        "adjusted_states": (),
         "evidence": "",
     }
 
@@ -221,6 +229,9 @@ def modulate(
                 })
         if changes:
             decision["adjusted"][trigger_id] = changes
+            decision["adjusted_states"] = tuple(
+                sorted(set(decision["adjusted_states"]) | {spec["to"]})
+            )
 
     rendered = "; ".join(
         f"{c['metric']} {c['from']}->{c['to']}"

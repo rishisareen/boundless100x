@@ -1057,12 +1057,58 @@ existed and have no `quarterly.csv` at all. Where the data exists the metric
 computes every time. **Refetching the corpus is the prerequisite** — the same
 one A5 names for promises-kept coverage.
 
-**The one bar not met:** "at least one text-derived sub-metric must produce a
-value on at least one ticker" needs a live extraction call, which was not run
-(it spends against the owner's API key rather than being an implementation
-step). The path is verified end-to-end against recorded responses, and the
-corpus can support it on exactly one ticker — ZYDUSLIFE, the only one with two
-usable MD&A years. Until that call is made, this criterion is **outstanding**.
+**The one bar not met, and what the live run taught.** Four owner-approved
+extraction calls were made against ZYDUSLIFE (532321) — the only ticker with
+two usable MD&A years, so the only candidate for `promises_kept_ratio`. Total
+cost ~13 cents. Each call exposed a defect in the pass, and the last one runs
+clean:
+
+1. **Call 1 — 0 kept, 0 discarded.** The model saw only the economic review.
+   `forward_growth_char_budget` was 6000 against a 12,000-char MD&A cap, and
+   `build_submission` truncates from the *front* — MD&A opens with the economy
+   and carries guidance in the outlook near its end. Four of the five `outlook`
+   mentions in the FY2024 slice sat past the cut. **Fixed:** the budget must be
+   at least the largest per-section cap, and now is.
+2. **Call 2 — 0 kept, 8 discarded on grounding.** Every quoted sentence failed
+   the substring test. Not fabrication: PDF extraction preserves printed line
+   breaks (320 in one slice), so the filing reads `"USD 860.1 billion \nduring
+   FY2025-26"` while a verbatim quote returns it unwrapped. The guard was
+   catching typesetting. **Fixed:** grounding compares whitespace-normalised
+   text on both sides, which costs the guard nothing — a sentence that was
+   never in the document still does not appear.
+3. **Call 3 — 0 kept, 7 discarded on value grounding.** A contradiction between
+   the prompt and the validator: the prompt asked for foreign-currency figures
+   to be *converted* to INR crore, while the validator required the value to
+   appear in the quoted sentence. Mutually exclusive. **Fixed:** figures are
+   taken only when the filing already states them in the target unit. A filing
+   quoting its market solely in USD now yields nothing, which is the truth for
+   a pipeline that holds no FX rate — coverage lost, auditability kept.
+4. **Call 4 — 0 kept, 0 discarded.** Correct and consistent: ZYDUSLIFE is a
+   pharma exporter that states every market figure in USD billion, so there is
+   genuinely nothing an INR-crore schema may take.
+
+So the criterion is **still outstanding**, but for a understood reason rather
+than an unknown one: the only ticker the corpus could support happens to be
+structurally incompatible with the schema. `capex_pipeline` and `tam_runway`
+need only *one* usable MD&A year and the corpus has 11 across 10 tickers, so
+an INR-reporting domestic company is the obvious next candidate — that is the
+cheapest way to close this bar.
+
+Each of the three schema revisions moved `forward_signal_hash`
+(`6102f9fea8ff → 6bc5a9558b3d`) and left `registry_hash` at `1d9f30d09df3`
+throughout — **KTD8 doing exactly its job under a real scenario**, three
+times, with no ticker's momentum baseline disturbed.
+
+### Follow-up work this phase surfaced
+
+- **Foreign-currency figures yield nothing.** Indian pharma and IT filers state
+  markets and often guidance in USD. Supporting them needs either an FX
+  assumption in `macro:` or a `stated_value` + `unit` pair grounded separately
+  from a derived INR figure. Deliberately not done here: it is a schema
+  expansion, and a wrong conversion is worse than no number.
+- **Refetch the corpus.** 17 of 22 tickers predate `quarterly.csv`, and
+  `max_reports: 3` applies only from Phase 0 forward. Both `quarterly_momentum`
+  coverage and promises-kept coverage are gated on this, not on the metrics.
 
 ### Corrections the phase forced
 

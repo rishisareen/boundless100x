@@ -53,6 +53,8 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
+from functools import lru_cache
 from pathlib import Path
 
 from boundless100x import forward_growth_schema as schema
@@ -76,7 +78,12 @@ EXTRACTABLE_SECTIONS = tuple(sorted(
     {name for names in schema.REQUIRED_SECTIONS.values() for name in names}
 ))
 
-DEFAULT_CHAR_BUDGET = 6000
+# Per gated section, per report year. Must be at least the largest per-section
+# cap in `annual_reports.sections`, because `build_submission` truncates from
+# the *front*: MD&A opens with the economic review and carries its guidance in
+# the outlook near the end, so a budget below the section cap reliably submits
+# the only half that cannot contain a target.
+DEFAULT_CHAR_BUDGET = 12000
 # The gate reads the opening of a slice. A wrong-section slice is wrong from
 # its first line; reading further would only let a passing mention of "outlook"
 # ten pages in rescue an auditor's report.
@@ -355,11 +362,18 @@ def prompt_template() -> str:
     return (PROMPTS_DIR / PROMPT_NAME).read_text()
 
 
+@lru_cache(maxsize=1)
 def prompt_digest() -> str:
     """Fingerprint of the prompt file.
 
     Part of the sidecar version: a prompt change that silently reused stale
     extractions would be indistinguishable from the new prompt working.
+
+    Cached for the life of the process. Every cache read calls this — including
+    the hydration-only path, once per ticker on a `watchlist advance` run — and
+    the prompt file cannot change mid-run, so re-reading and re-hashing it per
+    ticker is pure repetition. This caches the digest, never the invalidation
+    decision: the submitted text is still digested afresh on every call.
     """
     try:
         return hashlib.sha256(prompt_template().encode()).hexdigest()[:12]
@@ -370,8 +384,37 @@ def prompt_digest() -> str:
 # ── Boundary validation ────────────────────────────────────────────────────
 
 
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+_is_number = schema.is_number
+
+# Typographic variants a filing uses and a model silently normalises away.
+# These are the document's *typesetting*, never part of its claim.
+_TYPOGRAPHY = str.maketrans({
+    "’": "'", "‘": "'", "“": '"', "”": '"',
+    "–": "-", "—": "-", "−": "-", " ": " ", "­": "",
+})
+
+
+def ground_text(text: str) -> str:
+    """Text reduced to what a grounding comparison should actually care about.
+
+    **Whitespace is the whole reason this exists.** PDF extraction preserves
+    the printed line breaks, so a sentence in a section slice reads
+    `"...USD 860.1 billion \\nduring FY2025-26."` — one MD&A slice in the corpus
+    carries 320 such breaks. A model asked to quote verbatim returns the
+    sentence as it reads, unwrapped, which is the same claim and a different
+    byte string. Comparing raw, KTD3's substring check rejected 8 of 8
+    genuinely-present statements on the first live run: the guard was not
+    catching fabrication, it was catching typesetting.
+
+    Normalising both sides costs the guard nothing. A sentence that was never
+    in the document still does not appear once whitespace is collapsed, so
+    fabrication and embedded instruction text are caught exactly as before.
+    Case is deliberately preserved — that is a real property of a quotation,
+    and no PDF extractor changes it.
+    """
+    return " ".join(
+        unicodedata.normalize("NFKC", text or "").translate(_TYPOGRAPHY).split()
+    )
 
 
 def _number_appears(sentence: str, value) -> bool:
@@ -445,10 +488,12 @@ def _validate_entry(
         )
 
     sentence = kept["source_sentence"]
-    if not isinstance(sentence, str) or sentence not in submitted_sections[section]:
+    if not isinstance(sentence, str) or not ground_text(sentence) or (
+        ground_text(sentence) not in ground_text(submitted_sections[section])
+    ):
         return drop(
-            "source_sentence is not a literal substring of the submitted "
-            f"{section} text for {year} — the claim is not in the document"
+            f"source_sentence does not appear in the submitted {section} text "
+            f"for {year} — the claim is not in the document"
         )
 
     if kind == schema.GUIDANCE:

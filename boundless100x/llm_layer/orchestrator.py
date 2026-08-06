@@ -52,6 +52,19 @@ def forward_growth_model(config: dict) -> str:
     )
 
 
+def forward_growth_char_budget(config: dict) -> int:
+    """How much of each gated section reaches the extractor.
+
+    Resolved here for the same reason the model is: the service reads it on
+    the hydration path, where no orchestrator may exist, and two copies of the
+    lookup could drift into submitting a different payload than the one the
+    cache was keyed on.
+    """
+    return config.get("llm", {}).get(
+        "forward_growth_char_budget", forward_growth.DEFAULT_CHAR_BUDGET
+    )
+
+
 class LLMOrchestrator:
     """LLM analysis pipeline using Claude API."""
 
@@ -70,9 +83,7 @@ class LLMOrchestrator:
         # pass1_ar_char_budget rather than sharing it: Pass 1 reads a combined
         # single string for background, while extraction reads each gated
         # section separately and needs enough of each to find a target in.
-        self.forward_growth_char_budget = llm_config.get(
-            "forward_growth_char_budget", forward_growth.DEFAULT_CHAR_BUDGET
-        )
+        self.forward_growth_char_budget = forward_growth_char_budget(config)
         # How much annual-report text Pass 1 may read. Config-driven because
         # the fetcher now caps each extracted section separately: a literal
         # here would silently overrule those caps, and raising a section cap

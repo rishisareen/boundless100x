@@ -18,13 +18,28 @@ paid call per ticker per backtest against *today's* report text and
 *truncated* financials (KTD2). So the shared vocabulary lives here, in
 neither.
 
-Bump `SCHEMA_VERSION` whenever a field, kind, or settling rule changes. It
-invalidates every cached extraction sidecar and moves the forward-signal
-hash; a prompt change that silently reused stale extractions would be
-indistinguishable from the new prompt working.
+Bump `SCHEMA_VERSION` whenever a field, kind, settling rule, **or validation
+rule** changes. It invalidates every cached extraction sidecar and moves the
+forward-signal hash; a prompt change that silently reused stale extractions
+would be indistinguishable from the new prompt working.
+
+The validation half is easy to forget and was: the sidecar version covers the
+source text, the field schema, the prompt and the model, but not the
+*validator*, and a validator that rejected a whole class of genuine entries
+kept serving its own empty results from cache after being fixed. Anything that
+changes which entries survive belongs in this number.
 """
 
-SCHEMA_VERSION = 1
+# 2 — grounding compares on whitespace-normalised text (PDF line wrapping is
+#     typesetting, not part of a claim), so entries a stricter byte-exact
+#     comparison discarded must be re-extracted rather than read from cache.
+# 3 — figures are taken only when the filing already states them in the target
+#     unit. The prompt previously asked for conversion while the validator
+#     required the value to appear in the quoted sentence — mutually exclusive,
+#     so every foreign-currency statement was extracted and then discarded.
+#     A filing that reports its market only in USD now yields nothing, which is
+#     the truth for a pipeline holding no FX rate.
+SCHEMA_VERSION = 3
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like
@@ -79,6 +94,12 @@ FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
 # it, so a promise whose quantity is outside this set is not a promise this
 # system can check and is discarded rather than counted.
 #
+# `unit` is the unit the *filing* must already state the figure in — never a
+# conversion target. Nothing here converts currencies: an Indian filer quoting
+# a market in USD billion yields no entry, because a converted figure could not
+# be grounded in the sentence it came from and no FX rate exists in this
+# pipeline to check it against. Coverage lost, auditability kept.
+#
 # `capex` settles against the magnitude of investing cash flow, which also
 # carries acquisitions and treasury investments — a capex promise settled in
 # an M&A year therefore reads generously. Each settled promise records the
@@ -109,6 +130,18 @@ REQUIRED_SECTIONS: dict[str, tuple[str, ...]] = {
     "capex_pipeline": ("mdna",),
     "tam_runway": ("mdna", "chairman"),
 }
+
+
+def is_number(value) -> bool:
+    """Whether a value is a usable numeric reading.
+
+    Booleans are excluded deliberately: `isinstance(True, int)` is True in
+    Python, so a model returning `true` where a target value belongs would
+    otherwise validate and settle as 1. Both sides of the extraction seam need
+    the same answer to that, which is why it lives here with the rest of the
+    contract rather than being restated in each.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def schema_fingerprint() -> dict:

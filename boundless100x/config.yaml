@@ -46,9 +46,19 @@ llm:
   # A structured-extraction task, not a judgement one, so it carries its own
   # model rather than tracking Pass 1 and 2. `--deep` still moves it to Opus.
   forward_growth_model: "claude-sonnet-4-6"
-  forward_growth_char_budget: 6000  # Per gated section, per report year — the
+  forward_growth_char_budget: 12000 # Per gated section, per report year — the
                                     # extractor reads each section separately,
                                     # unlike Pass 1's combined single string.
+                                    # KEEP THIS >= the largest cap in
+                                    # annual_reports.sections. The budget
+                                    # truncates from the FRONT, and MD&A opens
+                                    # with the economic review while guidance
+                                    # lives in the outlook near its end — a
+                                    # budget below the section cap shows the
+                                    # extractor precisely the half that cannot
+                                    # contain a target. Measured on ZYDUSLIFE
+                                    # FY2024: 4 of the 5 `outlook` mentions in
+                                    # a 12,000-char MD&A slice sat past 6,000.
 
 # ── Annual Reports ──
 annual_reports:

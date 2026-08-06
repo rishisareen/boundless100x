@@ -152,6 +152,18 @@ def compute_ev_ebitda(data: dict, params: dict) -> MetricResult:
 PRICE_LOOKBACK_DAYS = 45
 
 
+def _price_basis(price: pd.DataFrame) -> str:
+    """What the `close` column can be trusted to mean.
+
+    Presence of `adj_close` means the fetch carried both series, so `close` is
+    genuinely the raw traded price. Its absence means a legacy single-close
+    cache whose adjustment status is unknown — recorded rather than assumed,
+    because an adjusted close silently understates past prices and every
+    valuation metric built on one reads cheaper than the company traded.
+    """
+    return "raw_close" if "adj_close" in price.columns else "legacy_close_unknown_adjustment"
+
+
 def _close_on_or_before(price: pd.DataFrame, when: pd.Timestamp) -> float | None:
     """The last traded close at or before a date, within the lookback window."""
     prior = price[price["date"] <= when]
@@ -184,13 +196,9 @@ def compute_pe_percentile(data: dict, params: dict) -> MetricResult:
         return MetricResult(error="No price history for historical P/E band")
 
     # The band divides each past year-end close by that year's as-reported
-    # EPS, so it needs the raw traded close. Fetches after the adj_close
-    # schema carry both series; older caches hold a single close whose
-    # adjustment status is unknown — the band is computed either way, but the
-    # basis is recorded so a distorted read is traceable.
-    price_basis = (
-        "raw_close" if "adj_close" in price.columns else "legacy_close_unknown_adjustment"
-    )
+    # EPS, so it needs the raw traded close. The band is computed either way,
+    # but the basis is recorded so a distorted read is traceable.
+    price_basis = _price_basis(price)
 
     price = price.copy()
     price["date"] = pd.to_datetime(price["date"], errors="coerce", utc=True).dt.tz_localize(None)
@@ -486,13 +494,7 @@ def _current_multiple(data: dict) -> tuple[float | None, dict, str]:
     if price is None or len(price) == 0:
         return None, {}, "No price history for the current multiple"
 
-    # Presence of adj_close means `close` is genuinely the raw traded price.
-    # Its absence means a legacy single-close cache whose adjustment status is
-    # unknown — recorded rather than assumed, matching compute_pe_percentile.
-    price_basis = (
-        "raw_close" if "adj_close" in price.columns
-        else "legacy_close_unknown_adjustment"
-    )
+    price_basis = _price_basis(price)
     close = pd.to_numeric(price["close"], errors="coerce").dropna()
     if close.empty:
         return None, {}, "No usable closes for the current multiple"

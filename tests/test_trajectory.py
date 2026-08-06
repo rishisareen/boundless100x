@@ -287,6 +287,54 @@ class TestServiceIntegration:
         assert result.momentum["latest"]["composite_from"] == 5.0
         assert result.momentum["latest"]["composite_to"] == result.scores["composite"]
 
+    def test_a_caller_that_builds_no_report_can_skip_the_history_read(
+        self, monkeypatch, tmp_path
+    ):
+        """`watchlist advance` re-scores every tracked ticker and renders none.
+
+        Momentum is only ever read by the report builder, so asking for it
+        there would re-parse the whole append-only log once per ticker for a
+        value nobody looks at.
+        """
+        from tests.test_source_status import make_data, service_with_stub_suite
+
+        data = make_data()
+        data["source_status"] = {"financials": "ok", "price": "ok"}
+        svc = service_with_stub_suite(monkeypatch, data)
+        svc.history_path = tmp_path / "h.jsonl"
+
+        reads = []
+        monkeypatch.setattr(
+            trajectory, "compute_momentum",
+            lambda ticker, **kw: reads.append(ticker) or {"status": trajectory.OK},
+        )
+
+        assert svc.analyze("ASTRAL", use_llm=False, include_momentum=False).momentum is None
+        assert reads == []
+
+        assert svc.analyze("ASTRAL", use_llm=False).momentum is not None
+        assert reads == ["ASTRAL"]
+
+    def test_advance_does_not_ask_for_momentum(self, monkeypatch, tmp_path):
+        from boundless100x.lifecycle.advance import advance_ticker
+        from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
+        from boundless100x.compute_engine.engine import ComputeEngine
+        from boundless100x.watchlist import WatchlistManager
+        from tests.test_lifecycle_advance import StubService
+
+        service = StubService()
+        service.engine = type(
+            "E", (), {"registry_hash": "abc", "metrics": dict(ComputeEngine().metrics)}
+        )()
+        watchlist = WatchlistManager(path=str(tmp_path / "w.json"))
+        watchlist.add("ASTRAL")
+
+        advance_ticker(
+            service, watchlist, "ASTRAL", TriggerEvaluator(load_triggers())
+        )
+
+        assert service.momentum_requested is False
+
     def test_a_momentum_failure_does_not_cost_the_caller_the_analysis(
         self, monkeypatch, tmp_path
     ):

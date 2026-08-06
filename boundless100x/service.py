@@ -21,7 +21,11 @@ from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.checklist import build_sector_context
-from boundless100x.llm_layer.orchestrator import LLMOrchestrator, forward_growth_model
+from boundless100x.llm_layer.orchestrator import (
+    LLMOrchestrator,
+    forward_growth_char_budget,
+    forward_growth_model,
+)
 from boundless100x import score_history, trajectory
 
 logger = logging.getLogger(__name__)
@@ -102,6 +106,7 @@ class Boundless100xService:
         use_llm: bool = True,
         deep: bool = False,
         annual_report_text: str | None = None,
+        include_momentum: bool = True,
     ) -> AnalysisResult:
         """Run full analysis pipeline for a company.
 
@@ -111,6 +116,10 @@ class Boundless100xService:
             deep: If True, use Opus model for Pass 1 & 2 (deeper analysis).
             use_llm: If True, run 2-pass LLM analysis after compute.
             annual_report_text: Pre-extracted annual report text for Pass 1.
+            include_momentum: If True, read score trajectory at Stage 4.7.
+                Only the report renders it, so callers that never build one
+                skip a full re-read of the score-history log — `watchlist
+                advance` does exactly that, once per tracked ticker.
 
         Returns:
             AnalysisResult with all computed data.
@@ -260,6 +269,9 @@ class Boundless100xService:
         # yesterday. Routed through the service (not the report generator) so
         # the per-caller history redirect the test-isolation fixture depends on
         # still applies. A failure here costs a signal, never the analysis.
+        if not include_momentum:
+            return result
+
         try:
             result.momentum = trajectory.compute_momentum(
                 ticker, path=self.history_path
@@ -324,9 +336,7 @@ class Boundless100xService:
         budget = (
             self._llm.forward_growth_char_budget
             if self._llm
-            else self.config.get("llm", {}).get(
-                "forward_growth_char_budget", forward_growth.DEFAULT_CHAR_BUDGET
-            )
+            else forward_growth_char_budget(self.config)
         )
         submission = forward_growth.build_submission(sections, gated, char_budget=budget)
 
