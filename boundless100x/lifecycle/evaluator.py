@@ -34,6 +34,26 @@ _CHECKPOINT = "checkpoint"
 
 CONDITION_KINDS = (_METRIC, _SCORE, _VERDICT, _FLAG_PRESENT, _FLAG_ABSENT, _CHECKPOINT)
 
+# Metrics whose `raw_series` is that metric's own quantity over time, in the
+# same units as its threshold — the only ones `persist_years` can read.
+#
+# `raw_series` has no declared contract, and two metrics prove why this must be
+# an allowlist rather than an open door:
+#   roiic             carries the *capital employed* series (INR Cr) beside an
+#                     incremental-return value (%), so `roiic persist_years: 2`
+#                     would compare rupees against a percentage and never fire
+#   pe_vs_historical  carries the historical P/E values beside a *percentile*,
+#                     so the same rule would test P/E multiples against a
+#                     0–100 percentile threshold
+# Both would validate, run, and silently never trigger — a kill-switch that
+# never fires is indistinguishable from a thesis that never broke. Adding a
+# metric here means reading its implementation first.
+SERIES_SAFE_METRICS = frozenset({
+    "roce_5yr_avg",          # yearly RoCE %
+    "roe_5yr_avg",           # yearly RoE %
+    "operating_margin_5yr",  # yearly OPM %
+})
+
 
 def load_triggers(path: str | Path | None = None) -> dict:
     """Read the declared triggers. Returns {trigger_id: spec}."""
@@ -113,8 +133,15 @@ def validate_triggers(
                     errors.append(f"{where}: unknown verdict {expected!r}")
 
             persist = condition.get("persist_years")
-            if persist is not None and (not isinstance(persist, int) or persist < 2):
-                errors.append(f"{where}: persist_years must be an integer >= 2")
+            if persist is not None:
+                if not isinstance(persist, int) or persist < 2:
+                    errors.append(f"{where}: persist_years must be an integer >= 2")
+                elif condition.get(_METRIC) not in SERIES_SAFE_METRICS:
+                    errors.append(
+                        f"{where}: persist_years is not available for "
+                        f"{condition.get(_METRIC)!r} — its raw_series is not a series "
+                        f"of its own values in threshold units. See SERIES_SAFE_METRICS."
+                    )
 
             sources = condition.get("sources")
             if sources is not None and known_metric_ids is not None:

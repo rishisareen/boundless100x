@@ -74,3 +74,108 @@ triggers:
       - { metric: trailing_peg, comparator: lte, threshold: 2.0 }
       - flag_absent: reverse_dcf_overpriced
         sources: [reverse_dcf_growth]
+
+  # ── Core-lane kill-switches (v05 §6.1) ──
+  #
+  # Each moves a held position to `exit_review` — never an automatic sell. The
+  # report states which switch fired and on what evidence; the owner decides.
+  # Thresholds are starting points awaiting simulator evidence.
+
+  capital_efficiency_break:
+    label: "Capital efficiency break"
+    rationale: >
+      RoCE below 15% for two consecutive years. The compounding engine has
+      stalled — one weak year is noise, two is a pattern. Read from the yearly
+      series rather than the five-year mean, which a single strong early year
+      can hold above the line for years after the business has turned.
+    from: [probe, scale]
+    to: exit_review
+    mode: all
+    conditions:
+      - { metric: roce_5yr_avg, comparator: lt, threshold: 15, persist_years: 2 }
+
+  growth_quality_degradation:
+    label: "Growth quality degraded to debt-driven"
+    rationale: >
+      The four-lever decomposition now grades growth as financial-leverage
+      dominant. Earnings are still rising, but on borrowing rather than on the
+      business — amplified in good times and accelerating in bad.
+    from: [probe, scale]
+    to: exit_review
+    mode: all
+    conditions:
+      - flag_present: growth_quality_risky
+        sources: [growth_quality_grade]
+
+  incremental_return_break:
+    label: "Incremental returns below cost of capital"
+    rationale: >
+      ROIIC has fallen under the 12% discount rate: new capital is now
+      destroying value even while reported profit grows. No persistence window
+      is layered on because ROIIC is already an incremental measure across a
+      multi-year window — its own construction, not a single year's reading.
+    from: [probe, scale]
+    to: exit_review
+    mode: all
+    conditions:
+      - { metric: roiic, comparator: lt, threshold: 12.0 }
+
+  valuation_saturation:
+    label: "Valuation saturated"
+    rationale: >
+      Price is at the top of its own ten-year band AND the market is implying
+      growth the company has never demonstrated. Either alone is tolerable in a
+      compounder; together they mean the price has outrun any plausible
+      fundamentals.
+    from: [probe, scale]
+    to: exit_review
+    mode: all
+    conditions:
+      - { metric: pe_vs_historical, comparator: gt, threshold: 95 }
+      - flag_present: reverse_dcf_overpriced
+        sources: [reverse_dcf_growth]
+
+  governance_event:
+    label: "Governance event"
+    rationale: >
+      Promoter pledge crossed its red-flag threshold. Pledge is thesis-level
+      invalidation rather than a metric that merely worsens — the alignment the
+      whole case rests on has changed.
+    from: [probe, scale]
+    to: exit_review
+    mode: all
+    conditions:
+      - flag_present: promoter_pledge_red_flag
+        sources: [promoter_pledge]
+
+  checkpoints_failed:
+    label: "Thesis checkpoints missed"
+    rationale: >
+      Two or more recorded checkpoints came due and were not met. The thesis as
+      written is not happening. Checkpoints that could not be evaluated are not
+      counted — a stale fetch is not evidence against a company.
+    from: [probe, scale]
+    to: exit_review
+    mode: all
+    conditions:
+      - { checkpoint: missed, comparator: gte, threshold: 2 }
+
+  # ── Pre-position deterioration: no capital at risk, so this drops rather
+  #    than exits, and may auto-apply ──
+
+  fundamentals_deteriorated:
+    label: "Fundamentals deteriorated before entry"
+    rationale: >
+      A watched company whose economics broke before it ever became buyable
+      leaves the lane. Nothing is held, so there is no position to review — the
+      candidate is simply no longer a candidate.
+    from: [qualify, watch]
+    to: dropped
+    mode: any
+    conditions:
+      - { metric: roce_5yr_avg, comparator: lt, threshold: 15, persist_years: 2 }
+      - { metric: roiic, comparator: lt, threshold: 12.0 }
+      - flag_present: growth_quality_risky
+        sources: [growth_quality_grade]
+      - flag_present: promoter_pledge_red_flag
+        sources: [promoter_pledge]
