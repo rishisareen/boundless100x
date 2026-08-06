@@ -11,7 +11,10 @@ import yaml
 
 from boundless100x.action_policy import resolve_for_result
 from boundless100x.data_fetcher.suite import DataFetcherSuite
-from boundless100x.compute_engine.eligibility import EligibilityEvaluator
+from boundless100x.compute_engine.eligibility import (
+    EligibilityEvaluator,
+    effective_gates,
+)
 from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
 from boundless100x.compute_engine.metrics.base import MetricResult
@@ -62,7 +65,9 @@ class Boundless100xService:
 
         self.suite = DataFetcherSuite(self.config)
         self.engine = ComputeEngine(macro=self.config.get("macro", {}))
-        self.eligibility = EligibilityEvaluator(self.engine.gates or None)
+        # Resolved through the same helper the registry hash uses, so the
+        # regime recorded in score history is always the regime enforced here.
+        self.eligibility = EligibilityEvaluator(effective_gates(self.engine.gates))
         self.scorer = SQGLPScorer(
             self.engine.metrics,
             self.engine.element_weights,

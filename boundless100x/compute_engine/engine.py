@@ -1,11 +1,14 @@
 """Auto-discovery compute engine — loads metrics from YAML, runs Python functions."""
 
+import hashlib
 import importlib
+import json
 import logging
 from pathlib import Path
 
 import yaml
 
+from boundless100x.compute_engine.eligibility import effective_gates
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.validator import validate_registry
 
@@ -39,10 +42,56 @@ class ComputeEngine:
                 logger.error(f"  REGISTRY ERROR: {e}")
             raise ValueError(f"Registry validation failed: {len(errors)} errors")
 
+        self._registry_hash = self._compute_registry_hash()
+
         logger.info(
             f"ComputeEngine loaded: {len(self.metrics)} metrics "
-            f"across {len(self.element_weights)} elements"
+            f"across {len(self.element_weights)} elements "
+            f"(registry {self._registry_hash})"
         )
+
+    @property
+    def registry_hash(self) -> str:
+        """Fingerprint of every input that can move a score.
+
+        Score-history rows carry this so trajectory diffs never silently
+        compare numbers produced under different scoring regimes: a weight
+        change, a threshold edit, a new metric, or a macro assumption would
+        otherwise read as fundamental momentum.
+        """
+        return self._registry_hash
+
+    def _compute_registry_hash(self) -> str:
+        """Hash the loaded registry, not the YAML bytes.
+
+        Hashing the assembled state means custom-metric drop-ins are covered
+        and cosmetic YAML reformatting is not. Four inputs, each of which can
+        change a score: the whole master file (element weights, declared
+        gates, history waiver, anything added later), the *effective* gates
+        (so a run governed by the code-level defaults is not recorded as an
+        empty config), the metric definitions, and the macro assumptions that
+        reach every metric as parameter defaults.
+
+        Keys prefixed with `_` are provenance, not semantics — `_source_file`
+        changes when a metric moves between files without altering what it
+        computes, and fragmenting history on a file rename would be a false
+        positive.
+        """
+        payload = {
+            "master": self.master,
+            "effective_gates": effective_gates(self.gates),
+            "metrics": {
+                metric_id: {
+                    key: value
+                    for key, value in config.items()
+                    if not key.startswith("_")
+                }
+                for metric_id, config in self.metrics.items()
+            },
+            "macro": self.macro,
+        }
+        canonical = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
     def _discover_metrics(self) -> dict:
         """Auto-discover all metric definitions from elements/ and custom/ dirs."""

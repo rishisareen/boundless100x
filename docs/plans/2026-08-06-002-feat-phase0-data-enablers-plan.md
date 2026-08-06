@@ -252,6 +252,25 @@ orchestrator.py          [:3000] literal ──▶ config llm.pass1_ar_char_budg
   hash input is those effective defaults, not the empty YAML section. A code
   edit changing `DEFAULT_GATES` then flips the hash like any gate change,
   and history rows never mix gate regimes under one hash.
+- **Hash scope widened (2026-08-06, implementation):** R3 named only element
+  weights, gates, and per-metric configs, but two further inputs move scores
+  and would otherwise let a regime change pass unrecorded:
+  **macro assumptions** (`discount_rate`, `terminal_growth`, `gsec_yield_pct`,
+  `inflation_pct` — reach every metric as parameter defaults via
+  `engine._run_metric`, so DCF, reverse DCF, and the price lever all move with
+  them) and **`history_waiver_mcap`** (decides which metrics are waived rather
+  than scored). The hash therefore covers the whole master registry file, the
+  effective gates, the metric definitions, and macro. Provenance keys (`_`
+  prefixed, e.g. `_source_file`) are excluded — a metric moving between files
+  computes the same number, and fragmenting history on a file rename is a
+  false positive.
+- **Effective-gate resolution is shared, not duplicated:** `effective_gates()`
+  in `eligibility.py` is the single statement of the fallback rule, used by
+  both the hash and the service's evaluator construction — so the regime
+  recorded can never drift from the regime enforced. Behavior is unchanged in
+  both branches (non-empty gates pass through; empty/absent resolves to
+  `DEFAULT_GATES`, exactly as `gates or None` + `is not None else DEFAULT`
+  did before).
 - **Done when:** two engines over the same registry agree; a temporary custom
   YAML flips the hash.
 

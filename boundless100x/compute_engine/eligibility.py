@@ -55,6 +55,19 @@ DEFAULT_GATES = {
 }
 
 
+def effective_gates(gates: dict | None) -> dict:
+    """The gates that will actually be applied for a given registry section.
+
+    A registry with no `eligibility_gates` section falls back to the shipped
+    `DEFAULT_GATES`, so "no gates declared" never means "no gates enforced".
+    Callers that need to describe the gate regime — the registry hash stamped
+    on every score-history row — must resolve it through here rather than
+    reading the raw section, or a run governed by the code-level defaults
+    would be recorded as if it had been governed by an empty config.
+    """
+    return gates or DEFAULT_GATES
+
+
 def _format_threshold(value) -> str:
     return f"{value:,}" if isinstance(value, (int, float)) else str(value)
 
