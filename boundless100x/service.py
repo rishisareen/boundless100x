@@ -21,6 +21,7 @@ from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer.checklist import build_sector_context
 from boundless100x.llm_layer.orchestrator import LLMOrchestrator
+from boundless100x import score_history
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,10 @@ class Boundless100xService:
 
         self.suite = DataFetcherSuite(self.config)
         self.engine = ComputeEngine(macro=self.config.get("macro", {}))
+        # Where scored runs are recorded. None means the module default; a
+        # caller scoring into a scratch store (tests, the future simulator)
+        # points this elsewhere so the real history stays organic.
+        self.history_path = self.config.get("output", {}).get("score_history_path")
         # Resolved through the same helper the registry hash uses, so the
         # regime recorded in score history is always the regime enforced here.
         self.eligibility = EligibilityEvaluator(effective_gates(self.engine.gates))
@@ -214,6 +219,19 @@ class Boundless100xService:
         # Pass 2 is given the verdict above, but prompt compliance cannot be
         # the guard that stops a `strong_buy` appearing beside a failed gate.
         result.final_action = self.resolve_action(result)
+
+        # Stage 4.6: Record the run in append-only score history. Momentum is
+        # computed from these rows in Phase 2, and a run not written when it
+        # happened cannot be recovered later — so this runs for every scored
+        # analysis, LLM or not. A failure here must never cost the caller the
+        # analysis it just paid for.
+        try:
+            score_history.append_run(
+                result, self.engine.registry_hash, path=self.history_path
+            )
+        except Exception as e:
+            result.errors.append(f"Score history write failed: {e}")
+            logger.error(f"Score history write failed for {ticker}: {e}")
 
         return result
 

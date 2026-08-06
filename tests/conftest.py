@@ -10,7 +10,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from boundless100x import score_history
 from boundless100x.compute_engine.metrics.base import MetricResult
+
+
+@pytest.fixture(autouse=True)
+def isolate_score_history(tmp_path, monkeypatch):
+    """No test may write the real score history.
+
+    `service.analyze()` records every scored run, and that log is git-tracked
+    and append-only by contract — a test run must never leave synthetic
+    composites in it. Redirecting the module default catches tests that reach
+    scoring without thinking about persistence at all.
+    """
+    monkeypatch.setattr(
+        score_history, "DEFAULT_HISTORY_PATH", tmp_path / "score_history.jsonl"
+    )
 
 
 def year_labels(n: int, end: int = 2025) -> list[str]:

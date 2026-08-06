@@ -286,10 +286,24 @@ orchestrator.py          [:3000] literal ──▶ config llm.pass1_ar_char_budg
 - Tests: two runs append two rows; failed scoring appends none; row
   round-trips through `load_history`; file is append-only (existing lines
   untouched byte-for-byte).
-- **Done when:** `compute ASTRAL` twice yields two rows with identical
-  `config_hash` and `verdict: "indeterminate"` (expected for ASTRAL — no
-  `price_volume.csv`; rev 2026-08-06), and the smoke run in the Goal Capsule
-  passes.
+- **Test isolation is mandatory (2026-08-06, implementation):** the history
+  file is git-tracked and append-only, so no test may write it. An autouse
+  `conftest` fixture redirects `DEFAULT_HISTORY_PATH` per test, and the
+  service exposes `history_path` (from `output.score_history_path`) for
+  callers that score into a scratch store — the future simulator needs the
+  same escape hatch. The backtest already bypasses `service.analyze()`
+  entirely, so truncated-history scores cannot leak into the organic log.
+- **Done when:** two consecutive scored runs yield two rows with identical
+  `config_hash`, and the smoke run in the Goal Capsule passes.
+- **Smoke result (2026-08-06):** run against **ZYDUSLIFE** rather than ASTRAL
+  — ASTRAL's Screener page had aged out of the TTL cache while ZYDUSLIFE's
+  was fresh, so this exercised the full pipeline without a live re-scrape.
+  Two runs, two rows, identical `config_hash` (`715479102494`),
+  `composite: 5.96`, `coverage: 0.98`, zero errors; `load_history` resolved
+  the same-day pair to one observation. Verdict was `not_eligible`, not the
+  `indeterminate` the ASTRAL-specific note predicted — ZYDUSLIFE has price
+  data, so its price gates actually evaluated. The `indeterminate` prediction
+  remains correct for ASTRAL and is not a criterion for other tickers.
 
 ### U4. AR retention + section extraction + provenance
 
