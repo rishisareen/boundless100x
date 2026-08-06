@@ -21,7 +21,7 @@ from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer.checklist import build_sector_context
 from boundless100x.llm_layer.orchestrator import LLMOrchestrator
-from boundless100x import score_history
+from boundless100x import score_history, trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,10 @@ class AnalysisResult:
     # suggestion plus the deterministic eligibility verdict and score
     # coverage. See action_policy.resolve_final_action.
     final_action: dict | None = None
+    # Score trajectory read off the append-only history (Stage 4.7). Carries
+    # an explicit insufficient-history outcome rather than a zero, because on
+    # the day this landed that was the answer for every ticker.
+    momentum: dict | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -235,6 +239,20 @@ class Boundless100xService:
         except Exception as e:
             result.errors.append(f"Score history write failed: {e}")
             logger.error(f"Score history write failed for {ticker}: {e}")
+
+        # Stage 4.7: Read the trajectory back, including the row just written,
+        # so the report shows momentum through today rather than up to
+        # yesterday. Routed through the service (not the report generator) so
+        # the per-caller history redirect the test-isolation fixture depends on
+        # still applies. A failure here costs a signal, never the analysis.
+        try:
+            result.momentum = trajectory.compute_momentum(
+                ticker, path=self.history_path
+            )
+            logger.info(f"Score momentum: {result.momentum['status']}")
+        except Exception as e:
+            result.errors.append(f"Score momentum read failed: {e}")
+            logger.error(f"Score momentum read failed for {ticker}: {e}")
 
         return result
 
