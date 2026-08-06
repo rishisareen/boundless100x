@@ -30,6 +30,25 @@ PL_LABEL_MAP = {
     "Dividend Payout %": "dividend_payout_pct",
 }
 
+# The quarterly results table mirrors the annual P&L row-for-row, minus the
+# annual-only rows (Screener reports no quarterly dividend payout). Kept as its
+# own map rather than aliasing PL_LABEL_MAP so an annual-only row added later
+# does not silently start applying to quarters.
+QTR_LABEL_MAP = {
+    "Sales": "revenue",
+    "Revenue": "revenue",
+    "Expenses": "expenses",
+    "Operating Profit": "operating_profit",
+    "OPM %": "opm_pct",
+    "Other Income": "other_income",
+    "Interest": "interest",
+    "Depreciation": "depreciation",
+    "Profit before tax": "pbt",
+    "Tax %": "tax_pct",
+    "Net Profit": "pat",
+    "EPS in Rs": "eps",
+}
+
 BS_LABEL_MAP = {
     "Equity Capital": "equity_capital",
     "Reserves": "reserves",
@@ -86,10 +105,14 @@ def _parse_table(
     soup: BeautifulSoup,
     section_id: str,
     label_map: dict[str, str],
+    period_col: str = "year",
 ) -> pd.DataFrame:
     """Parse a Screener.in financial data table into a DataFrame.
 
-    Returns a DataFrame with 'year' column and one column per mapped label.
+    Returns a DataFrame whose first column holds the period label and one
+    column per mapped label. Annual sections name that column `year`; the
+    quarterly section passes `period_col="quarter"` — the tables are otherwise
+    structurally identical, so they share this parser.
     """
     section = soup.find(id=section_id)
     if section is None:
@@ -109,7 +132,7 @@ def _parse_table(
 
     headers = [th.get_text(strip=True) for th in thead.find_all("th")]
     # First header is empty (label column), rest are dates like "Mar 2014" or "TTM"
-    year_headers = headers[1:]
+    period_headers = headers[1:]
 
     # Parse rows
     tbody = table.find("tbody")
@@ -134,9 +157,9 @@ def _parse_table(
     if not row_data:
         return pd.DataFrame()
 
-    # Build DataFrame: years as rows, metrics as columns
+    # Build DataFrame: periods as rows, metrics as columns
     df = pd.DataFrame(row_data)
-    df.insert(0, "year", year_headers[: len(df)])
+    df.insert(0, period_col, period_headers[: len(df)])
 
     return df
 
@@ -262,10 +285,11 @@ class FinancialsFetcher(BaseFetcher):
     def fetch_all(self, ticker: str, output_dir: str | None = None) -> dict:
         """Fetch all financial data for a ticker.
 
-        Returns dict with keys: financials, balance_sheet, cashflow, ratios,
-        metadata, growth_summary. The company page comes through the TTL cache
-        (see _get_company_page), so repeat runs within the window do not
-        re-scrape Screener. Saves to CSV files in output_dir if provided.
+        Returns dict with keys: financials, quarterly, balance_sheet, cashflow,
+        ratios, shareholding, metadata, growth_summary. The company page comes
+        through the TTL cache (see _get_company_page), so repeat runs within
+        the window do not re-scrape Screener. Saves to CSV files in output_dir
+        if provided.
         """
         soup = self._get_company_page(ticker)
         return self._parse_all(soup, ticker, output_dir)
@@ -277,6 +301,7 @@ class FinancialsFetcher(BaseFetcher):
         metadata = self._get_company_metadata(soup)
 
         financials = _parse_table(soup, "profit-loss", PL_LABEL_MAP)
+        quarterly = _parse_table(soup, "quarters", QTR_LABEL_MAP, period_col="quarter")
         balance_sheet = _parse_table(soup, "balance-sheet", BS_LABEL_MAP)
         cashflow = _parse_table(soup, "cash-flow", CF_LABEL_MAP)
         ratios = _parse_table(soup, "ratios", RATIOS_LABEL_MAP)
@@ -285,6 +310,7 @@ class FinancialsFetcher(BaseFetcher):
 
         result = {
             "financials": financials,
+            "quarterly": quarterly,
             "balance_sheet": balance_sheet,
             "cashflow": cashflow,
             "ratios": ratios,
@@ -359,7 +385,14 @@ class FinancialsFetcher(BaseFetcher):
         base = Path(output_dir) / ticker
         base.mkdir(parents=True, exist_ok=True)
 
-        for key in ("financials", "balance_sheet", "cashflow", "ratios", "shareholding"):
+        for key in (
+            "financials",
+            "quarterly",
+            "balance_sheet",
+            "cashflow",
+            "ratios",
+            "shareholding",
+        ):
             df = result.get(key)
             if isinstance(df, pd.DataFrame) and not df.empty:
                 df.to_csv(base / f"{key}.csv", index=False)

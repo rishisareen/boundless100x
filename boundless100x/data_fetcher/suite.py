@@ -67,8 +67,8 @@ class DataFetcherSuite:
             bse_code: BSE scrip code (optional, for BSE-specific data)
 
         Returns dict with keys matching compute engine expected inputs:
-            financials, balance_sheet, cashflow, ratios, shareholding,
-            price, analyst_coverage, metadata
+            financials, quarterly, balance_sheet, cashflow, ratios,
+            shareholding, price, analyst_coverage, metadata
 
         Also carries `source_status`: {source: "ok" | "empty: <reason>" |
         "failed: <exception>"} for financials, price, and analyst_coverage.
@@ -86,6 +86,7 @@ class DataFetcherSuite:
                 ticker, output_dir=self.raw_data_dir
             )
             data["financials"] = screener_data.get("financials", pd.DataFrame())
+            data["quarterly"] = screener_data.get("quarterly", pd.DataFrame())
             data["balance_sheet"] = screener_data.get("balance_sheet", pd.DataFrame())
             data["cashflow"] = screener_data.get("cashflow", pd.DataFrame())
             data["ratios"] = screener_data.get("ratios", pd.DataFrame())
@@ -98,6 +99,7 @@ class DataFetcherSuite:
         except Exception as e:
             logger.error(f"Screener.in fetch failed for {ticker}: {e}")
             data["financials"] = pd.DataFrame()
+            data["quarterly"] = pd.DataFrame()
             data["balance_sheet"] = pd.DataFrame()
             data["cashflow"] = pd.DataFrame()
             data["ratios"] = pd.DataFrame()
