@@ -77,10 +77,13 @@ annual_reports:
     enabled: true
     scan_chars: 3000      # How much of a slice's opening the gate reads. A
                           # wrong-section slice is wrong from its first line.
-    min_markers:          # Distinct section-appropriate markers required.
-      mdna: 2             # MD&A has a mandated structure (SEBI LODR Sch V(B))
-      chairman: 2
-      governance: 2
+    min_markers:          # Subject markers needed when the section's own
+      mdna: 1             # heading does not open the slice. One, deliberately:
+      chairman: 1         # a two-marker rule modelled on SEBI LODR Sch V(B)
+      governance: 1       # rejected 11 of 13 real MD&A slices, 11 of which
+                          # were genuine — real MD&A opens with narrative
+                          # economy prose and reaches the mandated
+                          # sub-headings pages later.
 
 # ── Deployment Pace (v05 §11) ──
 # Deploy more cautiously when the whole corpus is expensive. Only the floor,

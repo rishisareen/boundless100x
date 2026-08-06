@@ -83,12 +83,94 @@ class TestContentGate:
         assert gated["2025"]["mdna"] == fg.SUSPECT
         assert gated["2025"]["chairman"] == fg.FOUND
 
-    def test_a_slice_with_too_few_markers_is_suspect(self):
+    def test_a_slice_with_neither_a_heading_nor_a_subject_marker_is_suspect(self):
         sections = make_ar_sections(
             provenance="found",
-            sections={"mdna": "MANAGEMENT DISCUSSION AND ANALYSIS\nOutlook is good."},
+            sections={"mdna": (
+                "The Board has constituted a Stakeholders Relationship "
+                "Committee which met twice during the year under review."
+            )},
         )
         assert fg.gate_sections(sections)["2025"]["mdna"] == fg.SUSPECT
+
+    def test_a_genuine_slice_mentioning_the_auditors_is_not_thrown_away(self):
+        """`auditor's report` names an audit opinion; it does not open one.
+
+        A real chairman's statement in the corpus (541956) notes that the
+        statutory auditors raised no qualification. Disqualifying on the words
+        rather than on how an audit opinion actually opens would discard it.
+        """
+        sections = make_ar_sections(
+            provenance="found",
+            sections={"chairman": (
+                "CHAIRMAN'S STATEMENT\nFurthermore, Statutory Auditors have not "
+                "given any qualification or remarks in the Auditors' Report and "
+                "the Comptroller & Auditor General of India has given 'Nil' "
+                "comments for the FY 2024-25."
+            )},
+        )
+        assert fg.gate_sections(sections)["2025"]["chairman"] == fg.FOUND
+
+
+# Real openings from the fetched corpus, verbatim. The gate was rebuilt against
+# these after a first design — two markers drawn from SEBI LODR Schedule V(B)'s
+# mandated MD&A contents — rejected 11 of the corpus's 13 `found` MD&A slices,
+# of which 11 were genuine. Real MD&A opens with narrative economy and industry
+# prose and reaches the mandated sub-headings pages later, well past any
+# workable scan window. Keeping the evidence here is what stops that recurring.
+GENUINE_MDNA_OPENINGS = {
+    "500405": "MANAGEMENT DISCUSSION AND ANALYSIS ECONOMIC REVIEW In 2024-25, "
+              "Indian economy is estimated to have grown by 6.5%,",
+    "509488": "MANAGEMENT DISCUSSION AND ANALYSIS (i) Industry's structure and "
+              "developments A. Graphite and Carbon Segment Graphite Electrodes",
+    "522295": "Industry Growth Drivers The FSSAI 2026 Labelling Amendment "
+              "mandates detailed safety data, creating a sustained requirement",
+    "532321": "Management Discussion and Analysis Global Economy Global economy "
+              "continued its growth journey during the year 2023",
+    "532922": "Monetary Fund (IMF) projects global growth of 3.3% for 2025, with "
+              "an average of around 3.2% expected over the next five years",
+    "542830": "Management Discussion and Analysis India's economic review The "
+              "Indian economy exhibited strong performance and grew by 6.5%",
+    "543265": "1. Economy Overview Introduction India's economy is a dynamic and "
+              "rapidly expanding force, marked by resilience and innovation.",
+}
+
+WRONG_SECTION_MDNA_OPENINGS = {
+    # A Corporate Governance Report under an MD&A heading.
+    "500339": "Management Discussion and Analysis Company's Philosophy on Code "
+              "of Governance Rain Industries Limited is committed to implement "
+              "sound corporate governance practices",
+    # A Board's Report pointing at an annexure, then governance prose.
+    "531344": "MANAGEMENT DISCUSSION AND ANALYSIS: The detailed Management "
+              "Discussion and Analysis forms a part of this report at "
+              "Annexure-A. CORPORATE GOVERNANCE & GREEN INITIATIVE:",
+}
+
+
+class TestContentGateAgainstTheRealCorpus:
+    @pytest.mark.parametrize("code", sorted(GENUINE_MDNA_OPENINGS))
+    def test_a_genuine_mdna_opening_survives(self, code):
+        sections = make_ar_sections(
+            provenance="found", sections={"mdna": GENUINE_MDNA_OPENINGS[code]}
+        )
+        assert fg.gate_sections(sections)["2025"]["mdna"] == fg.FOUND
+
+    @pytest.mark.parametrize("code", sorted(WRONG_SECTION_MDNA_OPENINGS))
+    def test_a_wrong_section_opening_is_downgraded(self, code):
+        sections = make_ar_sections(
+            provenance="found", sections={"mdna": WRONG_SECTION_MDNA_OPENINGS[code]}
+        )
+        assert fg.gate_sections(sections)["2025"]["mdna"] == fg.SUSPECT
+
+    def test_the_gate_keeps_a_large_majority_rather_than_a_handful(self):
+        """A1's bar reads both ways: far below it, the gate is over-strict."""
+        genuine = sum(
+            fg.gate_sections(
+                make_ar_sections(provenance="found", sections={"mdna": text})
+            )["2025"]["mdna"] == fg.FOUND
+            for text in GENUINE_MDNA_OPENINGS.values()
+        )
+        assert genuine == len(GENUINE_MDNA_OPENINGS)
 
     def test_the_gate_can_be_disabled_without_a_refetch(self):
         sections = make_ar_sections(

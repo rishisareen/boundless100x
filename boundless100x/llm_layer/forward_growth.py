@@ -56,6 +56,7 @@ import re
 from pathlib import Path
 
 from boundless100x import forward_growth_schema as schema
+from boundless100x.data_fetcher.download_annual_reports import SECTION_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -80,36 +81,61 @@ DEFAULT_CHAR_BUDGET = 6000
 # its first line; reading further would only let a passing mention of "outlook"
 # ten pages in rescue an auditor's report.
 DEFAULT_SCAN_CHARS = 3000
-# How many distinct markers a slice must show. MD&A has a mandated structure
-# (SEBI LODR Schedule V(B)) so two is a low bar for a genuine one; a chairman's
-# letter is looser prose, but one marker would admit almost anything.
-DEFAULT_MIN_MARKERS = {"mdna": 2, "chairman": 2, "governance": 2}
+# How far in the section's own heading may sit and still count as opening the
+# slice. Detection already established it *is* a heading; this only confirms
+# the slice begins there rather than somewhere else entirely.
+_HEADING_WINDOW = 150
+# Disqualifiers are canonical *openings* of other sections, so they are looked
+# for at the start. Beyond this a mention is commentary — a genuine chairman's
+# statement noting that the auditors raised no qualification must not be
+# thrown away for using the words.
+_DISQUALIFIER_WINDOW = 600
 
-# Positive markers, written against what each section is *required* to contain
-# rather than against what the false positives happened to look like — the
-# latter only ever catches the failures already seen.
+# One marker is the bar, deliberately. An earlier two-marker rule modelled on
+# SEBI LODR Schedule V(B)'s mandated MD&A contents rejected 11 of the 13
+# `found` MD&A slices in the fetched corpus, of which 11 were genuine — real
+# MD&A opens with narrative economy and industry prose and reaches the mandated
+# sub-headings pages later, well past any sane scan window.
+DEFAULT_MIN_MARKERS = {"mdna": 1, "chairman": 1, "governance": 1}
+
+# Subject-matter markers: what each section is actually *about* in its opening
+# paragraphs, measured against the real corpus rather than against the formal
+# structure it is supposed to have.
 SECTION_MARKERS: dict[str, tuple[re.Pattern, ...]] = {
     "mdna": tuple(re.compile(p, re.I) for p in (
-        r"industry\s+structure\s+and\s+development",
+        # Economic review — how most Indian MD&A sections actually open.
+        r"(?:global|indian|india[’']?s|domestic|world)\s+econom",
+        r"econom(?:y|ic)\s+(?:review|overview|scenario|outlook|environment|landscape)",
+        r"\beconomy\s+overview\b",
+        r"global\s+growth",
+        r"\bgdp\b",
+        # Industry review, however the filer phrases the possessive.
+        r"industry[’']?s?\s+(?:structure|overview|review|scenario|outlook"
+        r"|landscape|trends?|growth|dynamics|developments?)",
+        # SEBI LODR Schedule V(B) sub-headings, when they do appear early.
         r"opportunit\w+\s+and\s+threats",
         r"segment[\s–—-]*wise",
-        r"\boutlook\b",
         r"risks?\s+and\s+concerns",
         r"internal\s+control\s+systems?",
-        r"econom(?:y|ic)\s+(?:review|overview|scenario)",
-        r"industry\s+(?:review|overview|scenario)",
         r"key\s+financial\s+ratios",
         r"financial\s+performance\s+with\s+respect\s+to",
+        r"\boutlook\b",
+        # Market and demand commentary.
+        r"\bmarket\s+(?:size|share|dynamics|outlook|demand|opportunity)",
+        r"\bdemand\s+(?:environment|outlook|drivers?)",
+        r"growth\s+drivers?",
     )),
     "chairman": tuple(re.compile(p, re.I) for p in (
-        r"dear\s+(?:share\s*holders?|members|stakeholders|friends)",
-        r"it\s+gives\s+me|i\s+am\s+(?:pleased|delighted|happy)",
+        r"dear\s+(?:share\s*holders?|members|stakeholders|friends|colleagues)",
+        r"it\s+gives\s+me|it\s+is\s+my\s+(?:privilege|pleasure)",
+        r"i\s+am\s+(?:pleased|delighted|happy|privileged)",
         r"on\s+behalf\s+of\s+the\s+board",
         r"your\s+company",
-        r"yours\s+sincerely|warm\s+regards",
+        r"yours\s+sincerely|warm\s+(?:regards|greetings)",
+        r"annual\s+report\s+of\s+(?:your|the)\s+company",
     )),
     "governance": tuple(re.compile(p, re.I) for p in (
-        r"philosophy\s+on\s+corporate\s+governance",
+        r"philosophy\s+on\s+(?:the\s+)?(?:code\s+of\s+)?(?:corporate\s+)?governance",
         r"composition\s+of\s+the\s+board",
         r"board\s+of\s+directors",
         r"audit\s+committee",
@@ -119,27 +145,48 @@ SECTION_MARKERS: dict[str, tuple[re.Pattern, ...]] = {
     )),
 }
 
-# Text that, near the start of a slice, means it is something else entirely —
-# whatever else the slice may contain. These are exactly the categories the
-# corpus review found masquerading as MD&A.
-_AUDIT_AND_GOVERNANCE = tuple(re.compile(p, re.I) for p in (
-    r"terms\s+of\s+reference\s+of\s+the\s+\w+\s+committee",
+# The canonical *opening* of a different section. Each of these is how another
+# statutory section begins, not merely a phrase it contains — that distinction
+# matters, because `auditor's report` on its own throws away a real chairman's
+# statement noting the auditors raised no qualification, while `we have
+# audited` only ever opens an audit opinion.
+_OTHER_SECTION_OPENINGS = (
+    r"philosophy\s+on\s+(?:the\s+)?(?:code\s+of\s+)?(?:corporate\s+)?governance",
+    r"terms\s+of\s+reference\s+of\s+the\s+[\w\s]{0,20}committee",
     r"key\s+audit\s+matters",
     r"we\s+have\s+audited",
-    r"independent\s+auditor",
-    r"auditor'?s?\s+report",
+    r"independent\s+auditor'?[’']?s?\s+report",
     r"report\s+on\s+the\s+audit\s+of",
     r"corporate\s+social\s+responsibility\s+(?:policy|committee|activities)",
-))
+)
+
+# A slice whose opening says the section is *elsewhere* is a pointer, not the
+# section. This is the second real failure in the corpus: a Board's Report
+# heading "MANAGEMENT DISCUSSION AND ANALYSIS:" followed immediately by "the
+# detailed Management Discussion and Analysis forms a part of this report at
+# Annexure-A", then governance prose.
+_POINTER_PHRASES = (
+    r"forms?\s+(?:a\s+)?part\s+of\s+th(?:is|e)\s+report",
+    r"forms?\s+an\s+integral\s+part\s+of\s+th(?:is|e)\s+report",
+    r"is\s+annexed|annexed\s+(?:to|herewith)",
+    r"\bannexure[\s\-–—]?[A-Z0-9]\b",
+    r"(?:given|set\s+out|appears?|provided)\s+(?:elsewhere|separately)",
+)
 
 SECTION_DISQUALIFIERS: dict[str, tuple[re.Pattern, ...]] = {
-    "mdna": _AUDIT_AND_GOVERNANCE,
-    "chairman": _AUDIT_AND_GOVERNANCE,
-    # A governance report legitimately discusses committee terms of reference;
-    # only an auditor's report masquerading as one is disqualifying.
+    "mdna": tuple(
+        re.compile(p, re.I) for p in _OTHER_SECTION_OPENINGS + _POINTER_PHRASES
+    ),
+    "chairman": tuple(
+        re.compile(p, re.I) for p in _OTHER_SECTION_OPENINGS + _POINTER_PHRASES
+    ),
+    # A governance report legitimately opens on its own philosophy, discusses
+    # committee terms of reference, and reports CSR — only an audit opinion
+    # masquerading as one, or a pointer, is disqualifying.
     "governance": tuple(re.compile(p, re.I) for p in (
         r"key\s+audit\s+matters", r"we\s+have\s+audited",
-    )),
+        r"report\s+on\s+the\s+audit\s+of",
+    ) + _POINTER_PHRASES),
 }
 
 
@@ -147,7 +194,22 @@ SECTION_DISQUALIFIERS: dict[str, tuple[re.Pattern, ...]] = {
 
 
 def _gate_one(name: str, text: str, scan_chars: int, min_markers: int) -> tuple[bool, str]:
-    """Whether a slice looks like the section it claims to be, and why not."""
+    """Whether a slice looks like the section it claims to be, and why not.
+
+    Two independent questions, and both have to be asked. *Does it open like
+    another section?* — a canonical opening of an audit opinion, a corporate
+    governance report, or a pointer saying the section is at an annexure means
+    the slice is that other thing whatever else it contains. *Is it about the
+    right subject?* — either the section's own heading opens the slice, or its
+    subject-matter markers appear early.
+
+    The heading counts because detection already established it *is* a heading
+    rather than a cross-reference; this only confirms the slice begins there.
+    On its own it would be nearly a no-op, which is why the disqualifiers carry
+    the residual cases KTD9 was written for — in both real failures the heading
+    was present and correct, and the prose underneath belonged to another
+    section.
+    """
     opening = (text or "")[:scan_chars]
     if not opening.strip():
         return False, "empty slice"
@@ -155,10 +217,17 @@ def _gate_one(name: str, text: str, scan_chars: int, min_markers: int) -> tuple[
     blocked = [
         pattern.pattern
         for pattern in SECTION_DISQUALIFIERS.get(name, ())
-        if pattern.search(opening)
+        if pattern.search(opening[:_DISQUALIFIER_WINDOW])
     ]
     if blocked:
-        return False, f"opens with {name}-disqualifying text: {', '.join(blocked)}"
+        return False, (
+            f"opens like a different section (or a pointer to one): "
+            f"{', '.join(blocked)}"
+        )
+
+    heading = SECTION_PATTERNS.get(name)
+    if heading is not None and heading.search(opening[:_HEADING_WINDOW]):
+        return True, ""
 
     hits = [
         pattern.pattern
@@ -167,8 +236,9 @@ def _gate_one(name: str, text: str, scan_chars: int, min_markers: int) -> tuple[
     ]
     if len(hits) < min_markers:
         return False, (
-            f"only {len(hits)} of the {min_markers} markers a {name} section "
-            f"should show in its opening {scan_chars} chars"
+            f"no {name} heading opens the slice, and only {len(hits)} of the "
+            f"{min_markers} subject markers a {name} section should show appear "
+            f"in its first {scan_chars} chars"
         )
     return True, ""
 
