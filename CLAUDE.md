@@ -174,4 +174,4 @@ it drifts every time a test is added and nobody remembers to update it.
 
 ## GitHub
 - **Repo**: https://github.com/rishisareen/boundless100x (private)
-- **Branch strategy**: `main` is default; feature branches via `claude/` prefix
+- **Branch strategy**: work directly on `main` (owner-confirmed 2026-08-06). Commit each unit as it lands with its tests green, and push when a phase completes. No feature branches — the earlier `claude/` prefix convention is retired, and its stale branches were deleted once their content was confirmed superseded on `main`.
