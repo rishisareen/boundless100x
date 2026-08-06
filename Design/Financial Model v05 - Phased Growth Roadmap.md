@@ -543,11 +543,29 @@ checkpoint-clear).
   monitorables are checkable at the promised cadence from day one
 - *Validation:* replay transitions for existing reports (CDSL, RAIN, VBL) and confirm each proposed transition cites the correct trigger evidence
 
-**Phase 2 — Engine Enhancements**
+**Phase 2 — Engine Enhancements** — ✅ **complete 2026-08-06**, see
+`docs/plans/2026-08-06-004-feat-phase2-engine-enhancements-plan.md` for the
+implementation record, the R7 non-regression proof, and the corrections it
+forced (the pace input had to become a corpus median because the metric §11
+names is per-company; the registry hash had to split in two or Phase 5 would
+destroy the trajectory evidence it needs to calibrate; and the content gate
+had to be rebuilt against how MD&A actually reads rather than the structure
+the statute requires of it).
 - Score trajectory quarterly diffs (§7.1) — persistence itself landed in Phase 0; this phase computes momentum over the accumulated history
 - Re-rating headroom metric (§7.3)
 - Forward-growth module: promises-kept, capex pipeline, TAM runway, quarterly momentum (§7.2) — LLM-assisted sub-metrics behind the existing cost controls; consumes Phase 0's multi-year AR sections and quarterly series
 - Deployment-pace modulator (§11)
+- **Two-hash split** (implementation decision): `registry_hash` narrows to what
+  can move a composite, and a second `forward_signal_hash` covers zero-weight
+  metric definitions and the extraction schema. Without it, Phase 5 could not
+  calibrate a forward signal without resetting every ticker's momentum
+  baseline — the evidence it needs to calibrate with.
+- **Three-valued provenance** (implementation decision, extending §7.2's
+  `found`/`fallback`): a located section must also *look like* the section it
+  claims to be, or it is downgraded to `suspect` and excluded from extraction
+  exactly as `fallback` is. Phase 0 could tolerate a wrong-section slice
+  because its text was only Pass 1 background; an extractor mines whatever it
+  is handed and yields well-formed, confident, wrong guidance.
 - *Validation:* metrics appear in scores.json via the registry; trajectory diffs reproduce from stored runs; headroom metric lands in the price element without altering composite weights
 
 **Phase 3 — Fast Lane + Portfolio Layer**

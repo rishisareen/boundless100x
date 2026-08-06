@@ -982,6 +982,113 @@ history:  [h=715…] [h=715…] [h=715…] │ [h=9a2…] [h=9a2…]
   excluded (A2) rather than erroring, with `rerating_headroom` computing
   normally inside it at zero weight.
 
+## Implementation Record (2026-08-06)
+
+All seven units merged on `main` with tests green (792 passed, 2 network tests
+deselected). Results the Definition of Done asks to be recorded here.
+
+### R7 non-regression — the central proof
+
+An offline scoring dump across **all 22 cached tickers**, run against the tree
+at `fc2647d` (pre-phase) and at the phase head, loading each ticker's real
+frames from `raw_data/` with no network. `composite`, every element score, the
+whole `coverage` dict, `scores["flags"]`, the eligibility verdict, and **every
+pre-existing `details` entry** are byte-identical. The only additions are five
+`details` entries, all at `"weight": 0` and `"score": null`, and three rendered
+flags — all of them registered against the forward-signals section.
+
+The backtest is a second, independent witness: its per-ticker coverage figures
+are byte-identical before and after, so the zero-weight metrics did not touch
+the coverage denominator.
+
+### Three-bucket provenance split (29 report-years, 20 BSE codes)
+
+| Section | `found` | `suspect` | `fallback` | Raw `found` → survived the gate |
+|---|---|---|---|---|
+| `mdna` | 11 | 2 | 16 | 13 → 11 (85%) |
+| `chairman` | 9 | 2 | 18 | 11 → 9 (82%) |
+| `governance` | 22 | 4 | 3 | 26 → 22 (85%) |
+
+Read against A1's three layers: `mdna` is `found` on 13 of 29 report-years
+(layer 1 ✓); ~85% of those are genuinely MD&A (layer 2 ✓ — the gate keeps
+exactly that share); and **1 ticker** (ZYDUSLIFE / 532321) has the two usable
+MD&A years `promises_kept_ratio` needs (layer 3, "a small handful at best" ✓).
+
+Per sub-metric: `promises_kept_ratio` and `capex_pipeline` have a usable `mdna`
+section on 11/29 report-years across 10 tickers; `tam_runway`, with its ranked
+`chairman` fallback, on 17/29 across 14.
+
+**The gate was rebuilt during verification.** Its first design required two
+markers drawn from SEBI LODR Schedule V(B)'s mandated MD&A contents and
+downgraded 11 of the 13 `found` slices — of which 11 were genuine. A1 warns
+that a yield markedly *above* its rates means the gate is too permissive; the
+converse held. Real Indian MD&A opens with narrative economy and industry prose
+and reaches the mandated sub-headings pages later, so the gate now asks whether
+a slice opens like a *different* section and whether it is about the right
+subject. The verbatim corpus openings that drove the rebuild are pinned as test
+fixtures.
+
+### Momentum honesty check
+
+The real `score_history.jsonl` holds 7 rows, all dated 2026-08-06. Every one of
+the 5 tickers reports `insufficient_history` with `latest: None` — none reports
+a zero delta. This is the expected state at landing (A3) and is now verified
+rather than assumed.
+
+### Backtest
+
+Runs. The four forward-growth sub-metrics are listed as excluded on all 15
+qualifying companies (`_truncate` never loads `quarterly` or
+`annual_report_sections`). `rerating_headroom` is **not** universally excluded —
+it computes on 12 of 15, failing only where `pat_cagr_5yr` also fails, exactly
+as A2 predicts.
+
+### Minimum-yield bar (Risks table)
+
+| Signal | Yield | Bar |
+|---|---|---|
+| `rerating_headroom` | 16/22 tickers (73%) | majority ✓ |
+| `quarterly_momentum` | 5/22 tickers (23%) — but **5/5 of the tickers that have a `quarterly.csv`** | see below |
+| text-derived sub-metrics | 0 without a live extraction run | ✗ not verified |
+
+`quarterly_momentum`'s corpus figure is a stale-cache artifact, not a metric
+defect: 17 of the 22 tickers were fetched before Phase 0's quarterly parser
+existed and have no `quarterly.csv` at all. Where the data exists the metric
+computes every time. **Refetching the corpus is the prerequisite** — the same
+one A5 names for promises-kept coverage.
+
+**The one bar not met:** "at least one text-derived sub-metric must produce a
+value on at least one ticker" needs a live extraction call, which was not run
+(it spends against the owner's API key rather than being an implementation
+step). The path is verified end-to-end against recorded responses, and the
+corpus can support it on exactly one ticker — ZYDUSLIFE, the only one with two
+usable MD&A years. Until that call is made, this criterion is **outstanding**.
+
+### Corrections the phase forced
+
+- **KTD7's pace input**: §11 names `earnings_yield_vs_gsec`, which is
+  per-company — using it would tighten entry when the *company* is expensive.
+  Replaced with the corpus median. Live reading today: −4.33pp across 21 names,
+  below the −1.0pp floor, so the modulator would apply.
+- **U6's two-pass `advance()`** was not needed. It was called for on the grounds
+  that the median is not knowable until scoring finishes — true only of a
+  *watchlist*-derived median, which KTD7 forbids. A corpus-derived one is
+  knowable before the loop, which is what KTD7's own closing line specifies.
+  `advance()` stays single-pass.
+- **KTD8's "the baseline does not reset"** was optimistic. Narrowing the hash
+  changes its payload shape, so the shipped registry moved
+  `715479102494 → 1d9f30d09df3` once, at the split. Nothing was lost: all 7
+  existing rows share a single date, so `load_history` already collapsed them
+  to one row per ticker per regime and there was no diffable momentum. Future
+  zero-weight tuning no longer moves it at all, which is what the split is for.
+- **The content gate** (above).
+- **The validator** no longer demands mode-specific scoring config from a
+  zero-weight metric. The scorer returns before `_compute_raw_score` for those,
+  so their thresholds were always dead config — which is why the two
+  pre-existing zero-weight metrics carry invented category tables.
+
+---
+
 ## Definition of Done
 
 All seven units merged with tests; the R7 before/after diff performed and its
