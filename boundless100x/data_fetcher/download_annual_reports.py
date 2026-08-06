@@ -57,6 +57,10 @@ _NUMBERED_ENTRY = re.compile(r"^\s*\d{1,3}\s*[\t.\s]")
 _BARE_NUMBER = re.compile(r"^\s*\d{1,3}\s*$")
 _CONTENTS_ENTRY_THRESHOLD = 8
 
+# Numbering and bullets that may precede a heading without making it prose:
+# "2. Management Discussion and Analysis", "• Management Discussion…".
+_LEADING_ORNAMENT = re.compile(r"^[\s\d.)\]\-–—•*|>]+")
+
 # Pages of body text taken for a section when no later section bounds it.
 _MAX_SECTION_PAGES = 15
 
@@ -64,11 +68,42 @@ _MAX_SECTION_PAGES = 15
 def _is_heading_like(line: str, match: re.Match) -> bool:
     """Whether a matched line reads as a heading rather than a sentence.
 
-    A heading is short and is mostly the section name; a passing mention
-    inside a paragraph is neither.
+    The original "short line, mostly the section name" test let annual reports
+    through on their own cross-references. Measured across the fetched corpus,
+    8 of 18 `found` MD&A slices were actually auditor's reports, governance,
+    CSR or HR text, every one of them anchored on a line like
+    "provided in the Management Discussion and Analysis" or
+    "Management Discussion and Analysis of financial statements" — prose that
+    merely names the section, at 58–77% of its line, comfortably inside the old
+    50% bar.
+
+    Two structural properties separate the two, and both are needed:
+
+    1. **A heading opens its line.** A cross-reference sits inside a sentence,
+       so something precedes it ("included in the…", "Moreover, a report on…").
+       Leading numbering or bullets are ornament, not prose, and are stripped
+       first.
+    2. **A heading is not continued in lowercase.** What follows a real heading
+       is nothing, punctuation, or a subtitle in caps ("MANAGEMENT DISCUSSION
+       AND ANALYSIS ECONOMIC REVIEW"). A lowercase word after the match means
+       the sentence is still running ("…and Analysis of financial statements").
+
+    Raising the coverage ratio instead would not work: it rejects the genuine
+    "MANAGEMENT DISCUSSION AND ANALYSIS ECONOMIC REVIEW" heading at 69% while
+    still admitting "Management Discussion and Analysis describing…" at 77%.
+    Coverage does not distinguish these; position and continuation do.
     """
     stripped = line.strip()
-    return len(stripped) <= 90 and len(match.group(0)) >= 0.5 * max(len(stripped), 1)
+    if not stripped or len(stripped) > 90:
+        return False
+
+    head = _LEADING_ORNAMENT.sub("", stripped)
+    matched = match.group(0)
+    if not head.lower().startswith(matched.lower()):
+        return False
+
+    tail = head[len(matched):].strip(" \t:.,;–—-")
+    return not tail or tail[0].isupper()
 
 
 def _is_contents_page(lines: list[str], hits: dict) -> bool:
@@ -112,29 +147,35 @@ def combined_text(sections: dict[str, dict]) -> str:
     return "\n\n".join(s.get("text", "") for s in ordered)
 
 
-def find_section_starts(pages: list[str]) -> dict[str, int]:
-    """Map section name to the page index where it starts.
+def find_section_starts(pages: list[str]) -> dict[str, tuple[int, int]]:
+    """Map section name to where it starts, as `(page_index, line_index)`.
 
     Scans in document order and keeps the first non-contents page whose
     heading matches. Sections that never match are simply absent.
+
+    The line index matters as much as the page. A heading frequently sits near
+    the bottom of its page — one real report has the MD&A heading at line 40 of
+    62 — so taking the page from its top prepends the *previous* section's
+    tail. That is how a correctly-detected MD&A came back opening on CSR prose.
+    Callers slice from the line, not the page.
     """
-    starts: dict[str, int] = {}
+    starts: dict[str, tuple[int, int]] = {}
 
     for index, text in enumerate(pages):
         lines = text.splitlines()
-        hits: dict[str, int] = {}
+        hits: dict[str, tuple[int, int]] = {}
         for name, pattern in SECTION_PATTERNS.items():
-            for line in lines:
+            for line_no, line in enumerate(lines):
                 match = pattern.search(line)
                 if match and _is_heading_like(line, match):
-                    hits[name] = index
+                    hits[name] = (index, line_no)
                     break
 
         if not hits or _is_contents_page(lines, hits):
             continue
 
-        for name, page in hits.items():
-            starts.setdefault(name, page)
+        for name, position in hits.items():
+            starts.setdefault(name, position)
 
     return starts
 
@@ -318,14 +359,26 @@ class AnnualReportDownloader(BaseFetcher):
                 }
                 continue
 
+            start_page, start_line = start
+
             # Run to the next section start, or a bounded number of pages.
             later = [b for b in boundaries if b > start]
-            end = min(later[0] if later else len(pages), start + _MAX_SECTION_PAGES)
-            body = self._clean_extracted_text("\n".join(pages[start:end]))
+            end = min(
+                later[0][0] if later else len(pages),
+                start_page + _MAX_SECTION_PAGES,
+            )
+            end = max(end, start_page + 1)
+
+            # Begin at the heading line, not the top of its page — everything
+            # above it belongs to the preceding section.
+            body_pages = pages[start_page:end]
+            body_pages[0] = "\n".join(body_pages[0].splitlines()[start_line:])
+            body = self._clean_extracted_text("\n".join(body_pages))
             result[name] = {
                 "text": body[:cap],
                 "provenance": "found",
-                "start_page": start,
+                "start_page": start_page,
+                "start_line": start_line,
             }
 
         located = [n for n, s in result.items() if s["provenance"] == "found"]

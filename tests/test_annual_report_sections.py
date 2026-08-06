@@ -58,19 +58,34 @@ def downloader():
     return AnnualReportDownloader()
 
 
+def page_of(starts: dict, section: str) -> int:
+    """Page index only — starts now carry (page, line)."""
+    return starts[section][0]
+
+
 class TestSectionDetection:
     def test_finds_each_section_past_the_contents_page(self):
         starts = find_section_starts(structured_pages())
-        assert starts == {"chairman": 2, "mdna": 4, "governance": 6}
+        assert {k: v[0] for k, v in starts.items()} == {
+            "chairman": 2, "mdna": 4, "governance": 6
+        }
+
+    def test_starts_carry_the_heading_line_not_just_the_page(self):
+        """A heading near the foot of a page must not drag the page's top in."""
+        pages = ["cover", body("previous section") + "\nManagement Discussion and Analysis\n" + body("mdna")]
+        page, line = find_section_starts(pages)["mdna"]
+        assert page == 1
+        assert line > 0
 
     def test_contents_page_is_not_mistaken_for_a_section(self):
         """The commonest trap: a contents page lists every heading verbatim."""
-        assert all(page != 1 for page in find_section_starts(structured_pages()).values())
+        starts = find_section_starts(structured_pages())
+        assert all(page != 1 for page, _ in starts.values())
 
     def test_a_page_titled_index_is_also_a_contents_page(self):
         pages = ["Index\nManagement Discussion and Analysis\nBoard's Report",
                  "Management Discussion and Analysis\n" + body("mdna")]
-        assert find_section_starts(pages)["mdna"] == 1
+        assert page_of(find_section_starts(pages), "mdna") == 1
 
     def test_bulk_page_number_entries_mark_a_listing(self):
         """Some reports title contents pages oddly — the page numbers give it away."""
@@ -78,7 +93,7 @@ class TestSectionDetection:
             f"{n:02d}\nSome Section Title" for n in range(2, 30, 2)
         ) + "\nManagement Discussion and Analysis"
         pages = [listing, "Management Discussion and Analysis\n" + body("mdna")]
-        assert find_section_starts(pages)["mdna"] == 1
+        assert page_of(find_section_starts(pages), "mdna") == 1
 
     def test_a_passing_mention_in_prose_is_not_a_heading(self):
         pages = [
@@ -86,10 +101,45 @@ class TestSectionDetection:
             "forms part of this document and should be read together with it.",
             "Management Discussion and Analysis\n" + body("mdna"),
         ]
-        assert find_section_starts(pages)["mdna"] == 1
+        assert page_of(find_section_starts(pages), "mdna") == 1
 
     def test_absent_sections_are_simply_absent(self):
         assert find_section_starts(["cover page", body("nothing")]) == {}
+
+
+class TestCrossReferenceRejection:
+    """Every line here is a real one from the fetched corpus that used to
+    produce a `found` MD&A slice containing an auditor's report, a governance
+    section, CSR or HR text. All eight were anchored on prose that merely
+    names the section."""
+
+    REAL_CROSS_REFERENCES = [
+        "Management Discussion and Analysis section of the Annual",   # 532830/2026
+        "Management discussion and analysis of financial",            # 532830/2025, /2024
+        "included in the Management Discussion and Analysis, Board's",  # 500777/2025
+        "Moreover, a report on Management Discussion & Analysis",      # 540180/2023
+        "provided in the Management Discussion and Analysis",          # 542830/2025
+        "Management Discussion and Analysis describing",               # 500339/2024
+    ]
+
+    @pytest.mark.parametrize("line", REAL_CROSS_REFERENCES)
+    def test_real_cross_reference_lines_are_rejected(self, line):
+        pages = [line + "\n" + body("wrong section"),
+                 "Management Discussion and Analysis\n" + body("mdna")]
+        assert page_of(find_section_starts(pages), "mdna") == 1
+
+    @pytest.mark.parametrize("heading", [
+        "MANAGEMENT DISCUSSION AND ANALYSIS",
+        "MANAGEMENT DISCUSSION AND ANALYSIS:",            # 531344/2025, a real heading
+        "MANAGEMENT DISCUSSION AND ANALYSIS ECONOMIC REVIEW",  # 500405/2025, real
+        "Management Discussion and Analysis",
+        "2. Management Discussion and Analysis",
+    ])
+    def test_real_headings_still_match(self, heading):
+        """The fix must not buy precision by rejecting genuine headings —
+        a subtitle in caps and leading numbering are both ornament."""
+        pages = ["cover", heading + "\n" + body("mdna")]
+        assert page_of(find_section_starts(pages), "mdna") == 1
 
 
 class TestProvenance:
@@ -107,6 +157,21 @@ class TestProvenance:
 
         assert "mdna substantive" in result["mdna"]["text"]
         assert "chairman substantive" not in result["mdna"]["text"]
+
+    def test_text_above_the_heading_is_not_dragged_in(self, downloader, tmp_path):
+        """The 531344 failure: a real heading low on its page pulled the
+        preceding section's text in with it."""
+        pages = [
+            "ANNUAL REPORT 2025",
+            body("csr activities") + "\nManagement Discussion and Analysis\n" + body("mdna"),
+        ]
+        pdf = make_pdf(tmp_path / "2025_annual_report.pdf", pages)
+        result = downloader.extract_sections(pdf, sections={"mdna": 12000})
+
+        assert result["mdna"]["provenance"] == "found"
+        assert "mdna substantive" in result["mdna"]["text"]
+        assert "csr activities" not in result["mdna"]["text"]
+        assert result["mdna"]["start_line"] > 0
 
     def test_missing_sections_fall_back_and_say_so(self, downloader, tmp_path):
         """A two-page stub has no sections — real reports like this exist."""

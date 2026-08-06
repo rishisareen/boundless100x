@@ -238,17 +238,25 @@ yet turns that data into forward signal.
   coverage for the sub-metric whose claim is qualitative anyway. The two
   sub-metrics that settle against numbers accept no substitute section.
 
-- **KTD9 — `found` is not trustworthy on its own; a content gate stands between
-  provenance and extraction.** Measured across all 18 `found` MD&A sections in
-  the fetched corpus, **8 are not MD&A at all** — they open on audit-committee
-  terms of reference, a Board's Report dividend clause, an auditor's key-audit-
-  matters table, CSR activities, or HR safety programmes. The heading regex
-  matched a *cross-reference* ("…as detailed in the Management Discussion and
-  Analysis") and sliced from there. ASTRAL fails this way in all three retained
-  years, so the failure is per-filer and persistent, not random.
-  Phase 0 could tolerate it — the fallback text was only ever fed to Pass 1 as
+- **KTD9 — `found` is a claim, not a guarantee; a content gate stands between
+  provenance and extraction.** The review that prompted this found **8 of 18**
+  `found` MD&A slices were not MD&A at all — audit-committee terms of
+  reference, a Board's Report dividend clause, an auditor's key-audit-matters
+  table, CSR activities, HR safety programmes — because the heading regex
+  matched a *cross-reference* ("provided in the Management Discussion and
+  Analysis") and sliced from there.
+  **That root cause has since been fixed in Phase 0** (commit on
+  `download_annual_reports.py`): a heading must now open its line and must not
+  be continued by a lowercase word, and slices begin at the heading's *line*
+  rather than its page. Precision rose from ~56% to ~85% and no genuine MD&A
+  was lost. **The gate is still required.** At least one residual false
+  positive survives in the corpus — a bare "Management Discussion and Analysis"
+  line immediately followed by governance prose, which is structurally
+  indistinguishable from a real heading — and heuristic detection over
+  arbitrary filer layouts will never be exact.
+  Phase 0 could tolerate the residue; its fallback text was only ever Pass 1
   background. Phase 2 cannot: the extractor mines whatever it is handed, and
-  audit-committee prose yields confident, well-formed, **wrong** guidance.
+  governance prose yields confident, well-formed, **wrong** guidance.
   Critically, **none of the other guards catch this.** KTD3's substring check
   confirms a quoted sentence really appears in the submitted text — and it
   does, because the submitted text is genuinely the auditor's report. Shape
@@ -376,14 +384,15 @@ recorded here as settled input, not open questions.
 - A1. **Real MD&A availability is far below the raw `found` rate, and the
   phase must be judged against the real one.** Three figures, each smaller than
   the last:
-  1. `mdna` provenance is `found` on 12 of 20 reports (~60%) — the Phase 0
-     measurement.
-  2. But only **10 of the 18** `found` MD&A slices in the corpus are actually
-     MD&A; the other 8 are auditor's reports, governance, CSR or HR (KTD9). So
-     usable MD&A is nearer **~55% of `found`**, i.e. roughly a third of reports.
-  3. `promises_kept_ratio` needs **two consecutive years** of usable MD&A,
-     which on today's corpus is likely **1–2 tickers**, not the 3 a
-     `found`-only count suggests.
+  1. After the Phase 0 detection fix (KTD9), `mdna` is `found` on **13 of 29
+     report-years** — a lower raw count than before because five wrong-section
+     matches were correctly dropped.
+  2. Of those 13, roughly **85% are genuinely MD&A** (up from 56%); at least
+     one residual false positive remains, which is what the content gate
+     catches.
+  3. `promises_kept_ratio` needs **two consecutive years** of usable MD&A for
+     one ticker, which on today's corpus remains a **small handful at best**.
+     Refetching under the fixed detector is the cheapest way to raise this.
   This is the provenance contract plus the content gate working as designed.
   Read the sweep against these numbers, or a correctly-functioning phase will
   look like a failure — and conversely, a yield markedly *above* them means
