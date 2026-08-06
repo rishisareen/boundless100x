@@ -1,0 +1,71 @@
+# Forward-growth signals (v05 §7.2, Phase 2 — zero weight throughout).
+#
+# `element: forward_growth` is DELIBERATELY ABSENT from `element_weights` in
+# registry.yaml (KTD1). That is belt and braces on top of `weight: 0.0`: the
+# scorer's `weight == 0` branch already returns before weighted accumulation,
+# so these reach neither an element mean, the composite, nor the coverage
+# denominator — and an element the scorer never iterates makes them
+# structurally incapable of scoring even if a weight were added by mistake.
+#
+# The three text-derived metrics declare `forward_growth` among their inputs,
+# which catches the key being wholly absent (a run that never had the LLM).
+# It does NOT catch a present-but-empty one: the engine's input check only
+# treats a value as missing when it has a truthy `.empty` attribute, i.e. a
+# DataFrame. Each metric therefore checks its own year-keyed entry as well —
+# no unit delegates its indeterminate to the engine.
+#
+# Every threshold here is a STARTING POINT awaiting Phase 5 simulator
+# evidence. Tuning them moves `forward_signal_hash` only, leaving the scoring
+# regime — and every ticker's momentum baseline — intact (KTD8).
+element: forward_growth
+
+metrics:
+  promises_kept_ratio:
+    name: "Promises Kept (guidance met, % of due)"
+    module: "builtin.forward_growth"
+    function: "compute_promises_kept"
+    # `cashflow` and `ratios` are read opportunistically for capex- and
+    # margin-guidance settlement but are not declared: a missing cashflow frame
+    # should make one promise unsettleable, not block the whole metric.
+    inputs: ["forward_growth", "financials"]
+    params:
+      tolerance: 0.95        # Delivered/guided at or above this counts as kept.
+                             # Indian guidance is often a rounded target or a
+                             # range, so exact matching reads rounding as
+                             # broken credibility.
+      min_report_years: 2    # One year of targets is a snapshot, not a record.
+    scoring: { weight: 0.0 }
+    display: { format: "{:.0f}%", section: "forward_signals" }
+
+  capex_pipeline:
+    name: "Capex Pipeline (announced, % of revenue)"
+    module: "builtin.forward_growth"
+    function: "compute_capex_pipeline"
+    inputs: ["forward_growth", "financials"]
+    scoring: { weight: 0.0 }
+    display: { format: "{:.0f}%", section: "forward_signals" }
+
+  tam_runway:
+    name: "TAM Runway (years at current growth)"
+    module: "builtin.forward_growth"
+    function: "compute_tam_runway"
+    inputs: ["forward_growth", "financials"]
+    params:
+      growth_years: 5
+      cap_years: 50          # Saturate rather than report a three-figure runway
+                             # off a near-zero growth rate, the same way the
+                             # reverse DCF pins to its search bounds.
+    scoring: { weight: 0.0 }
+    display: { format: "{:.0f} yrs", section: "forward_signals" }
+
+  quarterly_momentum:
+    name: "Quarterly Growth Momentum (change in YoY, pp)"
+    module: "builtin.forward_growth"
+    function: "compute_quarterly_momentum"
+    inputs: ["quarterly"]
+    params:
+      field: "revenue"
+      momentum_quarters: 4   # Second differences averaged over the recent window.
+      flag_threshold_pp: 2.0
+    scoring: { weight: 0.0 }
+    display: { format: "{:+.1f}pp", section: "forward_signals" }

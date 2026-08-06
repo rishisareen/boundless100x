@@ -26,6 +26,17 @@ indistinguishable from the new prompt working.
 
 SCHEMA_VERSION = 1
 
+# ── Provenance ──
+# Three-valued (KTD9). `found` means the section was located and looks like
+# what it claims to be; `suspect` means it was located but its content says
+# otherwise; `fallback` means the slot holds first-N-pages text instead.
+# `suspect` is kept distinct from `fallback` rather than folded into it,
+# because how often a `found` tag turned out to be wrong is precisely the
+# number that says whether the content gate is doing anything.
+FOUND = "found"
+SUSPECT = "suspect"
+FALLBACK = "fallback"
+
 # ── Entry kinds ──
 # `data["forward_growth"][year]` is `{kind: [entry, ...]}` for these kinds.
 GUIDANCE = "guidance"

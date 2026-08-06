@@ -59,9 +59,11 @@ from boundless100x import forward_growth_schema as schema
 
 logger = logging.getLogger(__name__)
 
-FOUND = "found"
-SUSPECT = "suspect"
-FALLBACK = "fallback"
+# Re-exported from the shared contract so this module reads self-contained;
+# the compute engine reads the same three values without importing llm_layer.
+FOUND = schema.FOUND
+SUSPECT = schema.SUSPECT
+FALLBACK = schema.FALLBACK
 
 PROMPT_NAME = "forward_growth_extraction.txt"
 PROMPTS_DIR = Path(__file__).parent / "prompts"
