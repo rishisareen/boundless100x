@@ -1,0 +1,105 @@
+# The only series a checkpoint may reference.
+#
+# Checkpoints are evaluated quarterly, so this vocabulary contains only what
+# the pipeline can actually read at that cadence: the columns Phase 0's
+# quarterly parser writes to quarterly.csv, and the quarterly shareholding
+# table. Registry metrics are almost all annual-grain and are deliberately
+# absent — admitting `roce_5yr_avg` here would create checkpoints that can
+# never come due, and Pass 2 would happily write them.
+#
+# This file is injected into the Pass 2 prompt as the closed list of valid
+# metric_id values, and is enforced again at recording time. An id outside it
+# is demoted to prose-only, never silently accepted.
+#
+# transform:
+#   latest   value in the most recent period (default)
+#   yoy_pct  percent change against the SAME quarter a year earlier — four
+#            periods back, not the previous quarter, so seasonality does not
+#            read as a trend
+#   sum      the named columns added together in the latest period
+
+checkpoints:
+
+  quarterly_revenue:
+    label: "Quarterly revenue (INR Cr)"
+    source: quarterly
+    columns: [revenue]
+    transform: latest
+    unit: inr_cr
+
+  quarterly_revenue_yoy_pct:
+    label: "Quarterly revenue growth, YoY (%)"
+    source: quarterly
+    columns: [revenue]
+    transform: yoy_pct
+    unit: pct
+
+  quarterly_opm_pct:
+    label: "Quarterly operating margin (%)"
+    source: quarterly
+    columns: [opm_pct]
+    transform: latest
+    unit: pct
+
+  quarterly_operating_profit:
+    label: "Quarterly operating profit (INR Cr)"
+    source: quarterly
+    columns: [operating_profit]
+    transform: latest
+    unit: inr_cr
+
+  quarterly_pat:
+    label: "Quarterly net profit (INR Cr)"
+    source: quarterly
+    columns: [pat]
+    transform: latest
+    unit: inr_cr
+
+  quarterly_pat_yoy_pct:
+    label: "Quarterly net profit growth, YoY (%)"
+    source: quarterly
+    columns: [pat]
+    transform: yoy_pct
+    unit: pct
+
+  quarterly_eps:
+    label: "Quarterly EPS (INR)"
+    source: quarterly
+    columns: [eps]
+    transform: latest
+    unit: inr
+
+  quarterly_eps_yoy_pct:
+    label: "Quarterly EPS growth, YoY (%)"
+    source: quarterly
+    columns: [eps]
+    transform: yoy_pct
+    unit: pct
+
+  promoter_holding_pct:
+    label: "Promoter holding (%)"
+    source: shareholding
+    columns: [promoter_pct]
+    transform: latest
+    unit: pct
+
+  fii_holding_pct:
+    label: "FII holding (%)"
+    source: shareholding
+    columns: [fii_pct]
+    transform: latest
+    unit: pct
+
+  dii_holding_pct:
+    label: "DII holding (%)"
+    source: shareholding
+    columns: [dii_pct]
+    transform: latest
+    unit: pct
+
+  institutional_holding_pct:
+    label: "Institutional holding, FII + DII (%)"
+    source: shareholding
+    columns: [fii_pct, dii_pct]
+    transform: sum
+    unit: pct
