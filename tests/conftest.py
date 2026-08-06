@@ -135,15 +135,27 @@ def make_shareholding(quarters: int = 20, promoter: float = 60.0) -> pd.DataFram
 
 
 def make_price(days: int = 2500, start_close: float = 100.0,
-               end_close: float | None = None) -> pd.DataFrame:
-    """Daily bars. When `end_close` is given, close compounds geometrically to it."""
+               end_close: float | None = None,
+               adj_close: bool = False,
+               adj_factor: float = 1.0,
+               adj_close_is_estimated: bool | None = None) -> pd.DataFrame:
+    """Daily bars. When `end_close` is given, close compounds geometrically to it.
+
+    `adj_close` is opt-in and off by default on purpose. Fetches predating the
+    adjusted-series schema carry a single `close`, and `compute_pe_percentile`
+    reads the column's presence to decide its `price_basis` — emitting
+    `adj_close` unconditionally would silently move every existing caller onto
+    the `raw_close` basis and drop the legacy-basis flag they assert on.
+    `adj_factor` scales the adjusted series away from the raw close so a test
+    can tell the two apart.
+    """
     dates = pd.bdate_range("2015-01-01", periods=days)
     if end_close is None:
         closes = np.linspace(start_close, start_close * 3, days)
     else:
         ratio = (end_close / start_close) ** (1 / max(days - 1, 1))
         closes = start_close * ratio ** np.arange(days)
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "date": dates,
         "open": closes * 0.99,
         "high": closes * 1.02,
@@ -151,6 +163,183 @@ def make_price(days: int = 2500, start_close: float = 100.0,
         "close": closes,
         "volume": [100_000] * days,
     })
+    if adj_close:
+        df["adj_close"] = closes * adj_factor
+        if adj_close_is_estimated is not None:
+            df["adj_close_is_estimated"] = [adj_close_is_estimated] * days
+    return df
+
+
+# The quarterly results table Screener renders, column-for-column as
+# `QTR_LABEL_MAP` in `fetch_financials.py` writes it. Every id in
+# `checkpoint_vocabulary.yaml` under `source: quarterly` reads one of these,
+# and so does `quarterly_momentum` — a fixture missing a column would make a
+# metric look unavailable for a reason production never sees.
+QUARTERLY_COLUMNS = (
+    "quarter", "revenue", "expenses", "operating_profit", "opm_pct",
+    "other_income", "interest", "depreciation", "pbt", "tax_pct", "pat", "eps",
+)
+
+
+def quarter_labels(n: int, end_year: int = 2025) -> list[str]:
+    """Period labels oldest first, ending at the March quarter of `end_year`.
+
+    Screener names a fiscal quarter by its end month, so an Indian March-year
+    company cycles Jun / Sep / Dec / Mar with the calendar year rolling over on
+    the March quarter.
+    """
+    months = ("Jun", "Sep", "Dec", "Mar")
+    total = ((n + 3) // 4) * 4  # whole fiscal years, so the last label is a March
+    start_year = end_year - 1 - (total - 1) // 4
+    labels = [
+        f"{months[i % 4]} {start_year + i // 4 + (1 if i % 4 == 3 else 0)}"
+        for i in range(total)
+    ]
+    return labels[-n:]
+
+
+def make_quarterly(periods: int = 12, revenue_yoy: float = 0.20,
+                   base_revenue: float = 250.0, **overrides) -> pd.DataFrame:
+    """Screener's quarterly results table.
+
+    Grows `base_revenue` at a constant `revenue_yoy` against the same quarter a
+    year earlier, so a YoY read is flat by construction and any momentum a test
+    sees came from an override rather than the builder.
+    """
+    revenue = [base_revenue * (1 + revenue_yoy) ** (i / 4.0) for i in range(periods)]
+    operating_profit = [r * 0.24 for r in revenue]
+    pat = [r * 0.15 for r in revenue]
+    df = pd.DataFrame({
+        "quarter": quarter_labels(periods),
+        "revenue": revenue,
+        "expenses": [r * 0.76 for r in revenue],
+        "operating_profit": operating_profit,
+        "opm_pct": [24.0] * periods,
+        "other_income": [3.0] * periods,
+        "interest": [1.5] * periods,
+        "depreciation": [6.0] * periods,
+        "pbt": [p / 0.75 for p in pat],
+        "tax_pct": [25.0] * periods,
+        "pat": pat,
+        "eps": [p / 10.0 for p in pat],
+    })
+    for col, values in overrides.items():
+        df[col] = values
+    return df
+
+
+AR_SECTION_NAMES = ("mdna", "chairman", "governance")
+
+# Section text that passes the KTD9 content gate for what it claims to be —
+# the markers a genuine slice opens with, not a plausible-looking paraphrase.
+_AR_SECTION_TEXT = {
+    "mdna": (
+        "MANAGEMENT DISCUSSION AND ANALYSIS\n"
+        "ECONOMIC REVIEW\nThe Indian economy grew steadily through the year. "
+        "INDUSTRY STRUCTURE AND DEVELOPMENTS\nDemand across our segments "
+        "remained firm.\nOUTLOOK\nWe expect revenue of Rs 1,500 crore in "
+        "FY2026.\nSEGMENT-WISE PERFORMANCE\nBoth segments grew double digits."
+    ),
+    "chairman": (
+        "CHAIRMAN'S LETTER\nDear Shareholders,\nIt gives me great pleasure to "
+        "present your Company's annual report for the year. The addressable "
+        "market for our products is estimated at Rs 40,000 crore."
+    ),
+    "governance": (
+        "REPORT ON CORPORATE GOVERNANCE\nThe Company's philosophy on corporate "
+        "governance rests on transparency and accountability. The Board met "
+        "four times during the year."
+    ),
+}
+
+# The residual false positive KTD9 exists for: a bare heading line followed by
+# governance prose. Taken from the real ASTRAL slice rather than invented.
+AUDIT_COMMITTEE_TEXT = (
+    "MANAGEMENT DISCUSSION AND ANALYSIS\n"
+    "The terms of reference of the Audit Committee are in accordance with "
+    "Section 177 of the Companies Act, 2013 and Regulation 18 of the SEBI "
+    "Listing Regulations. The Committee reviewed the quarterly financial "
+    "statements and the internal audit reports placed before it."
+)
+
+
+def make_ar_sections(years: list[str] | None = None, provenance: str = "found",
+                     sections: dict[str, str] | None = None,
+                     per_section_provenance: dict[str, str] | None = None) -> dict:
+    """`{year: {section: {text, provenance, start_page}}}` as the fetcher writes it.
+
+    `provenance` sets every section's tag; `per_section_provenance` overrides
+    individual ones, which is how the mixed-provenance case is built — 16 of
+    the 29 real report-years carry a mix, so a fixture that can only be
+    uniformly found or uniformly fallback cannot reach the case that matters.
+    """
+    years = years or ["2025"]
+    names = sections or {name: _AR_SECTION_TEXT[name] for name in AR_SECTION_NAMES}
+    overrides = per_section_provenance or {}
+
+    out: dict[str, dict] = {}
+    for year in years:
+        out[year] = {}
+        for index, (name, text) in enumerate(names.items()):
+            tag = overrides.get(name, provenance)
+            out[year][name] = {
+                "text": text,
+                "provenance": tag,
+                "start_page": 40 + index * 10 if tag == "found" else None,
+            }
+    return out
+
+
+def make_history_rows(ticker: str = "TEST", dates: list[str] | None = None,
+                      composites: list[float] | None = None,
+                      config_hash: str = "abc123abc123",
+                      elements: list[dict] | None = None,
+                      synthetic: bool = False,
+                      verdict: str = "eligible",
+                      coverage: float = 0.95) -> list[dict]:
+    """Score-history rows in the shape `score_history._row_from` writes.
+
+    One call produces one regime. Momentum must refuse to diff across regimes
+    (KTD5), so a two-regime fixture is two calls concatenated rather than a
+    single builder with a hash list — that keeps the per-regime dates and
+    composites obviously paired at the call site.
+    """
+    dates = dates or ["2026-01-01", "2026-04-01"]
+    composites = composites if composites is not None else [6.0 + i * 0.4 for i in range(len(dates))]
+    if elements is None:
+        elements = [
+            {
+                "size": 5.0, "quality_business": 7.0 + i * 0.2,
+                "quality_management": 6.0, "growth": 7.0, "longevity": 6.0,
+                "price": 4.0,
+            }
+            for i in range(len(dates))
+        ]
+
+    return [
+        {
+            "schema_version": 1,
+            "ticker": ticker,
+            "date": date,
+            "composite": composites[i],
+            "elements": elements[i],
+            "verdict": verdict,
+            "coverage": coverage,
+            "flags": [],
+            "config_hash": config_hash,
+            "synthetic": synthetic,
+        }
+        for i, date in enumerate(dates)
+    ]
+
+
+def write_history(path, rows: list[dict]) -> None:
+    """Write history rows to a JSONL file the way `append_run` would."""
+    import json
+
+    with open(path, "a") as f:
+        for row in rows:
+            f.write(json.dumps(row, default=str) + "\n")
 
 
 def make_metadata(market_cap: float = 5000.0, name: str = "Test Co",
@@ -176,7 +365,12 @@ def make_metadata(market_cap: float = 5000.0, name: str = "Test Co",
 
 
 def make_data(n: int = 10, market_cap: float = 5000.0, **kwargs) -> dict:
-    """The `data` dict the compute engine and report generator consume."""
+    """The `data` dict the compute engine and report generator consume.
+
+    `quarterly` and `annual_report_sections` are carried because the fetcher
+    always writes them; before Phase 2 no metric declared either as an input,
+    so their presence changes nothing for existing callers.
+    """
     return {
         "metadata": make_metadata(market_cap=market_cap),
         "financials": make_financials(n, **kwargs.get("financials", {})),
@@ -184,7 +378,11 @@ def make_data(n: int = 10, market_cap: float = 5000.0, **kwargs) -> dict:
         "cashflow": make_cashflow(n, **kwargs.get("cashflow", {})),
         "ratios": make_ratios(n, **kwargs.get("ratios", {})),
         "shareholding": make_shareholding(),
-        "price": make_price(),
+        "price": make_price(**kwargs.get("price", {})),
+        "quarterly": make_quarterly(**kwargs.get("quarterly", {})),
+        "annual_report_sections": make_ar_sections(
+            **kwargs.get("annual_report_sections", {})
+        ),
         "analyst_coverage": {"analyst_count": 4},
     }
 
