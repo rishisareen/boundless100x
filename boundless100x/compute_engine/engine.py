@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from boundless100x import forward_growth_schema
 from boundless100x.compute_engine.eligibility import effective_gates
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.validator import validate_registry
@@ -43,11 +44,13 @@ class ComputeEngine:
             raise ValueError(f"Registry validation failed: {len(errors)} errors")
 
         self._registry_hash = self._compute_registry_hash()
+        self._forward_signal_hash = self._compute_forward_signal_hash()
 
         logger.info(
             f"ComputeEngine loaded: {len(self.metrics)} metrics "
             f"across {len(self.element_weights)} elements "
-            f"(registry {self._registry_hash})"
+            f"(registry {self._registry_hash}, "
+            f"forward signals {self._forward_signal_hash})"
         )
 
     @property
@@ -56,10 +59,59 @@ class ComputeEngine:
 
         Score-history rows carry this so trajectory diffs never silently
         compare numbers produced under different scoring regimes: a weight
-        change, a threshold edit, a new metric, or a macro assumption would
-        otherwise read as fundamental momentum.
+        change, a threshold edit, a new scored metric, or a macro assumption
+        would otherwise read as fundamental momentum.
+
+        Zero-weight metrics are deliberately absent (KTD8). The scorer's
+        `weight == 0` branch `continue`s before weighted accumulation, so such
+        a metric contributes nothing to an element mean, the composite, or the
+        coverage denominator — it provably cannot move a score, and so has no
+        business in the hash that describes scoring. Keeping it here would
+        make Phase 5 circular: it needs trajectory evidence to calibrate the
+        forward signals, and calibrating one would reset every ticker's
+        baseline — unrecoverably, since history is append-only.
         """
         return self._registry_hash
+
+    @property
+    def forward_signal_hash(self) -> str:
+        """Fingerprint of the zero-weight forward-signal regime.
+
+        The other half of the split: the definitions of metrics that carry no
+        weight, plus the extraction schema they read. Carried on score-history
+        rows beside `registry_hash` so a later reader can still tell which
+        forward-signal regime produced a row, without that regime being able
+        to reset the momentum baseline.
+        """
+        return self._forward_signal_hash
+
+    def _scored(self, config: dict) -> bool:
+        """Whether a metric's weight lets it reach a composite at all."""
+        weight = (config.get("scoring") or {}).get("weight", 0) or 0
+        return weight > 0
+
+    def _metric_definitions(self, scored: bool) -> dict:
+        """Metric definitions on one side of the weight split, minus provenance.
+
+        Keys prefixed with `_` are provenance, not semantics — `_source_file`
+        changes when a metric moves between files without altering what it
+        computes, and fragmenting history on a file rename would be a false
+        positive.
+        """
+        return {
+            metric_id: {
+                key: value
+                for key, value in config.items()
+                if not key.startswith("_")
+            }
+            for metric_id, config in self.metrics.items()
+            if self._scored(config) is scored
+        }
+
+    @staticmethod
+    def _digest(payload: dict) -> str:
+        canonical = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
     def _compute_registry_hash(self) -> str:
         """Hash the loaded registry, not the YAML bytes.
@@ -69,29 +121,30 @@ class ComputeEngine:
         change a score: the whole master file (element weights, declared
         gates, history waiver, anything added later), the *effective* gates
         (so a run governed by the code-level defaults is not recorded as an
-        empty config), the metric definitions, and the macro assumptions that
-        reach every metric as parameter defaults.
-
-        Keys prefixed with `_` are provenance, not semantics — `_source_file`
-        changes when a metric moves between files without altering what it
-        computes, and fragmenting history on a file rename would be a false
-        positive.
+        empty config), the definitions of the *scored* metrics, and the macro
+        assumptions that reach every metric as parameter defaults.
         """
-        payload = {
+        return self._digest({
             "master": self.master,
             "effective_gates": effective_gates(self.gates),
-            "metrics": {
-                metric_id: {
-                    key: value
-                    for key, value in config.items()
-                    if not key.startswith("_")
-                }
-                for metric_id, config in self.metrics.items()
-            },
+            "metrics": self._metric_definitions(scored=True),
             "macro": self.macro,
-        }
-        canonical = json.dumps(payload, sort_keys=True, default=str)
-        return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+        })
+
+    def _compute_forward_signal_hash(self) -> str:
+        """Hash the regime the zero-weight signals are produced under.
+
+        Element weights and gates are absent because a zero-weight metric
+        never consults them. Macro is present in *both* hashes and that is
+        correct rather than a leak: it reaches every metric as a parameter
+        default, so a discount-rate change genuinely moves a composite and a
+        forward signal alike.
+        """
+        return self._digest({
+            "metrics": self._metric_definitions(scored=False),
+            "extraction_schema": forward_growth_schema.schema_fingerprint(),
+            "macro": self.macro,
+        })
 
     def _discover_metrics(self) -> dict:
         """Auto-discover all metric definitions from elements/ and custom/ dirs."""

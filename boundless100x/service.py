@@ -227,7 +227,10 @@ class Boundless100xService:
         # analysis it just paid for.
         try:
             score_history.append_run(
-                result, self.engine.registry_hash, path=self.history_path
+                result,
+                self.engine.registry_hash,
+                path=self.history_path,
+                forward_signal_hash=self.engine.forward_signal_hash,
             )
         except Exception as e:
             result.errors.append(f"Score history write failed: {e}")

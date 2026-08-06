@@ -67,6 +67,19 @@ class TestRowContent:
         row = append_run(scored_result(verdict=None), "h", path=log)
         assert row["verdict"] == "indeterminate"
 
+    def test_row_carries_the_forward_signal_regime_too(self, log):
+        """Recorded beside the scoring hash, never grouped on (KTD8)."""
+        row = append_run(
+            scored_result(), "scoring_h", path=log, forward_signal_hash="signals_h"
+        )
+        assert row["config_hash"] == "scoring_h"
+        assert row["forward_signal_hash"] == "signals_h"
+
+    def test_a_caller_that_omits_the_forward_hash_records_it_as_unknown(self, log):
+        """Absence must read as unknown, never as a regime of its own."""
+        row = append_run(scored_result(), "h", path=log)
+        assert row["forward_signal_hash"] is None
+
 
 class TestAppendOnly:
     def test_two_runs_append_two_rows(self, log):
@@ -151,6 +164,7 @@ class TestServiceIntegration:
         assert len(rows) == 1
         assert rows[0]["composite"] == result.scores["composite"]
         assert rows[0]["config_hash"] == svc.engine.registry_hash
+        assert rows[0]["forward_signal_hash"] == svc.engine.forward_signal_hash
 
     def test_a_fatal_fetch_records_nothing(self, monkeypatch, tmp_path):
         import pandas as pd

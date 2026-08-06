@@ -16,6 +16,13 @@ change or threshold edit would read as fundamental momentum — the company
 would appear to improve because the ruler moved. Readers compare within a
 regime, never across one.
 
+A row carries a **second** hash, `forward_signal_hash`, describing the
+zero-weight forward-signal regime (KTD8). Momentum groups on `config_hash`
+alone: a zero-weight metric cannot move a composite, so recalibrating one must
+not partition the history that calibration depends on. Rows written before the
+split lack the field, and a reader must treat its absence as unknown rather
+than as a regime of its own.
+
 The file is append-only by contract. Same-day re-runs append duplicate-dated
 rows rather than overwriting; `load_history` resolves them at read time by
 keeping the last row for a given (date, config_hash). Writing never rewrites
@@ -32,10 +39,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HISTORY_PATH = Path(__file__).parent / "score_history.jsonl"
 
-SCHEMA_VERSION = 1
+# 2 adds `forward_signal_hash`. Version-1 rows remain readable and simply
+# carry no forward-signal regime.
+SCHEMA_VERSION = 2
 
 
-def _row_from(result, config_hash: str, synthetic: bool) -> dict:
+def _row_from(
+    result, config_hash: str, synthetic: bool, forward_signal_hash: str | None
+) -> dict:
     """Build the history row for a completed run.
 
     `coverage` is the composite coverage share alone, not the full coverage
@@ -60,6 +71,10 @@ def _row_from(result, config_hash: str, synthetic: bool) -> dict:
         "coverage": coverage.get("composite"),
         "flags": scores.get("flags", []),
         "config_hash": config_hash,
+        # The zero-weight forward-signal regime (KTD8). Recorded but never
+        # grouped on: a metric that cannot move a composite must not be able
+        # to partition the momentum history a later calibration reads.
+        "forward_signal_hash": forward_signal_hash,
         # True only for rows synthesised by re-scoring truncated history
         # (v05 §7.1). Organic runs are never mixed with those in a momentum
         # read without the marker being visible.
@@ -72,6 +87,7 @@ def append_run(
     config_hash: str,
     path: str | Path | None = None,
     synthetic: bool = False,
+    forward_signal_hash: str | None = None,
 ) -> dict | None:
     """Append one row for a completed run. Returns the row, or None if skipped.
 
@@ -85,7 +101,7 @@ def append_run(
         )
         return None
 
-    row = _row_from(result, config_hash, synthetic)
+    row = _row_from(result, config_hash, synthetic, forward_signal_hash)
     target = Path(path) if path else DEFAULT_HISTORY_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
 

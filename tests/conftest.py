@@ -293,6 +293,7 @@ def make_ar_sections(years: list[str] | None = None, provenance: str = "found",
 def make_history_rows(ticker: str = "TEST", dates: list[str] | None = None,
                       composites: list[float] | None = None,
                       config_hash: str = "abc123abc123",
+                      forward_signal_hash: str = "fff000fff000",
                       elements: list[dict] | None = None,
                       synthetic: bool = False,
                       verdict: str = "eligible",
@@ -318,7 +319,7 @@ def make_history_rows(ticker: str = "TEST", dates: list[str] | None = None,
 
     return [
         {
-            "schema_version": 1,
+            "schema_version": score_history.SCHEMA_VERSION,
             "ticker": ticker,
             "date": date,
             "composite": composites[i],
@@ -327,6 +328,7 @@ def make_history_rows(ticker: str = "TEST", dates: list[str] | None = None,
             "coverage": coverage,
             "flags": [],
             "config_hash": config_hash,
+            "forward_signal_hash": forward_signal_hash,
             "synthetic": synthetic,
         }
         for i, date in enumerate(dates)
