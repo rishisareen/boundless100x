@@ -98,6 +98,57 @@ def validate(checkpoint: dict, vocabulary: dict | None = None) -> list[str]:
     return errors
 
 
+def record_from_pass2(pass2: dict | None, vocabulary: dict | None = None) -> dict:
+    """Extract the checkpoints Pass 2 proposed, keeping only evaluable ones.
+
+    Returns `{"checkpoints": [...], "demoted": [{"proposed", "reasons"}]}`.
+
+    This function is defensive on purpose. `_parse_json_response` performs no
+    schema validation whatsoever — a malformed, truncated, or simply older
+    response reaches here unchecked — so every shape must degrade rather than
+    raise. A monitorable that cannot be evaluated is demoted to prose, which
+    is exactly what the model was told to do with anything outside the
+    vocabulary; recording it as structured would create a promise the
+    evaluator would silently fail to find.
+    """
+    vocabulary = vocabulary if vocabulary is not None else load_vocabulary()
+    kept: list[dict] = []
+    demoted: list[dict] = []
+
+    if not isinstance(pass2, dict):
+        return {"checkpoints": kept, "demoted": demoted}
+
+    proposed = pass2.get("structured_monitorables")
+    if proposed is None:
+        return {"checkpoints": kept, "demoted": demoted}
+    if not isinstance(proposed, list):
+        logger.warning(
+            f"structured_monitorables is {type(proposed).__name__}, expected a list — "
+            f"treating monitorables as prose-only"
+        )
+        return {"checkpoints": kept, "demoted": [{"proposed": proposed,
+                                                 "reasons": ["not a list"]}]}
+
+    for item in proposed:
+        errors = validate(item, vocabulary)
+        if errors:
+            demoted.append({"proposed": item, "reasons": errors})
+            logger.warning(f"Monitorable demoted to prose-only: {'; '.join(errors)}")
+            continue
+        kept.append({
+            "metric_id": item["metric_id"],
+            "comparator": item["comparator"],
+            "threshold": float(item["threshold"]),
+            "due_date": item["due_date"],
+            "source": "llm",
+        })
+
+    logger.info(
+        f"Checkpoints recorded: {len(kept)} evaluable, {len(demoted)} demoted to prose"
+    )
+    return {"checkpoints": kept, "demoted": demoted}
+
+
 def _parse_date(value: str) -> date | None:
     try:
         return date.fromisoformat(value)

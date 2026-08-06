@@ -13,6 +13,7 @@ from pathlib import Path
 import anthropic
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.lifecycle.checkpoints import vocabulary_prompt_block
 from boundless100x.llm_layer.checklist import (
     build_eligibility_context,
     build_flags_context,
@@ -191,6 +192,10 @@ class LLMOrchestrator:
             pass1_output=pass1_text[:2000],  # Truncate
             growth_quality_report=build_growth_decomposition_context(growth_decomposition),
             eligibility_context=build_eligibility_context(eligibility),
+            # The closed list of checkpoint ids. Asked for an id without a
+            # menu, a model invents plausible ones — sending the vocabulary is
+            # what makes structured monitorables possible at all.
+            checkpoint_vocabulary=vocabulary_prompt_block(),
         )
 
         return self._call_api(self.pass2_model, prompt, "pass2")

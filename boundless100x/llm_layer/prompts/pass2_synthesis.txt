@@ -44,6 +44,26 @@ or too dearly priced, to multiply a hundredfold). When the verdict is not
 `eligible`, an unqualified `strong_buy`/`buy` will be capped to `watchlist`
 downstream regardless of what you return, so make your reasoning match.
 
+MONITORABLES — write them twice, once for a reader and once for the machine.
+
+`key_monitorables` stays as prose for the human reader. `structured_monitorables`
+expresses the same intent so the system can actually check it each quarter and
+tell you whether the thesis is holding. A monitorable nobody can evaluate is a
+promise nobody keeps, so:
+
+- `metric_id` MUST be one of the following. There are no others — if what you
+  want to watch is not here, put it in `key_monitorables` prose only and omit
+  it from the structured list rather than inventing an id:
+{checkpoint_vocabulary}
+- `comparator` is one of lt, lte, gt, gte.
+- `threshold` is a bare number (no units, no % sign).
+- `due_date` is the ISO date (YYYY-MM-DD) by which it should be true — normally
+  the next quarterly result, one to two quarters out.
+
+Prefer three to five structured monitorables that would genuinely distinguish
+the thesis working from the thesis failing. Do not pad the list with items that
+would be true under any outcome.
+
 Respond ONLY with valid JSON matching this exact schema:
 ```json
 {{
@@ -53,6 +73,10 @@ Respond ONLY with valid JSON matching this exact schema:
   "bear_case": "<worst case scenario in 2-3 sentences>",
   "kill_the_thesis": ["<scenario that would invalidate thesis>", "..."],
   "key_monitorables": ["<metric or event to track quarterly>", "..."],
+  "structured_monitorables": [
+    {{"metric_id": "<id from the list above>", "comparator": "<lt|lte|gt|gte>",
+      "threshold": <number>, "due_date": "<YYYY-MM-DD>"}}
+  ],
   "suggested_action": "<strong_buy|buy|hold|watchlist|avoid>",
   "target_holding_period": "<3-5yr|5-10yr|10yr+>",
   "what_market_is_missing": "<insight or nothing>",
