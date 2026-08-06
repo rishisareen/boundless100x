@@ -73,3 +73,49 @@ metrics:
     inputs: ["financials", "metadata"]
     scoring: { thresholds: [-3, -1, 0, 1, 2, 4], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:+.1f}pp", section: "valuation_analysis" }
+
+  # ── Phase 2 forward signal — registered at weight 0.0 (KTD1) ──
+  # v05 §12 says headroom "lands in the price element"; §13 forbids changing
+  # SQGLP scoring. Those reconcile only at zero weight: the scorer's
+  # `weight == 0` branch continues before weighted accumulation, so this
+  # reaches neither the element mean, the composite, nor the coverage
+  # denominator — an errored one cannot even depress coverage.
+  #
+  # Inputs are all truncatable frames on purpose, with no `metadata`: the
+  # backtest withholds Stock P/E and market cap as look-ahead leaks, and a
+  # metric reading them excludes itself from the walk-forward check (A2).
+  #
+  # Every threshold below is a STARTING POINT awaiting Phase 5 simulator
+  # evidence, like the lifecycle trigger thresholds. Tuning them moves
+  # `forward_signal_hash` only, leaving score history's scoring regime — and
+  # every ticker's momentum baseline — intact (KTD8).
+  rerating_headroom:
+    name: "Re-rating Headroom (own-fundamentals justified multiple)"
+    module: "builtin.valuation"
+    function: "compute_rerating_headroom"
+    inputs: ["financials", "ratios", "price"]
+    params:
+      roce_years: 5
+      growth_field: "pat"
+      growth_years: 5
+      longevity_years: 10
+      longevity_threshold: 15
+      # Band boundaries. N boundaries define N+1 bands, lowest first.
+      roce_bands: [12, 18, 25]
+      growth_bands: [8, 15, 25]
+      # Rows are RoCE bands, columns growth bands — both low to high.
+      justified_multiple:
+        - [10, 13, 16, 19]
+        - [13, 17, 22, 27]
+        - [16, 22, 29, 36]
+        - [19, 26, 35, 45]
+      # Bands on the count of years RoCE cleared longevity_threshold.
+      longevity_bands: [3, 6, 8]
+      longevity_multipliers: [0.85, 1.0, 1.10, 1.20]
+      # Interpretation bands for the report (R8) — a zero-weight metric never
+      # receives a score, so without these the section ships numbers rather
+      # than signal.
+      favourable_pct: 25
+      stretched_pct: -25
+    scoring: { weight: 0.0 }
+    display: { format: "{:+.0f}%", section: "forward_signals" }

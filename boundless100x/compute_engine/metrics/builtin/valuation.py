@@ -427,6 +427,225 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
     )
 
 
+# ── Re-rating headroom (Phase 2, zero weight) ──────────────────────────────
+#
+# Every default below is mirrored in `price.yaml` params, which is the
+# authoritative copy — tuning happens there, as a config edit, exactly as the
+# metric registry does everywhere else. These exist so the function still
+# computes when called directly (tests, a future simulator) rather than
+# silently taking a middle band from nowhere.
+#
+# They are STARTING POINTS awaiting Phase 5 simulator evidence, in the same
+# spirit as the lifecycle trigger thresholds. Under KTD8's two-hash split,
+# tuning them moves `forward_signal_hash` and leaves `registry_hash` — and so
+# every ticker's momentum baseline — untouched.
+DEFAULT_ROCE_BANDS = [12.0, 18.0, 25.0]
+DEFAULT_GROWTH_BANDS = [8.0, 15.0, 25.0]
+# Rows are RoCE bands (low to high), columns growth bands (low to high).
+DEFAULT_JUSTIFIED_MULTIPLE = [
+    [10.0, 13.0, 16.0, 19.0],
+    [13.0, 17.0, 22.0, 27.0],
+    [16.0, 22.0, 29.0, 36.0],
+    [19.0, 26.0, 35.0, 45.0],
+]
+# Bands on the count of years RoCE cleared its threshold, and the multiplier
+# each earns. A business that has held its returns deserves a longer runway of
+# them priced in; one that has not does not.
+DEFAULT_LONGEVITY_BANDS = [3.0, 6.0, 8.0]
+DEFAULT_LONGEVITY_MULTIPLIERS = [0.85, 1.0, 1.10, 1.20]
+
+DEFAULT_FAVOURABLE_PCT = 25.0
+DEFAULT_STRETCHED_PCT = -25.0
+
+
+def _band_index(value: float, boundaries: list) -> int:
+    """Which band `value` falls in: 0 below the first boundary, N at/above the last."""
+    index = 0
+    for boundary in boundaries:
+        if value < float(boundary):
+            break
+        index += 1
+    return index
+
+
+def _current_multiple(data: dict) -> tuple[float | None, dict, str]:
+    """Latest traded close over latest as-reported annual EPS.
+
+    Deliberately *not* `metadata["Stock P/E"]`. The backtest omits Stock P/E on
+    purpose — the stored closes are split- and dividend-adjusted, so a rebuilt
+    ratio is not the one anyone saw — and a metric reading it excludes itself
+    from the walk-forward check. Price, financials and ratios are all
+    truncatable, so building the multiple here keeps this metric inside the
+    backtest (A2), where at zero weight it costs neither the correlations nor
+    the coverage floor.
+
+    Returns `(multiple, metadata, error)`; exactly one of the first and last
+    is meaningful.
+    """
+    price = data.get("price")
+    if price is None or len(price) == 0:
+        return None, {}, "No price history for the current multiple"
+
+    # Presence of adj_close means `close` is genuinely the raw traded price.
+    # Its absence means a legacy single-close cache whose adjustment status is
+    # unknown — recorded rather than assumed, matching compute_pe_percentile.
+    price_basis = (
+        "raw_close" if "adj_close" in price.columns
+        else "legacy_close_unknown_adjustment"
+    )
+    close = pd.to_numeric(price["close"], errors="coerce").dropna()
+    if close.empty:
+        return None, {}, "No usable closes for the current multiple"
+
+    fin = _get_annual_rows(data.get("financials", pd.DataFrame()), 1)
+    if fin.empty or "eps" not in fin.columns:
+        return None, {}, "Financials lack an annual EPS row for the current multiple"
+
+    eps = pd.to_numeric(fin["eps"], errors="coerce").dropna()
+    if eps.empty:
+        return None, {}, "No numeric EPS for the current multiple"
+
+    latest_eps = float(eps.iloc[-1])
+    if latest_eps <= 0:
+        return None, {}, "Non-positive EPS — a re-rating multiple is undefined"
+
+    latest_close = float(close.iloc[-1])
+    return (
+        latest_close / latest_eps,
+        {
+            "price_basis": price_basis,
+            "latest_close": latest_close,
+            "latest_eps": latest_eps,
+            "eps_period": str(fin["year"].iloc[-1]) if "year" in fin.columns else None,
+        },
+        "",
+    )
+
+
+def compute_rerating_headroom(data: dict, params: dict) -> MetricResult:
+    """How much multiple expansion the company's own fundamentals would justify.
+
+    `headroom_pct = (justified_multiple / current_multiple - 1) x 100`.
+
+    A **ratio expressed as a percentage**, not a difference in multiple points,
+    so +40 means "fundamentals justify a multiple 40% above what is being paid"
+    and reads the same for a company on 15x as on 60x. Positive means room to
+    re-rate up, matching the metric's name.
+
+    The justified multiple is built only from the company's **own** readings —
+    a banded lookup on (5yr RoCE x 5yr PAT CAGR), scaled by a longevity
+    multiplier off the RoCE-above-threshold year count. Never a sector-relative
+    anchor: v05 §14.5 keeps out the peer comparison v04 deliberately removed,
+    because "cheap for a chemicals company" is a statement about chemicals, not
+    about this business.
+
+    Those three readings are produced by calling the *existing* metric
+    functions rather than reimplementing their windows. A second definition of
+    the same company's RoCE would leave a reader reconciling two numbers that
+    should be one, and the bands are meant to be anchored to figures already
+    visible in `scores["details"]`.
+
+    There is no default justified multiple. A missing RoCE, growth or price
+    reading yields an error, because an unknown quality profile silently
+    receiving the middle band is exactly the confident-but-empty number this
+    phase exists to avoid.
+
+    Emits no `raw_series` (KTD6): a series of multiples sitting behind a ratio
+    value is the unit mismatch that trapped Phase 1's `persist_years` rules.
+    """
+    from boundless100x.compute_engine.metrics.builtin.growth import compute_cagr
+    from boundless100x.compute_engine.metrics.builtin.longevity import (
+        compute_threshold_consistency,
+    )
+    from boundless100x.compute_engine.metrics.builtin.profitability import (
+        compute_roce_avg,
+    )
+
+    current, price_meta, error = _current_multiple(data)
+    if current is None:
+        return MetricResult(error=error)
+
+    roce = compute_roce_avg(data, {"years": params.get("roce_years", 5)})
+    if not roce.ok:
+        return MetricResult(error=f"No RoCE for the justified multiple: {roce.error}")
+
+    growth = compute_cagr(data, {
+        "field": params.get("growth_field", "pat"),
+        "years": params.get("growth_years", 5),
+    })
+    if not growth.ok:
+        return MetricResult(error=f"No growth for the justified multiple: {growth.error}")
+
+    longevity = compute_threshold_consistency(data, {
+        "field": "roce",
+        "years": params.get("longevity_years", 10),
+        "threshold": params.get("longevity_threshold", 15),
+    })
+    if not longevity.ok:
+        return MetricResult(
+            error=f"No RoCE consistency for the justified multiple: {longevity.error}"
+        )
+
+    roce_bands = params.get("roce_bands", DEFAULT_ROCE_BANDS)
+    growth_bands = params.get("growth_bands", DEFAULT_GROWTH_BANDS)
+    table = params.get("justified_multiple", DEFAULT_JUSTIFIED_MULTIPLE)
+    longevity_bands = params.get("longevity_bands", DEFAULT_LONGEVITY_BANDS)
+    multipliers = params.get("longevity_multipliers", DEFAULT_LONGEVITY_MULTIPLIERS)
+
+    if len(table) != len(roce_bands) + 1 or any(
+        len(row) != len(growth_bands) + 1 for row in table
+    ):
+        return MetricResult(
+            error=(
+                f"justified_multiple must be {len(roce_bands) + 1}x"
+                f"{len(growth_bands) + 1} for the declared bands"
+            )
+        )
+    if len(multipliers) != len(longevity_bands) + 1:
+        return MetricResult(
+            error=f"longevity_multipliers must have {len(longevity_bands) + 1} entries"
+        )
+
+    roce_index = _band_index(float(roce.value), roce_bands)
+    growth_index = _band_index(float(growth.value), growth_bands)
+    longevity_index = _band_index(float(longevity.value), longevity_bands)
+
+    base_multiple = float(table[roce_index][growth_index])
+    multiplier = float(multipliers[longevity_index])
+    justified = base_multiple * multiplier
+
+    headroom_pct = (justified / current - 1) * 100
+
+    favourable = float(params.get("favourable_pct", DEFAULT_FAVOURABLE_PCT))
+    stretched = float(params.get("stretched_pct", DEFAULT_STRETCHED_PCT))
+
+    if headroom_pct >= favourable:
+        band, flags = "favourable", ["rerating_headroom_favourable"]
+    elif headroom_pct <= stretched:
+        band, flags = "stretched", ["rerating_headroom_stretched"]
+    else:
+        band, flags = "fair", []
+
+    return MetricResult(
+        value=float(headroom_pct),
+        flags=flags,
+        metadata={
+            "current_multiple": float(current),
+            "justified_multiple": float(justified),
+            "base_multiple": base_multiple,
+            "longevity_multiplier": multiplier,
+            "roce_5yr": float(roce.value),
+            "growth_cagr": float(growth.value),
+            "growth_field": params.get("growth_field", "pat"),
+            "roce_years_above_threshold": float(longevity.value),
+            "band": band,
+            "direction": "higher_is_better",
+            "bands_pct": {"favourable_at": favourable, "stretched_at": stretched},
+            **price_meta,
+        },
+    )
+
+
 def compute_earnings_yield_spread(data: dict, params: dict) -> MetricResult:
     """Earnings Yield (1/PE) minus the India 10yr G-Sec yield."""
     meta = data.get("metadata", {})

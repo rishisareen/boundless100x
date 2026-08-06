@@ -31,6 +31,16 @@ def validate_registry(metrics: dict) -> list[str]:
         if mode not in VALID_MODES:
             errors.append(f"{prefix}: invalid mode '{mode}'")
 
+        # A metric at weight 0 is display-only: the scorer's `weight == 0`
+        # branch returns before `_compute_raw_score` is ever reached, so
+        # thresholds, ranges and categories declared for it are dead config.
+        # Demanding them produced exactly that — zero-weight metrics carrying
+        # invented category tables purely to pass validation. `weight` and a
+        # recognised `mode` are still required; only the mode's own inputs are
+        # excused, because nothing will read them.
+        if not (scoring.get("weight") or 0) > 0:
+            continue
+
         if mode == "threshold":
             if "thresholds" not in scoring:
                 errors.append(f"{prefix}: threshold mode needs 'thresholds'")

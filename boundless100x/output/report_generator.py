@@ -102,6 +102,9 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "consistent_organic_fcf_generator": ("Consistent Organic FCF (Excl. M&A)", "good"),
     # Composite
     "possible_bonus_split": ("Possible Bonus/Split Event Detected", "neutral"),
+    # Forward signals (Phase 2, zero weight — see FORWARD_SIGNALS_ELEMENT)
+    "rerating_headroom_favourable": ("Re-rating Headroom — Favourable", "good"),
+    "rerating_headroom_stretched": ("Re-rating Headroom — Stretched", "bad"),
 }
 
 # ── Metric-to-element mapping with display labels ──
@@ -166,7 +169,18 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
 }
 
 # ── Flag-to-SQGLP element mapping ──
-# Maps raw flag strings to their SQGLP element for per-section grouping
+# Maps raw flag strings to their SQGLP element for per-section grouping.
+#
+# **Registration is not optional for a Phase 2 flag** (KTD6). The lookup below
+# falls back to "composite" for anything unrecognised, so a zero-weight
+# forward-signal metric's flag would otherwise render as an SQGLP signal on a
+# ticker whose score did not move — R7's four listed quantities would all still
+# hold while the report said something new about the composite. Every flag a
+# forward-signal metric emits is mapped to FORWARD_SIGNALS_ELEMENT, which is
+# deliberately not an SQGLP element key, so the per-element template loops
+# never pick it up.
+FORWARD_SIGNALS_ELEMENT = "forward_signals"
+
 FLAG_ELEMENT_MAP: dict[str, str] = {
     # Growth
     "growth_quality_high_quality": "growth",
@@ -232,6 +246,9 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "consistent_organic_fcf_generator": "longevity",
     # Composite
     "possible_bonus_split": "composite",
+    # Forward signals (Phase 2, zero weight)
+    "rerating_headroom_favourable": FORWARD_SIGNALS_ELEMENT,
+    "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,
 }
 
 # ── SQGLP element display config ──
