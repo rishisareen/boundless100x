@@ -39,6 +39,11 @@ class LLMOrchestrator:
         self.pass2_model = llm_config.get("pass2_model", "claude-sonnet-4-6")
         self.max_tokens = llm_config.get("max_tokens", 2000)
         self.skip_pass1_if_no_ar = llm_config.get("skip_pass1_if_no_ar", True)
+        # How much annual-report text Pass 1 may read. Config-driven because
+        # the fetcher now caps each extracted section separately: a literal
+        # here would silently overrule those caps, and raising a section cap
+        # to get more MD&A into the prompt would have no effect.
+        self.pass1_ar_char_budget = llm_config.get("pass1_ar_char_budget", 3000)
 
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -149,7 +154,7 @@ class LLMOrchestrator:
             flags=build_flags_context(metrics),
             promoter_data=build_promoter_context(metrics),
             sector_context=sector_context or "No sector context available.",
-            annual_report_text=annual_report_text[:3000],  # Truncate to stay in budget
+            annual_report_text=annual_report_text[: self.pass1_ar_char_budget],
         )
 
         return self._call_api(self.pass1_model, prompt, "pass1")

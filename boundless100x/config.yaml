@@ -38,6 +38,10 @@ llm:
   max_tokens: 4096
   enabled: true
   skip_pass1_if_no_ar: true
+  pass1_ar_char_budget: 3000  # Annual-report chars Pass 1 may read. This is
+                              # the binding cap downstream of the per-section
+                              # caps in annual_reports.sections — raise it to
+                              # let more MD&A reach the prompt.
 
 # ── Annual Reports ──
 annual_reports:

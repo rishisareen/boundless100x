@@ -475,7 +475,11 @@ only — it never overrides a per-name kill-switch or gate.
 Sequenced so each phase is independently useful and testable, matching the
 repo's phase conventions. No phase touches SQGLP scoring.
 
-**Phase 0 — Data Enablers** *(added 2026-08-06; small, unblocks everything downstream)*
+**Phase 0 — Data Enablers** — ✅ **complete 2026-08-06**, see
+`docs/plans/2026-08-06-002-feat-phase0-data-enablers-plan.md` for the
+implementation record, measured hit rates, and the corrections it forced
+(quarterly section present on all cached pages; MD&A needs a 150-page search
+window, not 30; registry hash extended to macro and the history waiver).
 - **Quarterly results parser**: parse the quarterly results table from the
   *already-cached* Screener company page → `quarterly.csv` in the
   `raw_data/{TICKER}/` data contract. Not a new data source — a new parser on

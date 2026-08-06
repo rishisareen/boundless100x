@@ -355,6 +355,10 @@ orchestrator.py          [:3000] literal ──▶ config llm.pass1_ar_char_budg
   `llm.pass1_ar_char_budget` (default 3000 — behavior-preserving).
 - Test: orchestrator respects an injected config value.
 - **Done when:** grep finds no bare `3000` truncation literal in `llm_layer/`.
+- **Result (2026-08-06):** the only remaining `3000` is the config default in
+  `llm_config.get("pass1_ar_char_budget", 3000)`, which is the
+  behaviour-preserving default rather than a truncation literal. A regression
+  test asserts `[:3000]` never returns to the orchestrator source.
 
 ---
 
@@ -371,6 +375,27 @@ orchestrator.py          [:3000] literal ──▶ config llm.pass1_ar_char_budg
   (additive-only proof).
 - No unit depends on another's merge order except U3 → U2 (hash must exist
   before persistence stamps it).
+
+## Completion (2026-08-06)
+
+All five units merged: U1 `ead5c59`, U2 `4cf8bd3`, U3 `1cb41a6`, U4 `7de7a49`,
+U5 with this note. Suite 303 → 363 tests, green.
+
+**R7 regression, proven structurally rather than sampled:** no metric declares
+`quarterly` or `annual_report_*` among its `inputs`, and nothing under
+`compute_engine/` reads either key — so Phase 0 cannot move a score or a gate
+verdict for any ticker, not merely for the ones tested. Confirmed empirically
+too: ZYDUSLIFE scored 5.96 both before and after U4 landed.
+
+**End-to-end chain verified on a real ticker** (ZYDUSLIFE, no live re-scrape
+needed): `quarterly.csv` written with a 13-quarter frame; registry hash
+`715479102494`; **three** annual reports retained (2024/2025/2026) with all
+three FY26 sections `found`; one history row at composite 5.96; zero errors.
+
+**Known limitation carried forward:** Screener's quarterly table is ~11–13
+quarters deep, enough for consecutive-quarter checkpoints but not for deep
+simulator replay (v05 §10). A pre-existing BSE shareholding redirect failure
+for some scrips is unrelated to Phase 0 and degrades gracefully.
 
 ## Definition of Done
 
