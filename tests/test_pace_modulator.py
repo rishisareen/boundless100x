@@ -1,0 +1,348 @@
+"""Deployment pace: deploy more cautiously when the whole corpus is expensive.
+
+The failure mode that matters is macro leaking into per-name decisions. §11
+allows the market's valuation to slow *entry* and nothing else — a company must
+never be blocked from a kill-switch, an exit review, or an eligibility verdict
+because the market is dear. So the assertions that carry this unit are the
+negative ones: kill-switches fire identically under a compressed spread, gates
+read identically, and only `→ probe` thresholds move.
+
+The second is that this is a *regime* reading. The roadmap originally named
+`earnings_yield_vs_gsec` as the input, but that metric is per-company — using
+it would tighten entry when the company is expensive, which is the inverse of
+the purpose and a second valuation test on a trigger that already tests
+valuation (KTD7). One expensive name must not modulate the run.
+"""
+
+import json
+
+import pytest
+
+from boundless100x.compute_engine.engine import ComputeEngine
+from boundless100x.lifecycle import pace
+from boundless100x.lifecycle.advance import advance
+from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
+from boundless100x.service import AnalysisResult
+from boundless100x.watchlist import WatchlistManager
+from tests.conftest import make_financials
+from tests.test_lifecycle_advance import StubService, healthy_metrics, metric
+
+
+def reading(median=3.0, contributors=12):
+    return {
+        "median_pp": median,
+        "contributors": contributors,
+        "tickers": [f"T{i}" for i in range(contributors)],
+    }
+
+
+@pytest.fixture
+def wm(tmp_path):
+    return WatchlistManager(path=str(tmp_path / "watchlist.json"))
+
+
+def watched(wm, ticker="ASTRAL", state="watch"):
+    wm.add(ticker)
+    wm.transition(ticker, state, "seed", evidence="test seed")
+    return wm
+
+
+# ── The corpus reading ─────────────────────────────────────────────────────
+
+
+def corpus(tmp_path, pes: dict) -> str:
+    """A raw_data directory with one metadata.json + financials.csv per ticker."""
+    for ticker, pe in pes.items():
+        directory = tmp_path / ticker
+        directory.mkdir(parents=True, exist_ok=True)
+        make_financials(5).to_csv(directory / "financials.csv", index=False)
+        payload = {"name": ticker} if pe is None else {"name": ticker, "Stock P/E": pe}
+        (directory / "metadata.json").write_text(json.dumps(payload))
+    return str(tmp_path)
+
+
+class TestCorpusSpread:
+    def test_the_median_is_taken_over_every_cached_ticker(self, tmp_path):
+        # Earnings yield 100/PE minus a 7% G-Sec: 20x -> -2, 10x -> +3, 25x -> -3.
+        path = corpus(tmp_path, {"A": 20.0, "B": 10.0, "C": 25.0})
+        result = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
+
+        assert result["contributors"] == 3
+        assert result["median_pp"] == pytest.approx(-2.0)
+
+    def test_a_ticker_without_a_usable_multiple_does_not_contribute(self, tmp_path):
+        path = corpus(tmp_path, {"A": 20.0, "B": None, "C": 10.0})
+        result = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
+
+        assert result["contributors"] == 2
+        assert "B" not in result["tickers"]
+
+    def test_a_directory_without_financials_is_not_a_ticker(self, tmp_path):
+        path = corpus(tmp_path, {"A": 20.0})
+        (tmp_path / "500001").mkdir()  # a BSE-code directory of annual reports
+        (tmp_path / "500001" / "metadata.json").write_text(json.dumps({"Stock P/E": 5}))
+
+        assert pace.corpus_spread(path, macro={})["contributors"] == 1
+
+    def test_an_absent_corpus_reads_as_no_contributors(self, tmp_path):
+        result = pace.corpus_spread(str(tmp_path / "nothing"), macro={})
+        assert result["contributors"] == 0
+        assert result["median_pp"] is None
+
+    def test_one_expensive_name_does_not_move_a_wide_median(self, tmp_path):
+        """The assertion that separates a regime reading from a per-name test."""
+        path = corpus(tmp_path, {
+            "EXPENSIVE": 200.0, "A": 10.0, "B": 10.0, "C": 10.0, "D": 10.0,
+        })
+        assert pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})["median_pp"] > 0
+
+
+# ── Modulation ─────────────────────────────────────────────────────────────
+
+
+class TestModulation:
+    def triggers(self):
+        return load_triggers()
+
+    def buy_zone(self, triggers):
+        return triggers["valuation_buy_zone"]
+
+    def thresholds(self, triggers):
+        return [
+            condition["threshold"]
+            for condition in self.buy_zone(triggers)["conditions"]
+            if "metric" in condition
+        ]
+
+    def test_a_wide_spread_leaves_thresholds_untouched(self):
+        before = self.thresholds(self.triggers())
+        modulated, decision = pace.modulate(self.triggers(), reading(median=3.0))
+
+        assert decision["applied"] is False
+        assert self.thresholds(modulated) == before
+
+    def test_a_compressed_spread_tightens_entry_thresholds(self):
+        before = self.thresholds(self.triggers())
+        modulated, decision = pace.modulate(self.triggers(), reading(median=-4.0))
+
+        assert decision["applied"] is True
+        assert all(a < b for a, b in zip(self.thresholds(modulated), before))
+
+    def test_the_declared_triggers_are_not_mutated_in_place(self):
+        """A derived copy, or one run's caution would leak into the next."""
+        triggers = self.triggers()
+        before = self.thresholds(triggers)
+        pace.modulate(triggers, reading(median=-4.0))
+
+        assert self.thresholds(triggers) == before
+
+    def test_too_few_contributors_leaves_thresholds_unmodified(self):
+        """An unknown macro reading must not tighten entry any more than loosen it."""
+        before = self.thresholds(self.triggers())
+        modulated, decision = pace.modulate(
+            self.triggers(), reading(median=-9.0, contributors=2)
+        )
+
+        assert decision["applied"] is False
+        assert "contributors" in decision["reason"]
+        assert self.thresholds(modulated) == before
+
+    def test_no_reading_at_all_leaves_thresholds_unmodified(self):
+        before = self.thresholds(self.triggers())
+        modulated, decision = pace.modulate(
+            self.triggers(), {"median_pp": None, "contributors": 0, "tickers": []}
+        )
+
+        assert decision["applied"] is False
+        assert self.thresholds(modulated) == before
+
+    def test_kill_switches_are_never_touched(self):
+        triggers = self.triggers()
+        modulated, _ = pace.modulate(triggers, reading(median=-4.0))
+
+        for trigger_id, spec in triggers.items():
+            if spec["to"] != "probe":
+                assert modulated[trigger_id] == spec
+
+    def test_only_entry_transitions_are_adjusted(self):
+        _, decision = pace.modulate(self.triggers(), reading(median=-4.0))
+
+        adjusted = set(decision["adjusted"])
+        assert adjusted == {"valuation_buy_zone"}
+
+    def test_flag_conditions_are_left_alone(self):
+        modulated, _ = pace.modulate(self.triggers(), reading(median=-4.0))
+        conditions = modulated["valuation_buy_zone"]["conditions"]
+
+        flag_conditions = [c for c in conditions if "flag_absent" in c]
+        assert flag_conditions == [
+            c for c in self.triggers()["valuation_buy_zone"]["conditions"]
+            if "flag_absent" in c
+        ]
+
+    def test_a_gte_threshold_is_tightened_upwards_not_downwards(self):
+        """Tightening means harder to satisfy, whichever way the comparator points."""
+        triggers = {
+            "entry": {
+                "label": "E", "to": "probe", "from": ["watch"], "mode": "all",
+                "conditions": [{"metric": "roiic", "comparator": "gte", "threshold": 20.0}],
+            }
+        }
+        modulated, _ = pace.modulate(triggers, reading(median=-4.0), factor=0.8)
+
+        assert modulated["entry"]["conditions"][0]["threshold"] > 20.0
+
+    def test_the_decision_records_the_median_and_its_contributor_count(self):
+        _, decision = pace.modulate(self.triggers(), reading(median=-4.0, contributors=11))
+
+        assert decision["median_pp"] == -4.0
+        assert decision["contributors"] == 11
+        assert decision["floor_pp"] is not None
+        assert decision["factor"] is not None
+
+    def test_the_evidence_line_names_the_reading(self):
+        _, decision = pace.modulate(self.triggers(), reading(median=-4.0, contributors=11))
+        assert "-4" in decision["evidence"] and "11" in decision["evidence"]
+
+
+# ── Through advance() ──────────────────────────────────────────────────────
+
+
+class TestThroughAdvance:
+    def service(self, **kwargs):
+        """A stub that builds its own evaluator, so it needs real metric ids.
+
+        `advance` validates the trigger registry against `engine.metrics` at
+        construction — that startup check is what stops a trigger naming a
+        nonexistent metric from reading indeterminate forever.
+        """
+        service = StubService(**kwargs)
+        service.config = {}
+        service.suite = type("S", (), {"raw_data_dir": "/nonexistent"})()
+        service.engine = type(
+            "E", (),
+            {
+                "registry_hash": "abc123",
+                "metrics": dict(ComputeEngine().metrics),
+                "macro": {},
+            },
+        )()
+        return service
+
+    def buyable(self):
+        metrics = healthy_metrics()
+        # Inside the standard buy zone (60 / 2.0) but outside a tightened one.
+        metrics["pe_vs_historical"] = metric(55.0)
+        metrics["trailing_peg"] = metric(1.9)
+        return metrics
+
+    def test_a_wide_spread_proposes_entry(self, wm):
+        watched(wm)
+        out = advance(
+            self.service(metrics=self.buyable()), wm, pace_reading=reading(median=3.0)
+        )
+
+        assert out["outcomes"][0]["proposal"]["to"] == "probe"
+        assert out["pace"]["applied"] is False
+
+    def test_a_compressed_spread_withholds_the_same_entry(self, wm):
+        watched(wm)
+        out = advance(
+            self.service(metrics=self.buyable()), wm, pace_reading=reading(median=-4.0)
+        )
+
+        assert out["outcomes"][0]["proposal"] is None
+        assert out["pace"]["applied"] is True
+
+    def test_modulation_is_named_in_the_proposal_evidence(self, wm):
+        """A tightened threshold must never be invisible in the decision record."""
+        watched(wm)
+        metrics = healthy_metrics()
+        metrics["pe_vs_historical"] = metric(30.0)   # clears even the tightened bar
+        metrics["trailing_peg"] = metric(1.0)
+
+        out = advance(
+            self.service(metrics=metrics), wm, pace_reading=reading(median=-4.0)
+        )
+        proposal = out["outcomes"][0]["proposal"]
+
+        assert proposal["to"] == "probe"
+        assert "pace" in proposal["evidence"].lower()
+        assert proposal["pace"]["applied"] is True
+
+    def test_the_median_and_contributor_count_appear_in_that_evidence(self, wm):
+        watched(wm)
+        metrics = healthy_metrics()
+        metrics["pe_vs_historical"] = metric(30.0)
+        metrics["trailing_peg"] = metric(1.0)
+
+        out = advance(
+            self.service(metrics=metrics), wm,
+            pace_reading=reading(median=-4.0, contributors=11),
+        )
+        evidence = out["outcomes"][0]["proposal"]["evidence"]
+
+        assert "-4" in evidence and "11" in evidence
+
+    def test_kill_switches_fire_identically_under_a_compressed_spread(self, wm):
+        """The failure that matters: macro must never reach exit logic."""
+        watched(wm, state="probe")
+        metrics = healthy_metrics()
+        metrics["roiic"] = metric(4.0)  # below the 12% incremental-return switch
+
+        wide = advance(self.service(metrics=metrics), wm, pace_reading=reading(median=3.0))
+        assert wide["outcomes"][0]["proposal"]["to"] == "exit_review"
+
+        # Same company, same metrics, compressed spread.
+        wm2 = WatchlistManager(path=str(wm.path) + ".2")
+        watched(wm2, state="probe")
+        tight = advance(
+            self.service(metrics=metrics), wm2, pace_reading=reading(median=-9.0)
+        )
+
+        assert tight["outcomes"][0]["proposal"]["to"] == "exit_review"
+        assert tight["outcomes"][0]["proposal"]["trigger_id"] == (
+            wide["outcomes"][0]["proposal"]["trigger_id"]
+        )
+
+    def test_exit_review_transitions_are_not_threshold_adjusted(self, wm):
+        _, decision = pace.modulate(load_triggers(), reading(median=-9.0))
+        assert all(
+            load_triggers()[trigger_id]["to"] == "probe" for trigger_id in decision["adjusted"]
+        )
+
+    def test_the_eligibility_verdict_is_identical_either_way(self, wm):
+        """Gates read metrics, never triggers — the modulator cannot reach them."""
+        watched(wm)
+        service = self.service(metrics=self.buyable())
+
+        wide = advance(service, wm, pace_reading=reading(median=3.0))
+        wm2 = WatchlistManager(path=str(wm.path) + ".2")
+        watched(wm2)
+        tight = advance(service, wm2, pace_reading=reading(median=-9.0))
+
+        assert wide["outcomes"][0]["verdict"] == tight["outcomes"][0]["verdict"]
+
+    def test_an_injected_evaluator_is_used_as_supplied(self, wm):
+        """Injection is the existing seam; the modulator must not override it."""
+        watched(wm)
+        out = advance(
+            self.service(metrics=self.buyable()), wm,
+            evaluator=TriggerEvaluator(load_triggers()),
+            pace_reading=reading(median=-9.0),
+        )
+
+        assert out["outcomes"][0]["proposal"]["to"] == "probe"
+        assert out["pace"]["applied"] is False
+        assert "caller" in out["pace"]["reason"]
+
+    def test_adding_a_watchlist_entry_does_not_shift_the_reading(self, tmp_path, wm):
+        """The median is a property of the corpus, not of what is being tracked."""
+        path = corpus(tmp_path / "raw", {"A": 20.0, "B": 10.0, "C": 25.0})
+        before = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
+
+        watched(wm, "ASTRAL")
+        watched(wm, "CDSL")
+        after = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
+
+        assert before == after

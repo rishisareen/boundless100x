@@ -14,17 +14,24 @@ When several triggers fire at once, the most protective wins: an exit review
 outranks a drop, and both outrank any proposal to buy more. A company whose
 valuation entered the buy zone in the same quarter its RoCE broke is not a
 buying opportunity.
+
+One run-level input reaches this loop: the deployment-pace modulator reads the
+cached corpus's median earnings-yield spread once, ahead of the evaluator's
+construction, and hands in a trigger set whose *entry* thresholds are tighter
+when the corpus is expensive. Nothing else moves — see `lifecycle/pace.py` for
+why macro is allowed to slow buying and nothing else.
 """
 
 import logging
 
+from boundless100x.lifecycle import pace as pace_module
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.checkpoints import (
     evaluate_all,
     record_from_pass2,
     summarise,
 )
-from boundless100x.lifecycle.evaluator import TriggerEvaluator
+from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
 from boundless100x.watchlist import APPLIED_AUTO, APPLIED_OWNER
 
 logger = logging.getLogger(__name__)
@@ -71,6 +78,7 @@ def advance_ticker(
     evaluator: TriggerEvaluator,
     apply: bool = False,
     as_of=None,
+    pace: dict | None = None,
 ) -> dict:
     """Re-score one company and decide what its state should be next."""
     entry = watchlist.get(ticker)
@@ -118,6 +126,16 @@ def advance_ticker(
     if proposal:
         proposal["superseded"] = [c["trigger_id"] for c in candidates[1:]]
         moves_money = lifecycle_states.moves_money(proposal["to"])
+
+        # A tightened entry threshold must never be invisible in the record
+        # that justified the buy. Attached only to the transitions it could
+        # have affected — saying "pace applied" beside an exit review would
+        # imply macro reached a kill-switch, which is exactly what it may not do.
+        if pace and pace.get("applied") and proposal["to"] in pace.get("adjusted_states", ()):
+            proposal["pace"] = pace
+            proposal["evidence"] = (
+                f"{proposal['evidence']} [deployment pace: {pace['evidence']}]"
+            )
         should_apply = apply if moves_money else True
 
         if should_apply:
@@ -143,6 +161,45 @@ def advance_ticker(
     }
 
 
+def _resolve_pace(service, evaluator, pace_reading) -> tuple[TriggerEvaluator, dict]:
+    """The evaluator this run will use, and why the pace reading did or did not apply.
+
+    An injected evaluator wins outright. It is the seam callers already use to
+    supply an exact trigger set, and silently re-deriving one from it would
+    make the injection a suggestion rather than a contract — so the decision
+    records that the caller supplied it rather than claiming a modulation that
+    never happened.
+    """
+    if evaluator is not None:
+        return evaluator, {
+            "applied": False,
+            "reason": "an evaluator was supplied by the caller — pace not evaluated",
+            "median_pp": None,
+            "contributors": 0,
+            "adjusted": {},
+            "adjusted_states": (),
+            "evidence": "",
+        }
+
+    reading = (
+        pace_reading
+        if pace_reading is not None
+        else pace_module.corpus_spread(
+            service.suite.raw_data_dir, macro=getattr(service.engine, "macro", {})
+        )
+    )
+    triggers, decision = pace_module.modulate(
+        load_triggers(), reading, **pace_module.config_from(getattr(service, "config", {}))
+    )
+    decision["adjusted_states"] = tuple(
+        {triggers[trigger_id]["to"] for trigger_id in decision["adjusted"]}
+    )
+    return (
+        TriggerEvaluator(triggers, known_metric_ids=set(service.engine.metrics)),
+        decision,
+    )
+
+
 def advance(
     service,
     watchlist,
@@ -150,15 +207,23 @@ def advance(
     quarterly: bool = False,
     evaluator: TriggerEvaluator | None = None,
     as_of=None,
+    pace_reading: dict | None = None,
 ) -> dict:
     """Advance every tracked company. Returns per-ticker outcomes and errors.
 
     A failure on one company must not stop the rest: a stale fetch for one
     holding is no reason to skip checking whether another one's thesis broke.
+
+    The deployment-pace reading is resolved **once, before the ticker loop**,
+    and reaches the loop only as the evaluator's trigger set. That ordering is
+    the point: a per-company reading could not have supplied a single shared
+    evaluator, and computing it per ticker would have made the market's
+    valuation a per-name test — which is precisely what §11 forbids.
+
+    `pace_reading` lets a caller supply the corpus reading directly (tests, a
+    future simulator) without touching `raw_data/`.
     """
-    evaluator = evaluator or TriggerEvaluator(
-        known_metric_ids=set(service.engine.metrics)
-    )
+    evaluator, pace = _resolve_pace(service, evaluator, pace_reading)
     tickers = watchlist.get_stale(90) if quarterly else watchlist.tickers()
 
     outcomes: list[dict] = []
@@ -167,10 +232,12 @@ def advance(
     for ticker in tickers:
         try:
             outcomes.append(
-                advance_ticker(service, watchlist, ticker, evaluator, apply, as_of)
+                advance_ticker(
+                    service, watchlist, ticker, evaluator, apply, as_of, pace
+                )
             )
         except Exception as e:
             logger.error(f"Advance failed for {ticker}: {e}")
             errors.append((ticker, str(e)))
 
-    return {"outcomes": outcomes, "errors": errors}
+    return {"outcomes": outcomes, "errors": errors, "pace": pace}

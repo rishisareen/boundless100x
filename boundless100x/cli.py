@@ -396,6 +396,15 @@ def watchlist_advance(
     result = advance(svc, wm, apply=apply, quarterly=quarterly)
     outcomes, errors = result["outcomes"], result["errors"]
 
+    # Say when the corpus's valuation tightened entry, before showing what did
+    # and did not qualify — a proposal withheld by a tightened threshold would
+    # otherwise look like a company that simply failed on its own merits.
+    pace = result.get("pace") or {}
+    if pace.get("applied"):
+        console.print(f"[yellow]Deployment pace: {pace['evidence']}[/yellow]\n")
+    elif pace.get("reason"):
+        console.print(f"[dim]Deployment pace: {pace['reason']}[/dim]\n")
+
     if not outcomes and not errors:
         console.print("[dim]No companies to advance[/dim]")
         return

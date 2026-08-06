@@ -259,6 +259,11 @@ class TestBatch:
         assert result["errors"] == [("BAD", "fetch failed")]
 
     def test_an_empty_watchlist_advances_cleanly(self, wm, evaluator):
-        assert advance(StubService(), wm, evaluator=evaluator) == {
-            "outcomes": [], "errors": []
-        }
+        result = advance(StubService(), wm, evaluator=evaluator)
+
+        assert result["outcomes"] == []
+        assert result["errors"] == []
+        # An injected evaluator is used exactly as supplied, so the pace
+        # modulator records that it did not evaluate rather than claiming a
+        # modulation that never happened.
+        assert result["pace"]["applied"] is False

@@ -82,6 +82,23 @@ annual_reports:
       chairman: 2
       governance: 2
 
+# ── Deployment Pace (v05 §11) ──
+# Deploy more cautiously when the whole corpus is expensive. Only the floor,
+# the tightening factor and the contributor minimum are settings: the spread
+# itself is COMPUTED as the median earnings-yield-over-G-Sec across the cached
+# corpus, so there is no number to keep current and no staleness to handle.
+#
+# This modulates ENTRY thresholds only. It never fires, suppresses, or
+# overrides a kill-switch or an eligibility gate — macro slows buying, company
+# evidence decides everything else. Starting points awaiting Phase 4 simulator
+# evidence. Deliberately outside the hashed `macro:` block: policy, not an
+# assumption a metric computes with.
+deployment_pace:
+  floor_pp: -1.0          # Median spread below this reads as a compressed regime
+  tighten_factor: 0.85    # Entry thresholds become this much harder to satisfy
+  min_contributors: 8     # A median over fewer names is not a regime signal, and
+                          # an unknown reading must not tighten entry at all
+
 # ── Output ──
 output:
   formats: ["html", "md", "json"]
