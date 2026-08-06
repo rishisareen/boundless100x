@@ -62,7 +62,8 @@ def detail(evaluator, trigger_id, metrics, state="scale", checkpoints=None) -> d
 
 class TestHealthyCompany:
     def test_no_kill_switch_fires_on_a_healthy_holding(self, evaluator):
-        assert fired(evaluator, healthy(), checkpoints={"missed": 0}) == []
+        checkpoints = {"met": 3, "missed": 0, "due": 3, "total": 3}
+        assert fired(evaluator, healthy(), checkpoints=checkpoints) == []
 
     def test_every_declared_switch_is_evaluated_from_scale(self, evaluator):
         evaluated = evaluator.evaluate("scale", metrics=healthy())["triggers"]
@@ -135,16 +136,24 @@ class TestOtherSwitches:
 
     def test_checkpoints_failed_fires_on_two_misses(self, evaluator):
         assert "checkpoints_failed" in fired(
-            evaluator, healthy(), checkpoints={"missed": 2}
+            evaluator, healthy(), checkpoints={"missed": 2, "due": 3, "total": 3}
         )
 
     def test_one_miss_is_not_enough(self, evaluator):
         assert "checkpoints_failed" not in fired(
-            evaluator, healthy(), checkpoints={"missed": 1}
+            evaluator, healthy(), checkpoints={"missed": 1, "due": 3, "total": 3}
         )
 
     def test_no_checkpoints_recorded_is_indeterminate(self, evaluator):
         assert detail(evaluator, "checkpoints_failed", healthy())["fired"] is None
+
+    def test_an_unmonitored_position_is_unknown_not_clear(self, evaluator):
+        """Zero misses out of zero due means nobody checked, not all is well."""
+        outcome = detail(
+            evaluator, "checkpoints_failed", healthy(),
+            checkpoints={"missed": 0, "due": 0, "total": 0},
+        )
+        assert outcome["fired"] is None
 
 
 class TestPrePositionDeterioration:

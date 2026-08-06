@@ -339,6 +339,61 @@ llm_layer/      pass2 prompt emits structured monitorables; recorded via
   of Phase 0 reported found/fallback — a phase that silently produces all
   indeterminates has not been validated.
 
+## Completion (2026-08-06)
+
+All six units merged: U1 `1405b86`, U2 `f7105f6`, U3 `bb2c6ec`, U4 `0893cd1`,
+U5 `93f708f`, U6 with this note. Suite 501 → 522 tests, green.
+
+### Replay validation
+
+Refetched CDSL, RAIN and VBL, added them plus ZYDUSLIFE, and ran
+`watchlist advance`. Every proposal cited the trigger evidence that caused it.
+
+**All four dropped at `screen` as `not_eligible`** — honest, and a finding in
+itself: nothing in the fetched corpus currently passes the 100x gates, so the
+post-qualification paths could not be reached by qualification alone. They were
+therefore exercised by seeding real companies into `watch` and `scale` in a
+scratch store, so the triggers evaluated **real fetched metrics** even though
+the states were assigned.
+
+| Case | Result on real data |
+|---|---|
+| Kill-switch fires | RAIN at `scale` → `exit_review`, evidence `roce_5yr_avg last 2 periods [4.00, 8.00] all lt 15`; `incremental_return_break` fired too, and was reported as superseded |
+| Buy zone refuses | CDSL at `watch`, `fired=False` — P/E at the 100th percentile of its own band, trailing PEG 3.25 |
+| Buy zone abstains | VBL at `watch`, `fired=None` — P/E 10th percentile and PEG 1.74 both attractive, but `reverse_dcf_growth` was unavailable so `reverse_dcf_overpriced`'s absence could not be confirmed |
+| Money-moving guard | Every `exit_review` proposal came back `needs_confirmation=True, applied=False`; only `→ dropped` auto-applied |
+
+VBL is the clearest vindication of KTD3. Two attractive ratios would have
+proposed an entry; the system refused because it could not confirm the market
+was not already pricing in growth the company has never delivered. An
+"indeterminate, never a silent pass" rule stopped a real buy proposal on real
+data — which is the whole reason the rule exists.
+
+### Corrections this phase forced
+
+1. **`roiic` cannot take `persist_years`.** Its `raw_series` is *capital
+   employed* (INR Cr) beside an incremental-return *value* (%);
+   `pe_vs_historical` likewise carries P/E multiples beside a 0–100
+   percentile. Either rule would validate, run, compare incompatible units,
+   and silently never fire. `persist_years` is now restricted to an audited
+   `SERIES_SAFE_METRICS` allowlist and naming anything else is a startup
+   error. The incremental-return switch uses ROIIC's plain value instead,
+   since ROIIC is already an incremental measure across a multi-year window.
+2. **Zero misses out of zero due checkpoints is not a clean bill of health.**
+   Caught by a test: an unmonitored position read `clear`, identical to a
+   verified one. The checkpoint condition is now indeterminate unless at least
+   one checkpoint has actually come due.
+3. **Verdict evidence read as a double negative** ("verdict is not_eligible
+   (wanted not_eligible)"); the detail now only names the expectation when it
+   differs from the outcome.
+
+### Deferred (unchanged from the plan)
+
+Auditor-resignation governance remains out of reach — no metric or flag
+carries auditor changes, so `governance_event` covers the pledge limb only.
+Trigger thresholds remain starting points; calibration waits on the Phase 4
+simulator.
+
 ## Definition of Done
 
 All six units merged with tests; replay validation performed and its results

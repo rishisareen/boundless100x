@@ -217,13 +217,28 @@ class TestCheckpointConditions:
         ])
 
     def test_fires_on_enough_misses(self):
-        assert evaluate(self.spec(), checkpoint_results={"missed": 3})["fired"] is True
+        summary = {"missed": 3, "due": 3, "total": 3}
+        assert evaluate(self.spec(), checkpoint_results=summary)["fired"] is True
 
     def test_does_not_fire_below_the_threshold(self):
-        assert evaluate(self.spec(), checkpoint_results={"missed": 1})["fired"] is False
+        summary = {"missed": 1, "due": 3, "total": 3}
+        assert evaluate(self.spec(), checkpoint_results=summary)["fired"] is False
 
     def test_no_checkpoints_recorded_is_indeterminate(self):
         assert evaluate(self.spec(), checkpoint_results=None)["fired"] is None
+
+    def test_zero_misses_out_of_zero_due_is_not_a_clean_bill_of_health(self):
+        """An unchecked thesis must not read like a verified one."""
+        summary = {"missed": 0, "due": 0, "total": 0}
+        detail = evaluate(self.spec(), checkpoint_results=summary)
+        assert detail["fired"] is None
+        assert "no checkpoints recorded" in detail["conditions"][0]["detail"]
+
+    def test_recorded_but_not_yet_due_is_also_indeterminate(self):
+        summary = {"missed": 0, "due": 0, "total": 3, "pending": 3}
+        detail = evaluate(self.spec(), checkpoint_results=summary)
+        assert detail["fired"] is None
+        assert "come due" in detail["conditions"][0]["detail"]
 
 
 class TestStateFiltering:

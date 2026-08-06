@@ -20,6 +20,31 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _record_checkpoints_if_tracked(ticker: str, result) -> None:
+    """Persist Pass 2's structured monitorables for a watchlisted company."""
+    from boundless100x.lifecycle.advance import record_checkpoints
+    from boundless100x.watchlist import WatchlistManager
+
+    try:
+        wm = WatchlistManager()
+        if wm.get(ticker) is None:
+            return
+        recorded = record_checkpoints(wm, ticker, result)
+        if recorded["checkpoints"]:
+            console.print(
+                f"[dim]Recorded {len(recorded['checkpoints'])} checkpoint(s) "
+                f"for {ticker.upper()}[/dim]"
+            )
+        if recorded["demoted"]:
+            console.print(
+                f"[yellow]{len(recorded['demoted'])} monitorable(s) kept as prose "
+                f"only — not machine-checkable[/yellow]"
+            )
+    except Exception as e:
+        # Never cost the caller the analysis they just paid for.
+        logger.warning(f"Could not record checkpoints for {ticker}: {e}")
+
+
 def setup_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -59,6 +84,11 @@ def analyze(
 
     if result.llm_analysis and not result.llm_analysis.get("skipped"):
         _print_llm_summary(result)
+
+    # A thesis is only worth writing down if something later checks it. When
+    # this company is tracked, the structured monitorables Pass 2 produced
+    # become the checkpoints `watchlist advance` tests each quarter.
+    _record_checkpoints_if_tracked(ticker, result)
 
     # Generate reports
     fmt_list = [f.strip() for f in formats.split(",")]
@@ -341,48 +371,71 @@ def watchlist_remove(
         console.print(f"[yellow]{ticker} not found in watchlist[/yellow]")
 
 
-@watchlist_app.command("update")
-def watchlist_update(
-    quarterly: bool = typer.Option(False, "--quarterly", help="Only update stale (90+ days) entries"),
+@watchlist_app.command("advance")
+def watchlist_advance(
+    apply: bool = typer.Option(
+        False, "--apply",
+        help="Confirm and record transitions that move money. Without this, "
+             "they are proposed only.",
+    ),
+    quarterly: bool = typer.Option(
+        False, "--quarterly", help="Only advance stale (90+ days) entries"
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ):
-    """Re-run analysis on all watchlist companies."""
+    """Re-score the watchlist, evaluate triggers, and propose transitions."""
     setup_logging(verbose)
 
+    from boundless100x.lifecycle.advance import advance
     from boundless100x.service import Boundless100xService
     from boundless100x.watchlist import WatchlistManager
 
     svc = Boundless100xService()
     wm = WatchlistManager()
 
-    tickers = wm.get_stale(90) if quarterly else wm.tickers()
-    results: list[tuple[str, float | None]] = []
-    for ticker in tickers:
-        try:
-            result = svc.analyze(ticker, use_llm=False)
-            wm.record_snapshot(ticker, result, svc.engine.registry_hash)
-            results.append((ticker, (result.scores or {}).get("composite")))
-        except Exception as e:
-            logger.warning(f"Watchlist update failed for {ticker}: {e}")
-            results.append((ticker, None))
+    result = advance(svc, wm, apply=apply, quarterly=quarterly)
+    outcomes, errors = result["outcomes"], result["errors"]
 
-    if not results:
-        console.print("[dim]No companies to update[/dim]")
+    if not outcomes and not errors:
+        console.print("[dim]No companies to advance[/dim]")
         return
 
-    table = Table(title="Watchlist Update Results")
+    table = Table(title="Lifecycle Advance")
     table.add_column("Ticker", style="cyan bold")
+    table.add_column("State", style="bold")
     table.add_column("Composite", justify="right")
-    table.add_column("Status")
+    table.add_column("Proposal")
+    table.add_column("Evidence", style="dim", max_width=54)
 
-    for ticker, composite in results:
-        if composite is not None:
-            color = "green" if composite >= 7 else "yellow" if composite >= 4 else "red"
-            table.add_row(ticker, f"[{color}]{composite}/10[/{color}]", "[green]OK[/green]")
-        else:
-            table.add_row(ticker, "—", "[red]FAILED[/red]")
+    for o in outcomes:
+        proposal = o["proposal"]
+        state = f"[{STATE_COLOURS.get(o['state'], 'white')}]{o['state']}[/]"
+        composite = f"{o['composite']}/10" if o["composite"] is not None else "—"
+
+        if not proposal:
+            unknown = len(o["indeterminate"])
+            note = f"[dim]no change ({unknown} unknown)[/dim]" if unknown else "[dim]no change[/dim]"
+            table.add_row(o["ticker"], state, composite, note, "")
+            continue
+
+        arrow = f"→ [{STATE_COLOURS.get(proposal['to'], 'white')}]{proposal['to']}[/]"
+        if proposal["needs_confirmation"]:
+            arrow += " [yellow](confirm with --apply)[/yellow]"
+        elif proposal["applied"]:
+            arrow += " [green]applied[/green]"
+        table.add_row(o["ticker"], state, composite, arrow, proposal["evidence"])
 
     console.print(table)
+
+    for ticker, message in errors:
+        console.print(f"[red]{ticker}: {message}[/red]")
+
+    pending = [o for o in outcomes if o["proposal"] and o["proposal"]["needs_confirmation"]]
+    if pending:
+        console.print(
+            f"\n[yellow]{len(pending)} transition(s) move money and were not "
+            f"applied. Review the evidence, then re-run with --apply.[/yellow]"
+        )
 
 
 # ── Display Helpers ──

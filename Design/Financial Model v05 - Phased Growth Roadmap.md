@@ -515,7 +515,12 @@ window, not 30; registry hash extended to macro and the history waiver).
   reference companies; two consecutive scored runs produce two history rows;
   extracted AR sections contain MD&A text beyond page 30.
 
-**Phase 1 — Lifecycle Foundation**
+**Phase 1 — Lifecycle Foundation** — ✅ **complete 2026-08-06**, see
+`docs/plans/2026-08-06-003-feat-phase1-lifecycle-foundation-plan.md` for the
+implementation record, replay results, and the corrections it forced (no
+`roce_latest` metric exists; `persist_years` must be allowlisted because
+`raw_series` has no unit contract; an unmonitored position must not read as
+checkpoint-clear).
 - Watchlist → state machine (states, lane field, state_history, checkpoints)
 - `triggers.yaml` registry + evaluator (indeterminate-on-missing semantics)
 - Exit kill-switch definitions (core lane) in YAML

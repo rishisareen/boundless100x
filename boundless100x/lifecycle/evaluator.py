@@ -439,7 +439,11 @@ class TriggerEvaluator:
         actual = eligibility["verdict"]
         outcome["value"] = actual
         outcome["passed"] = actual == expected
-        outcome["detail"] = f"eligibility verdict is {actual} (wanted {expected})"
+        outcome["detail"] = (
+            f"eligibility verdict is {actual}"
+            if outcome["passed"]
+            else f"eligibility verdict is {actual}, wanted {expected}"
+        )
         return outcome
 
     def _evaluate_flag(self, condition: dict, metrics: dict) -> dict:
@@ -512,6 +516,19 @@ class TriggerEvaluator:
 
         if not checkpoint_results:
             outcome["detail"] = "no checkpoints recorded"
+            return outcome
+
+        # Zero misses out of zero due checkpoints is not a thesis holding up —
+        # it is a thesis nobody has checked. Counting that as `clear` would let
+        # an unmonitored position read exactly like a verified one, which is
+        # the failure this whole layer exists to prevent.
+        if not checkpoint_results.get("due"):
+            total = checkpoint_results.get("total", 0)
+            outcome["detail"] = (
+                f"no checkpoints have come due yet ({total} recorded)"
+                if total
+                else "no checkpoints recorded for this thesis"
+            )
             return outcome
 
         value = checkpoint_results.get(field)
