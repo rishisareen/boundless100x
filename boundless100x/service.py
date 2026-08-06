@@ -19,13 +19,17 @@ from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
+from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.checklist import build_sector_context
-from boundless100x.llm_layer.orchestrator import LLMOrchestrator
+from boundless100x.llm_layer.orchestrator import LLMOrchestrator, forward_growth_model
 from boundless100x import score_history, trajectory
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
+
+# One per ticker, beside the annual report PDFs the extraction read.
+FORWARD_GROWTH_SIDECAR = "forward_growth.extraction.json"
 
 
 @dataclass
@@ -139,6 +143,19 @@ class Boundless100xService:
             logger.error(f"{ticker}: fatal — core data missing: {reasons}")
             return result
 
+        # Deep mode is resolved here rather than at Stage 4 because Stage 1.5
+        # below is also an LLM call, and the model it used is recorded in the
+        # extraction cache's version block.
+        if use_llm and self._llm and deep:
+            self._llm.use_deep_models()
+
+        # Stage 1.5: Forward-growth extraction (Phase 2)
+        try:
+            self._forward_growth_stage(ticker, result.data, use_llm)
+        except Exception as e:
+            result.errors.append(f"Forward-growth extraction failed: {e}")
+            logger.error(f"Forward-growth extraction failed for {ticker}: {e}")
+
         # Stage 2: Compute Engine (target)
         logger.info(f"[Stage 2] Running compute engine for {ticker}")
         try:
@@ -184,8 +201,6 @@ class Boundless100xService:
 
         # Stage 4: LLM Analysis (2-pass)
         if use_llm and self._llm:
-            if deep:
-                self._llm.use_deep_models()
             logger.info("[Stage 4] Running LLM analysis (2-pass)")
             try:
                 metadata = result.data.get("metadata", {})
@@ -255,6 +270,107 @@ class Boundless100xService:
             logger.error(f"Score momentum read failed for {ticker}: {e}")
 
         return result
+
+    # ── Stage 1.5: forward-growth extraction ──
+
+    def _forward_growth_sidecar(self, ticker: str, data: dict) -> Path:
+        """Where a ticker's validated extraction is cached.
+
+        Beside the annual report PDFs it was read from, keyed by BSE code for
+        the same reason those are — that is the directory the reports live in.
+        """
+        meta = data.get("metadata", {}) or {}
+        key = meta.get("bse_code") or ticker
+        return (
+            Path(self.suite.raw_data_dir) / str(key) / "annual_reports"
+            / FORWARD_GROWTH_SIDECAR
+        )
+
+    def _forward_growth_stage(self, ticker: str, data: dict, use_llm: bool) -> None:
+        """Put validated forward-growth extraction into `data["forward_growth"]`.
+
+        **Hydration and extraction are separately gated, and that split is the
+        load-bearing part of this stage.** Reading a valid cache runs on every
+        run, including `use_llm=False`; only *creating or refreshing* one calls
+        the model. Gating the whole stage on `use_llm` would mean the cache is
+        never read on the very paths it exists to serve — `watchlist advance`
+        re-scores with `use_llm=False`, so its sub-metrics would read
+        indeterminate forever no matter how many extractions had been paid for.
+
+        The three outcomes are deliberately distinguishable:
+
+          * key absent — we could not look (no sections, or no valid cache and
+            no LLM available). A sub-metric reads indeterminate.
+          * `{}` — we looked and there was nothing readable: every section was
+            `fallback` or failed the content gate. Determinate, and free.
+          * populated — extraction ran or its cache was hydrated.
+
+        Called at Stage 1.5 rather than inside `DataFetcherSuite.fetch_all`,
+        which takes no `use_llm` argument: wiring it there would fire a paid
+        call on every `--no-llm` run, including `screen`'s per-candidate
+        `analyze_quick` and every `watchlist advance`.
+        """
+        sections = data.get("annual_report_sections") or {}
+        if not sections:
+            return
+
+        gate_config = self.config.get("annual_reports", {}).get("content_gate", {})
+        gated = forward_growth.gate_sections(
+            sections,
+            scan_chars=gate_config.get("scan_chars", forward_growth.DEFAULT_SCAN_CHARS),
+            min_markers=gate_config.get("min_markers"),
+            enabled=gate_config.get("enabled", True),
+        )
+        budget = (
+            self._llm.forward_growth_char_budget
+            if self._llm
+            else self.config.get("llm", {}).get(
+                "forward_growth_char_budget", forward_growth.DEFAULT_CHAR_BUDGET
+            )
+        )
+        submission = forward_growth.build_submission(sections, gated, char_budget=budget)
+
+        if not submission:
+            # Nothing survived provenance and the content gate. That is a
+            # determinate empty answer, not an unknown one, and it costs
+            # nothing to reach — so no call is made.
+            data["forward_growth"] = {}
+            logger.info(
+                f"[Stage 1.5] {ticker}: no usable annual-report sections "
+                f"(after the content gate) — no extraction call"
+            )
+            return
+
+        model = (
+            self._llm.forward_growth_model
+            if self._llm
+            else forward_growth_model(self.config)
+        )
+        sidecar = self._forward_growth_sidecar(ticker, data)
+
+        cached = forward_growth.read_sidecar(sidecar, submission, model)
+        if cached is not None:
+            data["forward_growth"] = cached
+            logger.info(f"[Stage 1.5] {ticker}: forward-growth read from cache")
+            return
+
+        if not (use_llm and self._llm):
+            logger.info(
+                f"[Stage 1.5] {ticker}: no valid extraction cache and no LLM this "
+                f"run — forward-growth sub-metrics will read indeterminate"
+            )
+            return
+
+        logger.info(
+            f"[Stage 1.5] {ticker}: extracting forward growth from "
+            f"{len(submission)} report year(s)"
+        )
+        company_name = (data.get("metadata", {}) or {}).get("name", ticker)
+        raw = self._llm.run_forward_growth_extraction(ticker, company_name, submission)
+        validated = forward_growth.validate_extraction(raw, submission, gated)
+
+        data["forward_growth"] = validated["years"]
+        forward_growth.write_sidecar(sidecar, validated["years"], submission, model)
 
     @staticmethod
     def resolve_action(result: AnalysisResult) -> dict | None:

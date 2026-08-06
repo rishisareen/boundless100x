@@ -1,7 +1,11 @@
-"""LLM Orchestrator — 2-pass Claude API analysis pipeline.
+"""LLM Orchestrator — Claude API analysis pipeline.
 
 Pass 1: Qualitative analysis (management, moat, risks) — Sonnet
 Pass 2: Investment thesis synthesis — Sonnet
+
+Plus a separate forward-growth extraction call (Phase 2), which is not a
+"pass": it runs upstream of the compute engine at Stage 1.5 and reaches metrics
+only as data. See `llm_layer/forward_growth.py` for why that seam matters.
 """
 
 import json
@@ -14,6 +18,7 @@ import anthropic
 
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.lifecycle.checkpoints import vocabulary_prompt_block
+from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.checklist import (
     build_eligibility_context,
     build_flags_context,
@@ -29,17 +34,45 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
+DEFAULT_MODEL = "claude-sonnet-4-6"
+DEEP_MODEL = "claude-opus-4-6"
+
+
+def forward_growth_model(config: dict) -> str:
+    """The extraction model a run will use, resolvable without an API key.
+
+    The sidecar's version block records the model that produced it, so a
+    hydration-only run (no key, or `--no-llm`) has to be able to name the same
+    model an extracting run would have used — otherwise every cached
+    extraction would read as stale on exactly the paths the cache exists for.
+    """
+    llm_config = config.get("llm", {})
+    return llm_config.get("forward_growth_model") or llm_config.get(
+        "pass1_model", DEFAULT_MODEL
+    )
+
 
 class LLMOrchestrator:
-    """2-pass LLM analysis pipeline using Claude API."""
+    """LLM analysis pipeline using Claude API."""
 
     def __init__(self, config: dict):
         llm_config = config.get("llm", {})
         self.enabled = llm_config.get("enabled", True)
-        self.pass1_model = llm_config.get("pass1_model", "claude-sonnet-4-6")
-        self.pass2_model = llm_config.get("pass2_model", "claude-sonnet-4-6")
+        self.pass1_model = llm_config.get("pass1_model", DEFAULT_MODEL)
+        self.pass2_model = llm_config.get("pass2_model", DEFAULT_MODEL)
+        # The extraction call is deliberately its own model setting: it is a
+        # structured-extraction task rather than a judgement one, so it need
+        # not track whatever Pass 1 and 2 are set to.
+        self.forward_growth_model = forward_growth_model(config)
         self.max_tokens = llm_config.get("max_tokens", 2000)
         self.skip_pass1_if_no_ar = llm_config.get("skip_pass1_if_no_ar", True)
+        # Per submitted section, per report year. Sits alongside
+        # pass1_ar_char_budget rather than sharing it: Pass 1 reads a combined
+        # single string for background, while extraction reads each gated
+        # section separately and needs enough of each to find a target in.
+        self.forward_growth_char_budget = llm_config.get(
+            "forward_growth_char_budget", forward_growth.DEFAULT_CHAR_BUDGET
+        )
         # How much annual-report text Pass 1 may read. Config-driven because
         # the fetcher now caps each extracted section separately: a literal
         # here would silently overrule those caps, and raising a section cap
@@ -57,14 +90,39 @@ class LLMOrchestrator:
         self._usage_log: list[dict] = []
 
     def use_deep_models(self) -> None:
-        """Override Pass 1 & 2 to use Opus for deeper analysis."""
-        self.pass1_model = "claude-opus-4-6"
-        self.pass2_model = "claude-opus-4-6"
+        """Override every call to use Opus for deeper analysis."""
+        self.pass1_model = DEEP_MODEL
+        self.pass2_model = DEEP_MODEL
+        self.forward_growth_model = DEEP_MODEL
         self.max_tokens = 4000  # Opus benefits from more output room
         logger.info(
-            f"Deep mode: Pass 1 & 2 → {self.pass1_model}, "
+            f"Deep mode: all passes → {DEEP_MODEL}, "
             f"max_tokens → {self.max_tokens}"
         )
+
+    # ── Forward-growth extraction (Stage 1.5) ──
+
+    def run_forward_growth_extraction(
+        self, ticker: str, company_name: str, submission: dict
+    ) -> dict:
+        """One extraction call over the already-gated sections.
+
+        Returns the raw parsed response — unvalidated on purpose. Validation
+        belongs at the boundary in `forward_growth.validate_extraction`, where
+        it can be tested against recorded malformed responses without an API in
+        the loop, which is where the failure modes actually live.
+        """
+        if not self.enabled:
+            return {}
+
+        template = self._load_template(forward_growth.PROMPT_NAME)
+        prompt = template.format(
+            ticker=ticker,
+            company_name=company_name,
+            vocabulary=forward_growth.vocabulary_prompt_block(),
+            report_text=forward_growth.render_report_text(submission),
+        )
+        return self._call_api(self.forward_growth_model, prompt, "forward_growth")
 
     def run_analysis(
         self,

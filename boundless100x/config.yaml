@@ -42,6 +42,13 @@ llm:
                               # the binding cap downstream of the per-section
                               # caps in annual_reports.sections — raise it to
                               # let more MD&A reach the prompt.
+  # ── Forward-growth extraction (Stage 1.5) ──
+  # A structured-extraction task, not a judgement one, so it carries its own
+  # model rather than tracking Pass 1 and 2. `--deep` still moves it to Opus.
+  forward_growth_model: "claude-sonnet-4-6"
+  forward_growth_char_budget: 6000  # Per gated section, per report year — the
+                                    # extractor reads each section separately,
+                                    # unlike Pass 1's combined single string.
 
 # ── Annual Reports ──
 annual_reports:
@@ -60,6 +67,20 @@ annual_reports:
     mdna: 12000
     chairman: 6000
     governance: 8000
+  content_gate:           # KTD9 — `found` is a claim, not a guarantee. A
+                          # located section must also look like the section it
+                          # claims to be, or it is downgraded to `suspect` and
+                          # excluded from extraction exactly as `fallback` is.
+                          # Runs on the extraction path, so tuning this needs
+                          # no refetch. Watch the suspect count: near zero
+                          # means the gate is not actually gating.
+    enabled: true
+    scan_chars: 3000      # How much of a slice's opening the gate reads. A
+                          # wrong-section slice is wrong from its first line.
+    min_markers:          # Distinct section-appropriate markers required.
+      mdna: 2             # MD&A has a mandated structure (SEBI LODR Sch V(B))
+      chairman: 2
+      governance: 2
 
 # ── Output ──
 output:
