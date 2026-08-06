@@ -1,0 +1,76 @@
+# Declared lifecycle transitions.
+#
+# One YAML entry per transition, evaluated by lifecycle/evaluator.py the way
+# the scorer reads the metric registry. Thresholds here are STARTING POINTS
+# from the v05 roadmap, not calibrated values — evidence for tuning them comes
+# from the Phase 4 strategy simulator (v05 §12 Phase 5).
+#
+# Condition kinds (exactly one key per condition):
+#   metric:        a computed metric's value; add `persist_years: N` to require
+#                  the comparator to hold across the last N entries of its
+#                  raw_series instead
+#   score:         `composite` or an element name
+#   verdict:       the 100x eligibility verdict
+#   flag_present / flag_absent:
+#                  a MetricResult flag. `sources` names the metrics expected to
+#                  emit it — absence proves nothing if they did not run
+#   checkpoint:    a summary count over recorded checkpoint outcomes
+#
+# A condition whose inputs are missing is indeterminate, never a silent pass.
+
+triggers:
+
+  # ── Pre-position transitions: no capital moves, so these auto-apply ──
+
+  qualification_passed:
+    label: "Qualification passed"
+    rationale: >
+      Both readings agree the company is worth tracking: the conjunctive 100x
+      gates are not disqualifying it, and the additive composite clears the
+      lane floor.
+    from: [screen]
+    to: qualify
+    mode: all
+    conditions:
+      - { verdict: eligible }
+      - { score: composite, comparator: gte, threshold: 5.5 }
+
+  qualification_failed:
+    label: "Qualification failed"
+    rationale: >
+      A gate disqualified the company outright. Failing a 100x gate does not
+      make it a bad business, only an unlikely hundred-bagger — it leaves this
+      lane rather than being marked avoid.
+    from: [screen, qualify]
+    to: dropped
+    mode: all
+    conditions:
+      - { verdict: not_eligible }
+
+  awaiting_entry_price:
+    label: "Qualified, awaiting entry price"
+    rationale: >
+      A qualified company whose price has run ahead of its history is worth
+      watching, not buying. Great companies bought at the top of their own
+      valuation band produce mediocre returns.
+    from: [qualify]
+    to: watch
+    mode: all
+    conditions:
+      - { verdict: eligible }
+
+  # ── Position-opening transition: proposed, never auto-applied ──
+
+  valuation_buy_zone:
+    label: "Valuation entered the buy zone"
+    rationale: >
+      Entry multiple is inside its own ten-year band and growth is not already
+      fully paid for. This proposes a first tranche; the owner decides.
+    from: [watch]
+    to: probe
+    mode: all
+    conditions:
+      - { metric: pe_vs_historical, comparator: lte, threshold: 60 }
+      - { metric: trailing_peg, comparator: lte, threshold: 2.0 }
+      - flag_absent: reverse_dcf_overpriced
+        sources: [reverse_dcf_growth]
