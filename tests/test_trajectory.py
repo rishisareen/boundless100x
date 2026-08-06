@@ -143,6 +143,18 @@ class TestIntervalHonesty:
 
         assert annual["span"] != quarterly["span"]
         assert annual["interval_days"] > quarterly["interval_days"]
+        assert "year" in annual["span"]
+        assert "3 months" in quarterly["span"]
+
+    def test_a_half_year_gap_is_not_labelled_as_a_quarter(self):
+        """A bucket wide enough to cover 90 to 200 days calls half a year one
+        quarter, which is exactly the misreading the label exists to prevent."""
+        half = trajectory.compute_momentum(
+            "TEST", rows=rows_at(["2026-02-01", "2026-08-06"], [6.1, 6.7])
+        )["latest"]
+
+        assert half["interval_days"] == 186
+        assert "6 months" in half["span"]
 
     def test_every_step_states_its_own_span(self):
         rows = rows_at(["2024-01-01", "2025-01-01", "2025-04-01"], [6.0, 6.4, 6.5])

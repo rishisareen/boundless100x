@@ -186,6 +186,52 @@ Current PE of **{{ "%.1f"|format(pe_band_summary.current_pe) }}x** is at the **{
 
 {% endfor %}
 
+{# ── Forward Signals (Phase 2, zero weight) ── #}
+{% if forward_signals %}
+## Forward Signals
+
+*{{ forward_signals.disclaimer }}*
+
+{% if forward_signals.signals %}
+| Signal | Reading | Interpretation | Direction | What it measures |
+|--------|---------|----------------|-----------|------------------|
+{% for s in forward_signals.signals %}
+| **{{ s.name }}** | {{ s.formatted }} | {% if s.available %}{{ s.band }}{% else %}unknown{% endif %} | {{ s.direction }} | {{ s.meaning }} |
+{% endfor %}
+
+{% set unknown = [] %}
+{% for s in forward_signals.signals if not s.available %}{% if unknown.append(s) %}{% endif %}{% endfor %}
+{% if unknown %}
+**Why some signals are unknown:**
+{% for s in unknown %}
+- **{{ s.name }}** — {{ s.reason }}
+{% endfor %}
+
+{% endif %}
+{% endif %}
+{% if forward_signals.momentum %}
+### Score Trajectory
+
+{% if forward_signals.momentum.available %}
+Composite **{{ "%.2f"|format(forward_signals.momentum.composite_from) }} → {{ "%.2f"|format(forward_signals.momentum.composite_to) }}** ({{ "%+.2f"|format(forward_signals.momentum.composite_delta) }}) over {{ forward_signals.momentum.span }}, {{ forward_signals.momentum.from_date }} to {{ forward_signals.momentum.to_date }}.
+
+{% if forward_signals.momentum.element_deltas %}
+| Element | Change |
+|---------|--------|
+{% for e in forward_signals.momentum.element_deltas %}
+| {{ e.label }} | {{ "%+.2f"|format(e.delta) }} |
+{% endfor %}
+
+{% endif %}
+{% else %}
+**{{ forward_signals.momentum.label }}** — {{ forward_signals.momentum.reason }}
+
+{% endif %}
+{% endif %}
+---
+
+{% endif %}
+
 {# ── Investment Thesis (LLM only) ── #}
 {% if llm_analysis and not llm_analysis.get('skipped') %}
 {% set p2 = llm_analysis.get('pass2', {}) %}

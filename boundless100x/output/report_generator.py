@@ -255,6 +255,88 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "quarterly_growth_decelerating": FORWARD_SIGNALS_ELEMENT,
 }
 
+# ── Forward signals (Phase 2, zero weight) ──
+#
+# Every one of these carries `weight: 0`, which means the scorer never gives it
+# a score. So the number is all the reader gets, and a bare number is not
+# signal: nobody can tell whether +40 is good news without recomputing the
+# metric. R8 exists for that reason, and this table is how it is satisfied —
+# each signal declares its direction of goodness, what it means in one line,
+# and the bands that turn its value into a reading.
+#
+# `bands` is walked in order and the first threshold the value reaches wins;
+# `low_label` catches everything below all of them. Thresholds here are
+# STARTING POINTS, like every other number this phase introduces. A metric that
+# supplies its own `metadata["band"]` overrides this — `rerating_headroom`
+# does, because its bands are owner-editable in the metric's YAML params and a
+# tuned band must win over a default declared here.
+FORWARD_SIGNALS: dict[str, dict] = {
+    "rerating_headroom": {
+        "name": "Re-rating Headroom",
+        "format": "{:+.0f}%",
+        "direction": "higher is better",
+        "meaning": (
+            "How far above today's traded multiple the company's own RoCE, "
+            "growth and consistency would justify."
+        ),
+        "bands": [(25.0, "favourable"), (-25.0, "fair")],
+        "low_label": "stretched",
+    },
+    "promises_kept_ratio": {
+        "name": "Promises Kept",
+        "format": "{:.0f}%",
+        "direction": "higher is better",
+        "meaning": (
+            "Share of management's own due targets that the accounts later met. "
+            "Promises not yet due are excluded from both sides."
+        ),
+        "bands": [(80.0, "credible"), (50.0, "mixed")],
+        "low_label": "unreliable",
+    },
+    "capex_pipeline": {
+        "name": "Capex Pipeline",
+        "format": "{:.0f}% of revenue",
+        "direction": "higher is better",
+        "meaning": (
+            "Announced capacity not yet commissioned, against one year's "
+            "revenue — forward runway for volume growth."
+        ),
+        "bands": [(25.0, "substantial"), (5.0, "modest")],
+        "low_label": "minimal",
+    },
+    "tam_runway": {
+        "name": "TAM Runway",
+        "format": "{:.0f} yrs",
+        "direction": "higher is better",
+        "meaning": (
+            "Years at the current growth rate before revenue meets the "
+            "addressable market management describes."
+        ),
+        "bands": [(15.0, "long"), (7.0, "adequate")],
+        "low_label": "short",
+    },
+    "quarterly_momentum": {
+        "name": "Quarterly Growth Momentum",
+        "format": "{:+.1f}pp",
+        "direction": "higher is better",
+        "meaning": (
+            "Change between consecutive year-over-year growth figures — whether "
+            "growth is speeding up, not how fast it is."
+        ),
+        "bands": [(2.0, "accelerating"), (-2.0, "steady")],
+        "low_label": "decelerating",
+    },
+}
+
+FORWARD_SIGNALS_DISCLAIMER = (
+    "These signals inform the thesis but do not contribute to the SQGLP "
+    "composite. They carry zero weight, receive no score, and are excluded "
+    "from the coverage denominator."
+)
+
+MOMENTUM_UNAVAILABLE_LABEL = "Not enough history yet"
+
+
 # ── SQGLP element display config ──
 ELEMENT_CONFIG: dict[str, dict] = {
     "size": {"label": "Size", "short": "S", "weight": "10%"},
@@ -379,6 +461,7 @@ class ReportGenerator:
         cashflow_quality = self._build_cashflow_quality(result)
         pe_band_summary = self._build_pe_band_summary(result)
         score_drilldown = self._build_score_drilldown(result)
+        forward_signals = self._build_forward_signals(result)
         flags = self._collect_flags(result.metrics)
         element_summaries = self._build_element_summaries(result, score_drilldown, flags)
 
@@ -405,6 +488,7 @@ class ReportGenerator:
                 score_drilldown=score_drilldown,
                 element_summaries=element_summaries,
                 flags_precomputed=flags,
+                forward_signals=forward_signals,
             )
             path = report_dir / f"{result.ticker}_dashboard.html"
             path.write_text(html)
@@ -422,6 +506,7 @@ class ReportGenerator:
                 score_drilldown=score_drilldown,
                 element_summaries=element_summaries,
                 flags_precomputed=flags,
+                forward_signals=forward_signals,
             )
             path = report_dir / f"{result.ticker}_report.md"
             path.write_text(md)
@@ -439,7 +524,8 @@ class ReportGenerator:
                      shareholding_data: list | None = None,
                      score_drilldown: dict | None = None,
                      element_summaries: dict | None = None,
-                     flags_precomputed: list | None = None) -> str:
+                     flags_precomputed: list | None = None,
+                     forward_signals: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.html.j2")
         flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
@@ -465,6 +551,7 @@ class ReportGenerator:
             score_drilldown=score_drilldown or {},
             element_summaries=element_summaries or {},
             element_config=ELEMENT_CONFIG,
+            forward_signals=forward_signals or {},
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -480,7 +567,8 @@ class ReportGenerator:
                          pe_band_summary: dict | None = None,
                          score_drilldown: dict | None = None,
                          element_summaries: dict | None = None,
-                         flags_precomputed: list | None = None) -> str:
+                         flags_precomputed: list | None = None,
+                         forward_signals: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.md.j2")
         flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
@@ -500,6 +588,7 @@ class ReportGenerator:
             score_drilldown=score_drilldown or {},
             element_summaries=element_summaries or {},
             element_config=ELEMENT_CONFIG,
+            forward_signals=forward_signals or {},
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -771,6 +860,122 @@ class ReportGenerator:
             )
 
         return decision
+
+    # ── Forward Signals (Phase 2) ──
+
+    @staticmethod
+    def _forward_band(config: dict, value) -> str:
+        """Which interpretation band a value falls in."""
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return ""
+        for threshold, label in config["bands"]:
+            if value >= threshold:
+                return label
+        return config["low_label"]
+
+    def _build_forward_signals(self, result) -> dict:
+        """The Phase 2 signals, ready to render, or `{}` when there are none.
+
+        Deliberately **not** part of `_build_score_drilldown`. That path skips
+        every `weight == 0` metric and reads display names from
+        `METRIC_DISPLAY_NAMES`, so reusing it would mean either faking a weight
+        these metrics must never have or silently dropping all five.
+
+        Momentum is read from `result.momentum` — the report never reaches into
+        score history itself, which would bypass the per-caller history
+        redirect the service owns.
+        """
+        metrics = result.metrics or {}
+        present = [mid for mid in FORWARD_SIGNALS if mid in metrics]
+        momentum = getattr(result, "momentum", None)
+
+        if not present and not momentum:
+            # A ticker analysed before this phase. Nothing to say, and saying
+            # "unknown" five times would imply a measurement was attempted.
+            return {}
+
+        signals = []
+        for metric_id in present:
+            config = FORWARD_SIGNALS[metric_id]
+            outcome = metrics[metric_id]
+            entry = {
+                "id": metric_id,
+                "name": config["name"],
+                "direction": config["direction"],
+                "meaning": config["meaning"],
+                "available": bool(getattr(outcome, "ok", False)),
+                "value": None,
+                "formatted": "—",
+                "band": "",
+                "reason": "",
+                "metadata": {},
+            }
+            if entry["available"]:
+                entry["value"] = outcome.value
+                entry["metadata"] = outcome.metadata or {}
+                try:
+                    entry["formatted"] = config["format"].format(outcome.value)
+                except (ValueError, TypeError):
+                    entry["formatted"] = str(outcome.value)
+                # A metric that declared its own band wins: headroom's are
+                # owner-editable in YAML params, and a tuned band must beat a
+                # default declared in this file.
+                entry["band"] = (entry["metadata"].get("band")
+                                 or self._forward_band(config, outcome.value))
+            else:
+                # Indeterminate renders as unknown *with its reason*, the same
+                # way an eligibility gate does. A blank cell would read as
+                # "nothing to report" rather than "could not be measured".
+                entry["reason"] = getattr(outcome, "error", "") or "not available"
+            signals.append(entry)
+
+        return {
+            "signals": signals,
+            "momentum": self._build_momentum(momentum),
+            "disclaimer": FORWARD_SIGNALS_DISCLAIMER,
+        }
+
+    @staticmethod
+    def _build_momentum(momentum: dict | None) -> dict | None:
+        """Score trajectory for the reader, with absence kept distinct from zero.
+
+        A zero delta means flat; no delta means unknown. They look identical in
+        a table and mean opposite things, so the unavailable case renders with
+        its own label and the reason it is unavailable — never as 0.0.
+        """
+        if not momentum:
+            return None
+
+        latest = momentum.get("latest")
+        if not latest:
+            return {
+                "available": False,
+                "label": MOMENTUM_UNAVAILABLE_LABEL,
+                "reason": momentum.get("reason", ""),
+                "composite_delta": None,
+                "element_deltas": [],
+            }
+
+        return {
+            "available": True,
+            "label": "Composite trajectory",
+            "reason": "",
+            "composite_delta": latest["composite_delta"],
+            "composite_from": latest["composite_from"],
+            "composite_to": latest["composite_to"],
+            "from_date": latest["from_date"],
+            "to_date": latest["to_date"],
+            "span": latest["span"],
+            "element_deltas": sorted(
+                (
+                    {"element": element,
+                     "label": ELEMENT_CONFIG.get(element, {}).get("label", element),
+                     "delta": delta}
+                    for element, delta in (latest.get("element_deltas") or {}).items()
+                ),
+                key=lambda e: e["label"],
+            ),
+        }
 
     def _build_executive_summary(self, result) -> dict:
         """Build executive summary data for the decision dashboard."""

@@ -206,7 +206,10 @@ class ComputeEngine:
 
         if missing:
             return MetricResult(
-                error=f"Missing inputs: {missing}",
+                # Rendered, not repr'd: this string reaches the report as the
+                # reason a signal is unknown, and a reader should not have to
+                # decode a Python set literal to learn what was not fetched.
+                error=f"Missing input(s): {', '.join(sorted(missing))}",
                 metadata={"metric_id": metric_id},
             )
 

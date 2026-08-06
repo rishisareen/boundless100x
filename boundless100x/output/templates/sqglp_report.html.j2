@@ -698,6 +698,92 @@
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 7.5: Forward Signals (Phase 2, zero weight)    -->
+<!-- Deliberately outside the SQGLP element sections above: -->
+<!-- nothing here contributed to the composite, and the     -->
+<!-- reader must never have to infer that.                  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+{% if forward_signals %}
+<div id="forward-signals"></div>
+<h2>Forward Signals</h2>
+
+<div class="card" style="margin-top: 15px;">
+  <p style="color: var(--gray); font-style: italic; margin-bottom: 14px;">
+    {{ forward_signals.disclaimer }}
+  </p>
+
+  {% if forward_signals.signals %}
+  <table>
+    <thead>
+      <tr>
+        <th>Signal</th>
+        <th style="text-align: right;">Reading</th>
+        <th>Interpretation</th>
+        <th>Direction</th>
+        <th>What it measures</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in forward_signals.signals %}
+      <tr>
+        <td><strong>{{ s.name }}</strong></td>
+        <td style="text-align: right; font-weight: 600;">{{ s.formatted }}</td>
+        <td>
+          {% if s.available %}
+          {{ s.band }}
+          {% else %}
+          <span style="color: var(--gray);">unknown</span>
+          {% endif %}
+        </td>
+        <td style="color: var(--gray);">{{ s.direction }}</td>
+        <td style="color: var(--gray); font-size: 0.92em;">
+          {{ s.meaning }}
+          {% if not s.available %}<br><em>{{ s.reason }}</em>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if forward_signals.momentum %}
+  <h3 style="margin-top: 22px;">Score Trajectory</h3>
+  {% if forward_signals.momentum.available %}
+  <p>
+    Composite
+    <strong>{{ "%.2f"|format(forward_signals.momentum.composite_from) }} &rarr;
+    {{ "%.2f"|format(forward_signals.momentum.composite_to) }}</strong>
+    ({{ "%+.2f"|format(forward_signals.momentum.composite_delta) }})
+    over {{ forward_signals.momentum.span }},
+    {{ forward_signals.momentum.from_date }} to {{ forward_signals.momentum.to_date }}.
+  </p>
+  {% if forward_signals.momentum.element_deltas %}
+  <table>
+    <thead><tr><th>Element</th><th style="text-align: right;">Change</th></tr></thead>
+    <tbody>
+      {% for e in forward_signals.momentum.element_deltas %}
+      <tr>
+        <td>{{ e.label }}</td>
+        <td style="text-align: right; font-weight: 600;" class="{% if e.delta > 0 %}score-high{% elif e.delta < 0 %}score-low{% else %}score-mid{% endif %}">
+          {{ "%+.2f"|format(e.delta) }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% else %}
+  <p>
+    <strong>{{ forward_signals.momentum.label }}</strong>
+    <span style="color: var(--gray);">— {{ forward_signals.momentum.reason }}</span>
+  </p>
+  {% endif %}
+  {% endif %}
+</div>
+{% endif %}
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
 <!-- SECTION 8: Investment Thesis (LLM only)                -->
 <!-- ═══════════════════════════════════════════════════════ -->
 {% if llm_analysis and not llm_analysis.get('skipped') %}

@@ -45,11 +45,11 @@ logger = logging.getLogger(__name__)
 OK = "ok"
 INSUFFICIENT_HISTORY = "insufficient_history"
 
-# Roughly a quarter and roughly a year, for the human span label only. Nothing
-# is computed from these — `interval_days` is always the exact figure.
-_QUARTER_DAYS = 100
-_HALF_YEAR_DAYS = 200
-_YEAR_DAYS = 400
+# Boundaries for the human span label only. Nothing is computed from these —
+# `interval_days` is always the exact figure and travels beside the label.
+_SHORT_GAP_DAYS = 60
+_YEAR_SCALE_DAYS = 330
+_DAYS_PER_MONTH = 30.44
 
 
 def _span_label(days: int) -> str:
@@ -57,14 +57,15 @@ def _span_label(days: int) -> str:
 
     A label, never a rounding: `interval_days` travels beside it so a reader
     who needs the exact gap has it. The label exists so a table cannot present
-    a year of drift with the same weight as a quarter of momentum.
+    a year of drift with the same weight as a quarter of momentum — which
+    means the approximation has to be honest at every scale, not just at the
+    ends. Months rather than quarters, because a "quarter" bucket wide enough
+    to cover 90 to 200 days calls half a year one quarter.
     """
-    if days < _QUARTER_DAYS:
+    if days < _SHORT_GAP_DAYS:
         return f"{days} days"
-    if days < _HALF_YEAR_DAYS:
-        return f"{days} days (~1 quarter)"
-    if days < _YEAR_DAYS:
-        return f"{days} days (~half a year)"
+    if days < _YEAR_SCALE_DAYS:
+        return f"{days} days (~{round(days / _DAYS_PER_MONTH)} months)"
     return f"{days} days (~{days / 365.25:.1f} years)"
 
 
