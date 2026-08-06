@@ -320,9 +320,34 @@ orchestrator.py          [:3000] literal ──▶ config llm.pass1_ar_char_budg
   with recognizable headings (assert `found` + correct text slice + cap
   enforcement), one without (assert `fallback` + first-N-pages text); newest
   vs. multi-year extraction.
+- **Scan window is separate from the fallback window (2026-08-06,
+  implementation):** a survey of the 20 fetched reports found MD&A starting at
+  pages 20–147, so searching only `max_pages: 30` would have made MD&A
+  effectively unfindable and sent every report down the fallback path. A new
+  `scan_pages: 150` governs heading search, while `max_pages: 30` continues to
+  define the fallback text — which is what keeps the all-fallback combined
+  string byte-identical to pre-section behaviour.
+- **The contents page is the real adversary:** an annual report's contents
+  page lists every section name in exactly the format a heading takes, so
+  naive first-match detection resolves MD&A to the contents page and tags it
+  `found` — confidently wrong, the one outcome provenance cannot rescue.
+  Three independent guards reject listings: an explicit Contents/Index title,
+  a bulk of page-number entries (prefixed or bare), and two or more distinct
+  section names on one page. Verified against known cases: CAMS FY26 governance
+  moved from the contents page to the real section, as did Control Print's.
 - **Done when:** a real refetched ticker yields ≥2 retained reports and a
   sections file where at least `mdna` is `found` for a company with a
   standard AR, and `fallback` never raises.
+- **Real-corpus result (2026-08-06):** run over all 20 fetched reports —
+  40/60 slots `found`, 20 `fallback`; per section `mdna` 12/20,
+  `chairman` 10/20, `governance` 18/20. Chairman's letters are genuinely
+  absent from many reports. Nothing raised, including a 2-page stub report
+  (543720) that resolved to all-`fallback`, and an intentionally corrupt PDF.
+  R7 verified on real data: for the all-fallback report the new combined
+  string is **byte-identical** to today's first-30-pages extraction at the
+  suite's 5,000-char cap. The tightened guards trade a little recall for
+  precision — two MD&A hits became fallbacks — which is the correct direction,
+  since a fallback is an honest unknown and a false `found` is not.
 
 ### U5. Config-driven Pass 1 budget
 

@@ -42,9 +42,20 @@ llm:
 # ── Annual Reports ──
 annual_reports:
   enabled: true
-  max_reports: 1          # Only need the most recent report
-  max_pages: 30           # Extract text from first N pages
-  max_text_chars: 5000    # Cap extracted text length
+  max_reports: 3          # Retain several years — promises-kept compares a
+                          # report's guidance against the next year's delivery
+  max_pages: 30           # Fallback window: first N pages, used when a
+                          # section cannot be located
+  max_text_chars: 5000    # Cap on the combined single-string AR text
+  scan_pages: 150         # How deep to search for section headings. MD&A
+                          # commonly starts past page 100; a 30-page search
+                          # finds the chairman's letter and little else.
+  sections:               # Per-section character caps. Keep every cap >=
+                          # max_text_chars, or the all-fallback combined
+                          # string stops matching pre-section behaviour.
+    mdna: 12000
+    chairman: 6000
+    governance: 8000
 
 # ── Output ──
 output:

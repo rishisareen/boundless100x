@@ -10,7 +10,10 @@ from boundless100x.data_fetcher.fetch_price_volume import PriceVolumeFetcher
 from boundless100x.data_fetcher.fetch_shareholding import ShareholdingFetcher
 from boundless100x.data_fetcher.fetch_corporate_actions import CorporateActionsFetcher
 from boundless100x.data_fetcher.fetch_analyst_coverage import AnalystCoverageFetcher
-from boundless100x.data_fetcher.download_annual_reports import AnnualReportDownloader
+from boundless100x.data_fetcher.download_annual_reports import (
+    AnnualReportDownloader,
+    combined_text,
+)
 from boundless100x.data_fetcher.bse_codes import BseCodeResolver
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,8 @@ class DataFetcherSuite:
         self.ar_max_reports = ar_config.get("max_reports", 1)
         self.ar_max_pages = ar_config.get("max_pages", 30)
         self.ar_max_text_chars = ar_config.get("max_text_chars", 5000)
+        self.ar_scan_pages = ar_config.get("scan_pages", 150)
+        self.ar_sections = ar_config.get("sections", {})
 
         self.raw_data_dir = str(
             Path(__file__).parent / "raw_data"
@@ -78,7 +83,11 @@ class DataFetcherSuite:
         to decide whether the fetch was good enough to analyze at all.
         """
         logger.info(f"Fetching all data for {ticker}")
-        data = {"annual_report_text": None, "source_status": {}}
+        data = {
+            "annual_report_text": None,
+            "annual_report_sections": {},
+            "source_status": {},
+        }
 
         # 1. Screener.in financials (P&L, BS, CF, Ratios, Shareholding)
         try:
@@ -208,16 +217,29 @@ class DataFetcherSuite:
         if self.ar_enabled:
             logger.info(f"Fetching annual report for {ticker} (BSE={bse_code})...")
             try:
-                ar_text = self.annual_reports.download_and_extract(
+                by_year = self.annual_reports.download_and_extract(
                     bse_code=bse_code,
                     output_dir=self.raw_data_dir,
                     max_reports=self.ar_max_reports,
                     max_pages=self.ar_max_pages,
+                    sections=self.ar_sections,
+                    scan_pages=self.ar_scan_pages,
                 )
-                if ar_text:
+                # All retained years, for the Phase 2 forward-growth module.
+                data["annual_report_sections"] = by_year
+
+                # The single-string view every current consumer still reads,
+                # built from the most recent report only.
+                if by_year:
+                    latest = by_year[max(by_year)]
+                    ar_text = combined_text(latest)
                     data["annual_report_text"] = ar_text[:self.ar_max_text_chars]
+                    provenance = {
+                        name: section["provenance"] for name, section in latest.items()
+                    }
                     logger.info(
-                        f"Annual report text: {len(data['annual_report_text'])} chars"
+                        f"Annual report text: {len(data['annual_report_text'])} chars "
+                        f"from {len(by_year)} report(s); sections {provenance}"
                     )
                 else:
                     logger.info(f"No annual report text extracted for {ticker}")
