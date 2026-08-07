@@ -69,21 +69,32 @@ survived triage.
   durable. A cap could therefore only ever be reported as already breached,
   never prevented.
 
-- **Unknown sectors read as sector headroom.** Positioned names whose sector
-  could not be read are dropped into `unknown_sector` and surfaced only as a
-  human-readable note, which no machine consumer reads — so they are invisible
-  to the router's cap check. Not rare: only tickers fetched after the
-  breadcrumb fix carry `metadata.sector`, and any ticker whose analysis failed
-  arrives sectorless. Relatedly, a sector cap of 0 or 1 cannot fire at all,
-  because `check_concentration` only reports groups of 2+. Harmless at the
-  shipped cap of 3.
+- **~~Unknown sectors read as sector headroom.~~** **Fixed** (Tranche 3).
+  `would_breach` now asks "can one more be shown to fit?" and counts every
+  unread sector as though it might be the one at issue — a worst case rather
+  than a refusal, because blocking on any unknown at all would let one
+  sectorless holding freeze the whole book. A candidate with no sector of its
+  own is measured against the fullest group. `check_concentration` also carries
+  every sector group including singles (`_MIN_GROUP` now gates only the prose)
+  and a top-level `sector_max`, which is what lets a cap of 1 fire at all and a
+  cap of 0 reach a sector holding nothing. The original follows.
 
-  **The stakes rose in Tranche 1b.** `portfolio.would_breach` now gates the
-  money-moving path as well as the advisory one, so a sectorless name is a
-  silent pass on a transition rather than on a recommendation. The lane axis
-  fails closed on every gap it meets; the sector axis still fails *open* on
-  this one, which is the inconsistency to close in Tranche 3. Refetching the
-  corpus is the operational mitigation until then.
+  Positioned names whose sector could not be read are dropped into
+  `unknown_sector` and surfaced only as a human-readable note, which no machine
+  consumer reads — so they are invisible to the router's cap check. Not rare:
+  only tickers fetched after the breadcrumb fix carry `metadata.sector`, and
+  any ticker whose analysis failed arrives sectorless. Relatedly, a sector cap
+  of 0 or 1 cannot fire at all, because `check_concentration` only reports
+  groups of 2+. Harmless at the shipped cap of 3.
+
+  **The stakes rose in Tranche 1b**, which is why this was worth doing rather
+  than deferring: `portfolio.would_breach` had just started gating the
+  money-moving path as well as the advisory one, so a sectorless name became a
+  silent pass on a *transition* rather than on a recommendation. The lane axis
+  failed closed on every gap it met and the sector axis failed open on this
+  one. All 22 cached tickers carry a sector today, so the fix changes nothing
+  about the current corpus — a ticker whose analysis errors mid-run is the case
+  it actually catches.
 
 ## Reliability
 
@@ -185,14 +196,26 @@ survived triage.
   Event validation checks key presence, not value shape. An event with
   `"ticker": null` loads cleanly and crashes later in `exit_views`.
 
-- **`watchlist catalyst` writes state nothing on the CLI can read.** The
-  catalyst gates fast-lane entry and fires an exit rule, but
+- **~~`watchlist catalyst` writes state nothing on the CLI can read.~~**
+  **Fixed** (Tranche 3): `list()` carries the description, status, window and a
+  derived three-valued `catalyst_overdue`, and `watchlist show` has a Catalyst
+  column that distinguishes active, overdue, spent and unreadable. The original
+  follows.
+
+  The catalyst gates fast-lane entry and fires an exit rule, but
   `WatchlistManager.list()` returns no catalyst field, so `watchlist show` has
   no column for it. An owner cannot see which companies have an active
   catalyst, or which window has passed, without a full `advance` or opening the
   JSON by hand.
 
-- **No CLI path changes an entry's lane** after `watchlist add --lane`. `add`
+- **~~No CLI path changes an entry's lane~~** — **fixed** (Tranche 3):
+  `watchlist lane <ticker> <lane> [--reason]` moves it, leaves the state alone,
+  and appends to a new `lane_history` rather than to `state_history`, since no
+  state moved. A positioned company is moved with a warning naming what changed
+  (lane-scoped exits) and what did not (the universal kill-switches). The
+  original follows.
+
+  After `watchlist add --lane`, `add`
   returns False for an existing ticker; `remove` + re-`add` discards the
   append-only `state_history`.
 
@@ -261,7 +284,14 @@ added three more, none blocking.
   safe direction, but inconsistent with the module's own loudness rule; a
   "periods must be ascending, else error" check would close it.
 
-- **No decay exit from `watch` in either lane.** `fast_lane_qualification_
+- **~~No decay exit from `watch` in either lane.~~** **Fixed** (Tranche 3):
+  both `qualification_failed` and `fast_lane_qualification_failed` now cover
+  `watch`. The drop outranks a buy-zone firing in the same run on the core
+  side; on the fast lane the two cannot co-fire, because its drop floor (5.0)
+  sits below its `quality_floor` gate (5.5) — a gap that is now itself pinned
+  by a test. The original follows.
+
+  `fast_lane_qualification_ `fast_lane_qualification_
   failed` covers `screen`/`qualify` only, mirroring the core lane's
   pre-existing gap: a candidate whose composite decays below the floor while
   sitting in `watch` is never dropped — only `fundamentals_deteriorated` can

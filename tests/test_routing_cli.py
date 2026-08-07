@@ -1062,3 +1062,101 @@ class TestOneDeploymentFundsOneExit:
 
         assert result.exit_code == 0
         assert stores.q().routing_for(self.SECOND_ID)["candidate"] == "ZENSAR"
+
+
+class TestWatchlistShowAndLane:
+    """The two CLI surfaces Tranche 3 added, tested where an owner meets them.
+
+    Both close the same kind of gap: state the system reads and writes, that no
+    command could show or change. A catalyst gates fast-lane entry and fires an
+    exit rule while being invisible; a lane decided how a company was judged
+    and could only be set once, at `add`.
+    """
+
+    def catalysed(self, stores, ticker="ZENSAR", by="2099-06-30", spent=False):
+        wm = stores.wm()
+        wm.add(ticker, lane="rerating")
+        wm.record_catalyst(ticker, "Demerger of the services arm", by)
+        if spent:
+            wm.mark_catalyst_spent(ticker)
+
+    def test_show_renders_an_active_catalyst_with_its_window(self, run, stores):
+        self.catalysed(stores)
+
+        result = run("watchlist", "show")
+
+        assert "Demerger of the services arm" in result.output
+        assert "2099-06-30" in result.output
+
+    def test_show_marks_a_window_that_has_passed(self, run, stores):
+        self.catalysed(stores, by="2020-01-31")
+
+        result = run("watchlist", "show")
+
+        assert "window passed" in result.output
+
+    def test_show_marks_a_spent_catalyst(self, run, stores):
+        self.catalysed(stores, spent=True)
+
+        assert "(spent)" in run("watchlist", "show").output
+
+    def test_show_says_nothing_for_a_company_with_no_catalyst(self, run, stores):
+        stores.wm().add("ASTRAL")
+
+        result = run("watchlist", "show")
+
+        assert "ASTRAL" in result.output
+        assert "window" not in result.output
+
+    def test_lane_moves_the_company_and_keeps_its_state(self, run, stores):
+        wm = stores.wm()
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "watch", "seed")
+
+        result = run("watchlist", "lane", "ASTRAL", "rerating")
+
+        assert result.exit_code == 0
+        entry = stores.wm().get("ASTRAL")
+        assert entry["lane"] == "rerating"
+        assert entry["state"] == "watch"
+
+    def test_lane_warns_when_the_company_holds_a_position(self, run, stores):
+        """Its exit rules just changed, and an owner moving live capital
+        deserves to read that in the same breath as the confirmation."""
+        wm = stores.wm()
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "probe", "seed", applied_by="owner")
+
+        result = run("watchlist", "lane", "ASTRAL", "rerating")
+
+        assert "holds a position" in result.output
+        assert "kill-switches are universal" in result.output
+
+    def test_lane_is_quiet_for_a_company_holding_nothing(self, run, stores):
+        stores.wm().add("ASTRAL")
+
+        result = run("watchlist", "lane", "ASTRAL", "rerating")
+
+        assert "holds a position" not in result.output
+
+    def test_lane_refuses_an_unknown_lane(self, run, stores):
+        stores.wm().add("ASTRAL")
+
+        result = run("watchlist", "lane", "ASTRAL", "momentum")
+
+        assert result.exit_code == 1
+        assert stores.wm().get("ASTRAL")["lane"] == "core"
+
+    def test_lane_refuses_an_untracked_ticker(self, run, stores):
+        result = run("watchlist", "lane", "NOPE", "rerating")
+
+        assert result.exit_code == 1
+        assert "not on the watchlist" in result.output
+
+    def test_lane_refuses_a_change_to_the_lane_it_is_already_in(self, run, stores):
+        stores.wm().add("ASTRAL")
+
+        result = run("watchlist", "lane", "ASTRAL", "core")
+
+        assert result.exit_code == 1
+        assert "already in the core lane" in result.output

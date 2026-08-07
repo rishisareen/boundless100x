@@ -755,7 +755,16 @@ STATE_COLOURS = {
 
 @watchlist_app.command("show")
 def watchlist_show():
-    """Show all companies in the watchlist."""
+    """Show all companies in the watchlist.
+
+    The catalyst has a column because the system acts on it — it gates
+    fast-lane entry and fires an exit rule — and nothing here could read it
+    back before. An owner could record one and then have no way to see which
+    companies held one, or whose window had passed, short of running a full
+    `advance` or opening the JSON.
+    """
+    from rich.markup import escape
+
     from boundless100x.watchlist import WatchlistManager
 
     wm = WatchlistManager()
@@ -772,6 +781,7 @@ def watchlist_show():
     table.add_column("Last Run", style="dim")
     table.add_column("Composite", justify="right")
     table.add_column("Checks", justify="right")
+    table.add_column("Catalyst", max_width=34)
     table.add_column("Notes")
 
     for e in entries:
@@ -784,10 +794,46 @@ def watchlist_show():
             last_run,
             composite,
             str(e["checkpoints"]) if e["checkpoints"] else "—",
-            e.get("notes", ""),
+            _catalyst_cell(e),
+            escape(e.get("notes", "")),
         )
 
     console.print(table)
+
+
+def _catalyst_cell(row: dict) -> str:
+    """The catalyst, its window, and whether that window has passed.
+
+    Three states worth telling apart, because they call for different things.
+    An **active** catalyst whose window is still open is the ordinary case and
+    stays quiet. One **overdue** is the fast lane's own exit rule about to
+    fire, so it is red and says so. A **spent** one is history the owner
+    deliberately kept — `mark_catalyst_spent` records rather than deletes,
+    because a position whose catalyst was spent without the re-rating following
+    is exactly the case worth being able to see.
+
+    An unreadable `expected_by` renders as unknown rather than as a date
+    comfortably in the future, which is the direction that would matter.
+    """
+    from rich.markup import escape
+
+    description = row.get("catalyst")
+    if not description:
+        return "[dim]—[/dim]"
+
+    window = row.get("catalyst_expected_by") or "no date"
+    overdue = row.get("catalyst_overdue")
+    if row.get("catalyst_status") == "spent":
+        tone, suffix = "dim", " (spent)"
+    elif overdue is True:
+        tone, suffix = "red", f" (window passed {window})"
+    elif overdue is None:
+        tone, suffix = "yellow", f" (window unreadable: {window})"
+    else:
+        tone, suffix = "", f" (by {window})"
+
+    text = f"{escape(description)}{escape(suffix)}"
+    return f"[{tone}]{text}[/{tone}]" if tone else text
 
 
 @watchlist_app.command("add")
@@ -870,6 +916,63 @@ def watchlist_catalyst(
     except WatchlistError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+
+
+@watchlist_app.command("lane")
+def watchlist_lane(
+    ticker: str = typer.Argument(help="NSE symbol whose lane is changing"),
+    lane: str = typer.Argument(help="Lane to move it to: core or rerating"),
+    reason: str = typer.Option(
+        "", "--reason", help="Why the lane changed. Recorded with the change."
+    ),
+):
+    """Move a tracked company to the other lane, keeping its history.
+
+    The lane could only be set at `add`, and `add` refuses a ticker already
+    tracked — so the only way to change one was `remove` then re-`add`, which
+    throws away the append-only `state_history` and every piece of evidence
+    behind the states the company had earned.
+
+    The state does not move. A lane says how a company is judged, not how far
+    along it is; the next `advance` evaluates it under the new lane's rules,
+    which is where the change is meant to show up.
+
+    **A positioned company keeps its capital and changes its exit rules**, so
+    the command says which ones. The six fundamentals kill-switches are
+    universal and apply in both lanes by design (§6.2) — what changes is the
+    lane-scoped exits, and an owner moving a live position deserves to read
+    that in the same breath as the confirmation.
+    """
+    from rich.markup import escape
+
+    from boundless100x.lifecycle import states as lifecycle_states
+    from boundless100x.watchlist import WatchlistError, WatchlistManager
+
+    wm = WatchlistManager()
+    symbol = ticker.upper()
+    entry = wm.get(symbol)
+    if entry is None:
+        console.print(f"[red]{escape(symbol)} is not on the watchlist[/red]")
+        raise typer.Exit(1)
+
+    try:
+        record = wm.set_lane(symbol, lane, reason=reason)
+    except WatchlistError as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]{escape(symbol)}: {record['from']} → {record['to']} lane[/green] "
+        f"[dim](state unchanged: {record['state']})[/dim]"
+    )
+    if record["state"] in lifecycle_states.POSITIONED:
+        console.print(
+            f"[yellow]{escape(symbol)} holds a position. The lane-scoped exit "
+            f"rules that apply to it have changed; the six fundamentals "
+            f"kill-switches are universal and are unaffected. Run `watchlist "
+            f"advance` to see it evaluated under the {record['to']} lane."
+            f"[/yellow]"
+        )
 
 
 @watchlist_app.command("remove")

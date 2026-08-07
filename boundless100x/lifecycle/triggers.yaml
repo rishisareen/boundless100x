@@ -74,7 +74,17 @@ triggers:
       A gate disqualified the company outright. Failing a 100x gate does not
       make it a bad business, only an unlikely hundred-bagger — it leaves this
       lane rather than being marked avoid.
-    from: [screen, qualify]
+
+      `watch` is in scope alongside the two earlier states, and its absence was
+      a hole rather than a decision: a candidate that qualified, was moved to
+      `watch` to await an entry price, and then had its verdict decay sat there
+      indefinitely, because only a fundamentals kill-switch could remove it and
+      no capital was at risk for one to protect. That is the same criticism
+      this rule's own rationale levels at `screen` — a stalled entry is
+      indistinguishable from a considered one. Nothing here moves money, so the
+      drop auto-applies and a re-qualifying company is one `watchlist add`
+      away.
+    from: [screen, qualify, watch]
     to: dropped
     lane: [core]
     mode: all
@@ -150,7 +160,14 @@ triggers:
       needs to say so itself now that the core drop rule no longer applies to
       it — otherwise a failing candidate sits in `screen` indefinitely, which
       is indistinguishable from one nobody has got round to evaluating.
-    from: [screen, qualify]
+
+      `watch` is in scope for exactly that reason, and leaving it out made the
+      lane's "complete path" claim slightly overstated: a candidate whose
+      composite decayed below the floor while waiting for its gates was
+      unreachable by anything but a fundamentals kill-switch. The floor is a
+      quality condition on being a candidate at all, not only on becoming one,
+      so it holds for as long as the company is one.
+    from: [screen, qualify, watch]
     to: dropped
     lane: [rerating]
     mode: all

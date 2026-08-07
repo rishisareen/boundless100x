@@ -375,6 +375,56 @@ class WatchlistManager(_JsonStore):
         self._commit(staged)
         return True
 
+    def set_lane(self, ticker: str, lane: str, reason: str = "") -> dict:
+        """Move a tracked company to the other lane, keeping everything else.
+
+        The lane was settable once, at `add`, and nothing could change it
+        afterwards: `add` returns False for a ticker already tracked, so the
+        only route was `remove` then re-`add` — which discards the
+        append-only `state_history` and with it every piece of evidence behind
+        the states the company has already earned. A company whose thesis
+        changed from "compounder" to "re-rating" is a normal thing to happen
+        and should not cost its record.
+
+        **The state is untouched.** A lane says how a company is judged, not
+        how far along it is, and re-deriving one from the other would silently
+        promote or demote a company nobody had re-evaluated. The next
+        `advance` evaluates it under the new lane's rules, which is where a
+        change of lane is supposed to show up.
+
+        **Recorded in `lane_history`, not in `state_history`.** This is not a
+        transition — no state moved — and writing it into the state log would
+        put a record there with no `to` anybody could read. It is still
+        append-only, because which lane's kill-switches applied when is
+        exactly the kind of thing a later review needs.
+
+        A no-op change is refused rather than recorded: a log of lane changes
+        in which nothing changed is noise in the one place that must stay
+        readable.
+        """
+        staged, entry = self._stage_entry(ticker)
+        if lane not in LANES:
+            raise WatchlistError(f"unknown lane {lane!r} — one of {', '.join(LANES)}")
+
+        previous = entry["lane"]
+        if previous == lane:
+            raise WatchlistError(
+                f"{ticker.upper()} is already in the {lane} lane — nothing to change"
+            )
+
+        record = {
+            "at": _now(),
+            "from": previous,
+            "to": lane,
+            "state": entry["state"],
+            "reason": reason,
+        }
+        entry.setdefault("lane_history", []).append(record)
+        entry["lane"] = lane
+        self._commit(staged)
+        logger.info(f"{ticker.upper()}: lane {previous} → {lane}")
+        return record
+
     def get(self, ticker: str) -> dict | None:
         """The stored entry, for reading.
 
@@ -389,10 +439,25 @@ class WatchlistManager(_JsonStore):
         return list(self.data["companies"].keys())
 
     def list(self) -> list[dict]:
-        """Flat rows for display, newest state first in the history."""
+        """Flat rows for display, newest state first in the history.
+
+        The catalyst travels because it is owner-recorded state that gates
+        fast-lane entry and fires an exit rule, and nothing on any surface
+        could read it back: `watchlist catalyst` wrote it, and seeing it again
+        meant a full `advance` or opening the JSON by hand. State the system
+        acts on and the owner cannot see is state the owner cannot correct.
+
+        `catalyst_due` is derived rather than stored, because "has the window
+        passed?" is a question about today and a stored answer would be wrong
+        by tomorrow. Three-valued, in the house style: `None` when there is no
+        catalyst or its date cannot be read, so an unreadable window never
+        renders as one comfortably in the future.
+        """
         rows = []
         for ticker, entry in self.data["companies"].items():
             snapshot = entry.get("last_score_snapshot") or {}
+            catalyst = entry.get("catalyst") or {}
+            expected = lifecycle_states.as_date(catalyst.get("expected_by"))
             rows.append({
                 "ticker": ticker,
                 "lane": entry["lane"],
@@ -402,6 +467,12 @@ class WatchlistManager(_JsonStore):
                 "last_composite": snapshot.get("composite"),
                 "verdict": snapshot.get("verdict"),
                 "checkpoints": len(entry.get("checkpoints") or []),
+                "catalyst": catalyst.get("description") or "",
+                "catalyst_status": catalyst.get("status") or "",
+                "catalyst_expected_by": catalyst.get("expected_by") or "",
+                "catalyst_overdue": (
+                    None if expected is None else expected < datetime.now().date()
+                ),
                 "notes": entry.get("notes", ""),
             })
         return rows

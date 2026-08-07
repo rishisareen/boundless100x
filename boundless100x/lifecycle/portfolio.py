@@ -199,9 +199,18 @@ def check_concentration(entries_with_sector, config: dict | None = None) -> dict
         sectors  [{sector, tickers, count, max, breach}]  — groups of 2+ only
         unknown_sector, breaches, notes
 
-    `sectors` reports every group of two or more because correlation is worth
-    saying out loud before it is worth stopping; `breach` marks the subset that
-    exceeds the configured cap.
+    `sectors` carries **every** sector holding a positioned name, including
+    the singles. That is a change from reporting only groups of two or more,
+    and it is what `would_breach` needs to answer its question at all: a cap of
+    1 is breached by a candidate joining a sector that holds exactly one name,
+    and a list that started at two could not see it. `_MIN_GROUP` survives
+    where it belongs — in `notes`, which is prose for a person, and where one
+    name genuinely is not a concentration worth a line.
+
+    `sector_max` is carried at the top level beside the groups, because a
+    candidate can join a sector holding *nothing*, and at a cap of 0 even that
+    breaches. Read off a group, the cap is invisible exactly when there is no
+    group to read it from.
     """
     settings = config_from(config)
     lane_caps = settings["max_positioned_per_lane"]
@@ -226,8 +235,14 @@ def check_concentration(entries_with_sector, config: dict | None = None) -> dict
     breaches = [lane["breach_note"] for lane in lanes.values() if lane["breach"]]
     breaches += [group["note"] for group in sectors if group["breach"]]
 
+    # `_MIN_GROUP` gates the prose, not the data. A sector holding one name is
+    # in `sectors` because the cap check needs it there, and out of `notes`
+    # because one name is not a correlation worth telling anybody about.
     notes = list(breaches)
-    notes += [group["note"] for group in sectors if not group["breach"]]
+    notes += [
+        group["note"] for group in sectors
+        if not group["breach"] and group["count"] >= _MIN_GROUP
+    ]
     notes += [
         lane["note"] for lane in lanes.values()
         if lane["max"] is None and lane["positioned"]
@@ -251,6 +266,9 @@ def check_concentration(entries_with_sector, config: dict | None = None) -> dict
         "positioned_tickers": sorted(row["ticker"] for row in rows),
         "lanes": lanes,
         "sectors": sectors,
+        # Beside the groups rather than only inside them: a candidate can join
+        # a sector that holds nothing, and at a cap of 0 that still breaches.
+        "sector_max": sector_cap,
         "unknown_sector": unknown_sector,
         "breaches": breaches,
         "notes": notes,
@@ -314,8 +332,6 @@ def _sector_groups(rows: list[dict], sector_cap) -> tuple[list[dict], list[str]]
     reported = []
     for group in groups.values():
         tickers = sorted(group["tickers"])
-        if len(tickers) < _MIN_GROUP:
-            continue
         breach = sector_cap is not None and len(tickers) > sector_cap
         reported.append({
             "sector": group["sector"],
@@ -408,20 +424,94 @@ def would_breach(lane: str, sector, reading: dict | None) -> list[str]:
                 f"(counts of names, not a share of capital)"
             )
 
+    return reasons + _sector_reasons(sector, reading)
+
+
+def _sector_reasons(sector, reading: dict) -> list[str]:
+    """The sector half of `would_breach`, asked as "can one more be shown to fit?"
+
+    Two gaps made this axis fail *open* while the lane axis failed closed, and
+    both are gaps of the same kind: something the reading cannot see.
+    Positioned names whose sector could not be read sit in `unknown_sector`,
+    which no machine consumer looked at; a candidate whose own sector could not
+    be read folded to `""` and skipped the check entirely. Either way absence
+    read as headroom — the exact failure this module's docstring names — and it
+    matters more than it did, because this question now gates a transition and
+    not only a recommendation.
+
+    **The fix is a worst case, not a refusal.** Blocking on any unknown at all
+    would let one sectorless holding freeze the whole book, which is a
+    guardrail nobody would keep. So each unknown is counted as though it might
+    be in the sector at issue, and the answer is only "no" when even that
+    pessimism breaches the cap:
+
+      * a **known** candidate sector risks its own group plus every unknown;
+      * an **unknown** candidate sector could join any group, so it risks the
+        largest one plus every unknown.
+
+    With a cap of 3 and nothing near it, both stay silent — which is the common
+    case and must remain cheap. When the worst case does breach, the message
+    says whether it is a fact or an uncertainty, and names the refetch that
+    turns the second into the first.
+
+    The cap is read off the reading rather than off a group, because a
+    candidate can join a sector holding nothing at all, and at a cap of 0 even
+    that breaches.
+    """
+    cap = reading.get("sector_max")
+    if cap is None:
+        return [
+            "no sector cap is configured (portfolio.max_positioned_per_sector), "
+            "so there is no limit to check one more name against — refused "
+            "rather than assumed"
+        ]
+
+    groups = reading.get("sectors") or []
+    unknown = list(reading.get("unknown_sector") or [])
     key = _sector_key(sector)
+
     if key:
-        for group in reading.get("sectors") or []:
-            cap = group.get("max")
-            if _sector_key(group.get("sector")) != key or cap is None:
-                continue
-            if group.get("count", 0) + 1 > cap:
-                reasons.append(
-                    f"the {group['sector']} sector already holds "
-                    f"{group['count']} positioned name(s) against a cap of "
-                    f"{cap} ({', '.join(group.get('tickers') or [])}) — counts "
-                    f"of names, not a share of capital"
-                )
-    return reasons
+        group = next(
+            (g for g in groups if _sector_key(g.get("sector")) == key), None
+        )
+        held = (group or {}).get("count", 0)
+        named = ", ".join((group or {}).get("tickers") or []) or "none yet"
+        where = f"the {group['sector'] if group else sector} sector"
+    else:
+        largest = max(groups, key=lambda g: g.get("count", 0), default=None)
+        held = (largest or {}).get("count", 0)
+        named = ", ".join((largest or {}).get("tickers") or []) or "none yet"
+        where = (
+            f"this candidate carries no sector reading, so it could join any "
+            f"sector — the fullest is {largest['sector']} ({named}), which"
+            if largest else
+            "this candidate carries no sector reading, and no positioned name "
+            "does either, so no sector is known to"
+        )
+
+    # A fact: the known count alone breaches, whatever the unknowns are.
+    if held + 1 > cap:
+        if key:
+            return [
+                f"{where} already holds {held} positioned name(s) against a cap "
+                f"of {cap} ({named}) — counts of names, not a share of capital"
+            ]
+        return [
+            f"{where} already holds {held} against a cap of {cap} — one more "
+            f"could breach it, and nothing says it would not. Refetch this "
+            f"ticker to pick up metadata.sector"
+        ]
+
+    # An uncertainty: only the unread sectors push it over.
+    if held + len(unknown) + 1 > cap:
+        return [
+            f"{where} holds {held} positioned name(s) against a cap of {cap} "
+            f"({named}), and {len(unknown)} further positioned name(s) carry no "
+            f"sector reading ({', '.join(unknown)}) — any of them could be in "
+            f"it, so one more cannot be shown to fit. Refetch them to pick up "
+            f"metadata.sector"
+        ]
+    return []
 
 
 def describe(reading: dict | None) -> str:

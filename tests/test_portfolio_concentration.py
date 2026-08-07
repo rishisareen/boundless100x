@@ -214,13 +214,30 @@ class TestSectorGroups:
         assert any("Chemicals" in note for note in reading["notes"])
 
     def test_a_single_name_in_a_sector_is_not_flagged(self):
+        """One name is not a concentration, and nothing tells anybody it is.
+
+        The group is *carried* — `would_breach` needs every sector present or a
+        cap of 1 could never fire — but `_MIN_GROUP` still gates the prose,
+        which is where "not flagged" actually means something to a reader.
+        """
         reading = portfolio.check_concentration([
             entry("A", sector="Chemicals"),
             entry("B", sector="Software"),
         ], CONFIG)
 
-        assert reading["sectors"] == []
         assert reading["breaches"] == []
+        assert not any("Chemicals" in note for note in reading["notes"])
+        assert not any("Software" in note for note in reading["notes"])
+
+    def test_every_sector_is_carried_even_at_one_name(self):
+        """What the prose omits, the data must not: a cap of 1 is breached by a
+        candidate joining a sector holding exactly one name, and a list that
+        started at two could not see it."""
+        reading = portfolio.check_concentration([
+            entry("A", sector="Chemicals"),
+        ], CONFIG)
+
+        assert sector_named(reading, "Chemicals")["count"] == 1
 
     def test_a_group_within_the_sector_cap_is_reported_but_is_not_a_breach(self):
         """Correlation is worth saying out loud before it is worth stopping."""
@@ -258,7 +275,7 @@ class TestSectorGroups:
             entry("B", state=states.WATCH, sector="Chemicals"),
         ], CONFIG)
 
-        assert reading["sectors"] == []
+        assert sector_named(reading, "Chemicals")["tickers"] == ["A"]
 
     def test_the_same_sector_written_differently_is_one_group(self):
         """Screener's breadcrumb is free text; casing and spacing drift."""
@@ -402,9 +419,11 @@ class TestThroughAdvance:
         assert out["errors"] == [("BAD", "fetch failed")]
         assert lane_of(reading, "core")["positioned"] == 2
         assert "BAD" in lane_of(reading, "core")["tickers"]
-        # Its sector is the only thing the failure cost.
+        # Its sector is the only thing the failure cost — and the loss is
+        # recorded rather than absorbed, because a positioned name in an
+        # unreadable sector is what makes a sector count a lower bound.
         assert reading["unknown_sector"] == ["BAD"]
-        assert reading["sectors"] == []
+        assert sector_named(reading, "Chemicals")["tickers"] == ["GOOD"]
 
     def test_a_fast_lane_breach_is_reported_through_advance(self, wm, evaluator):
         """The plan's verification case, end to end."""
@@ -531,3 +550,113 @@ class TestCli:
         reading = portfolio.check_concentration([entry("A", state=states.WATCH)], CONFIG)
 
         assert self.render(reading).strip() == ""
+
+
+class TestTheSectorAxisFailsClosed:
+    """`would_breach`'s sector half, which used to be the one axis failing open.
+
+    Two things the reading cannot see made it pass silently. Positioned names
+    whose sector could not be read sit in `unknown_sector`, which no machine
+    consumer looked at; a candidate whose own sector could not be read folded
+    to `""` and skipped the check altogether. Either way absence read as
+    headroom — and after the cap moved onto the transition path, that was a
+    silent pass on a *buy* rather than on a recommendation.
+
+    The fix is a worst case rather than a refusal, and the distinction is the
+    whole design. Blocking on any unknown at all would let one sectorless
+    holding freeze the entire book, which is a guardrail nobody would keep. So
+    each unknown is counted as though it might be in the sector at issue, and
+    the answer is only "no" when even that pessimism breaches.
+    """
+
+    def reading(self, *entries, config=None):
+        return portfolio.check_concentration(list(entries), config or CONFIG)
+
+    def test_a_full_sector_blocks_one_more(self):
+        blocked = portfolio.would_breach("core", "Chemicals", self.reading(
+            entry("A"), entry("B"), entry("C"),
+        ))
+
+        assert len(blocked) == 1
+        assert "Chemicals" in blocked[0]
+        assert "not a share of capital" in blocked[0]
+
+    def test_a_sector_with_room_says_nothing(self):
+        assert portfolio.would_breach("core", "Chemicals", self.reading(
+            entry("A"), entry("B"),
+        )) == []
+
+    def test_unknowns_that_could_fill_the_sector_block(self):
+        """Two positioned names in unread sectors, one known name in
+        Chemicals: worst case Chemicals already holds three, and one more
+        breaches a cap of three. It cannot be shown to fit, so it does not."""
+        blocked = portfolio.would_breach("core", "Chemicals", self.reading(
+            entry("A", sector="Chemicals"),
+            entry("B", sector=None),
+            entry("C", sector=None),
+        ))
+
+        assert len(blocked) == 1
+        assert "cannot be shown to fit" in blocked[0]
+        assert "B, C" in blocked[0]
+        assert "Refetch" in blocked[0]
+
+    def test_unknowns_that_cannot_fill_it_say_nothing(self):
+        """The half that keeps the guardrail usable. One unread sector beside
+        one known name still leaves room under a cap of three, and a rule that
+        blocked here would stop the book on a breadcrumb that did not parse."""
+        assert portfolio.would_breach("core", "Chemicals", self.reading(
+            entry("A", sector="Chemicals"),
+            entry("B", sector=None),
+        )) == []
+
+    def test_a_candidate_with_no_sector_is_measured_against_the_fullest(self):
+        """It could join any sector, so the one closest to the cap is the one
+        that decides. Here Chemicals holds three against a cap of three."""
+        blocked = portfolio.would_breach("core", None, self.reading(
+            entry("A"), entry("B"), entry("C"),
+        ))
+
+        assert len(blocked) == 1
+        assert "no sector reading" in blocked[0]
+        assert "Refetch" in blocked[0]
+
+    def test_a_candidate_with_no_sector_passes_when_no_sector_is_near_its_cap(self):
+        """Not a refusal on principle: with every sector well under the cap,
+        there is no group this candidate could join that would breach one, and
+        saying otherwise would be pessimism the reading does not support."""
+        assert portfolio.would_breach("core", None, self.reading(
+            entry("A", sector="Chemicals"),
+            entry("B", sector="Software"),
+        )) == []
+
+    def test_an_empty_book_admits_an_unreadable_candidate(self):
+        assert portfolio.would_breach("core", None, self.reading()) == []
+
+    def test_a_sector_cap_of_one_can_actually_fire(self):
+        """It could not before. `check_concentration` reported only groups of
+        two or more, so a cap of one had no group to be breached against and
+        never blocked anything."""
+        config = {"portfolio": {"max_positioned_per_lane": {"core": 8},
+                                "max_positioned_per_sector": 1}}
+        blocked = portfolio.would_breach(
+            "core", "Chemicals",
+            self.reading(entry("A", sector="Chemicals"), config=config),
+        )
+
+        assert len(blocked) == 1
+        assert "cap of 1" in blocked[0]
+
+    def test_a_sector_cap_of_zero_blocks_an_empty_sector(self):
+        """"Hold nothing in this sector" is a real instruction, and it has to
+        reach a sector holding nothing — which is exactly where a cap read off
+        a group is invisible, there being no group to read it from."""
+        config = {"portfolio": {"max_positioned_per_lane": {"core": 8},
+                                "max_positioned_per_sector": 0}}
+
+        blocked = portfolio.would_breach(
+            "core", "Chemicals", self.reading(config=config)
+        )
+
+        assert len(blocked) == 1
+        assert "cap of 0" in blocked[0]

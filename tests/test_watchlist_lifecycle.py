@@ -767,3 +767,166 @@ class TestListing:
         assert row["last_composite"] == 6.4
         assert row["verdict"] == "eligible"
         assert row["checkpoints"] == 1
+
+
+class TestTheLaneCanChange:
+    """A company's lane, after `add`.
+
+    It could be set once and never again: `add` refuses a ticker already
+    tracked, so the only route was `remove` then re-`add` — which discards the
+    append-only `state_history` and with it every piece of evidence behind the
+    states the company had earned. A thesis changing from "compounder" to
+    "re-rating" is a normal thing to happen and should not cost the record of
+    everything that happened before it.
+    """
+
+    def tracked(self, wm, ticker="ASTRAL", state=None):
+        wm.add(ticker)
+        if state:
+            wm.transition(ticker, state, "seed", applied_by="owner")
+        return ticker
+
+    def test_it_changes_the_lane(self, wm):
+        self.tracked(wm)
+
+        wm.set_lane("ASTRAL", "rerating")
+
+        assert wm.get("ASTRAL")["lane"] == "rerating"
+
+    def test_the_state_and_its_history_survive(self, wm):
+        """The whole reason this exists rather than remove-and-re-add."""
+        self.tracked(wm, state="probe")
+        history = list(wm.get("ASTRAL")["state_history"])
+
+        wm.set_lane("ASTRAL", "rerating")
+
+        assert wm.get("ASTRAL")["state"] == "probe"
+        assert wm.get("ASTRAL")["state_history"] == history
+
+    def test_the_change_is_recorded_with_its_reason(self, wm):
+        self.tracked(wm, state="watch")
+
+        record = wm.set_lane("ASTRAL", "rerating", reason="catalyst identified")
+
+        stored = wm.get("ASTRAL")["lane_history"]
+        assert stored == [record]
+        assert (record["from"], record["to"]) == ("core", "rerating")
+        assert record["state"] == "watch"
+        assert record["reason"] == "catalyst identified"
+
+    def test_the_log_is_append_only(self, wm):
+        """Which lane's rules applied when is exactly what a later review
+        needs, so the second change does not overwrite the first."""
+        self.tracked(wm)
+
+        wm.set_lane("ASTRAL", "rerating")
+        wm.set_lane("ASTRAL", "core")
+
+        assert [r["to"] for r in wm.get("ASTRAL")["lane_history"]] == \
+            ["rerating", "core"]
+
+    def test_it_is_not_written_into_the_state_history(self, wm):
+        """No state moved, so a record in the state log would sit there with no
+        `to` anybody could read."""
+        self.tracked(wm, state="probe")
+
+        wm.set_lane("ASTRAL", "rerating")
+
+        assert all(
+            r["to"] in ("probe",) for r in wm.get("ASTRAL")["state_history"]
+        )
+
+    def test_an_unknown_lane_is_refused(self, wm):
+        self.tracked(wm)
+
+        with pytest.raises(WatchlistError, match="unknown lane"):
+            wm.set_lane("ASTRAL", "momentum")
+
+        assert wm.get("ASTRAL")["lane"] == "core"
+
+    def test_a_no_op_change_is_refused_rather_than_logged(self, wm):
+        """A log of lane changes in which nothing changed is noise in the one
+        place that has to stay readable."""
+        self.tracked(wm)
+
+        with pytest.raises(WatchlistError, match="already in the core lane"):
+            wm.set_lane("ASTRAL", "core")
+
+        assert "lane_history" not in wm.get("ASTRAL")
+
+    def test_an_untracked_ticker_is_refused(self, wm):
+        with pytest.raises(WatchlistError):
+            wm.set_lane("NOPE", "rerating")
+
+    def test_an_entry_written_before_lane_history_existed_still_loads(self, wm):
+        """Optional like `catalyst`, so a store written before this feature
+        loads untouched and gains the key on its first change."""
+        self.tracked(wm)
+        assert "lane_history" not in wm.get("ASTRAL")
+
+        wm.set_lane("ASTRAL", "rerating")
+
+        assert len(wm.get("ASTRAL")["lane_history"]) == 1
+
+
+class TestTheCatalystIsReadable:
+    """Owner-recorded state that the system acts on and no surface could show.
+
+    `watchlist catalyst` writes a description and a window; the catalyst then
+    gates fast-lane entry and fires an exit rule. But `list()` returned no
+    catalyst field, so an owner could not see which companies held one, or
+    whose window had passed, without running a full `advance` or opening the
+    JSON. State the system acts on and the owner cannot see is state the owner
+    cannot correct.
+    """
+
+    def test_a_recorded_catalyst_reaches_the_display_rows(self, wm):
+        wm.add("ZENSAR", lane="rerating")
+        wm.record_catalyst("ZENSAR", "Demerger", "2027-06-30")
+
+        row = wm.list()[0]
+
+        assert row["catalyst"] == "Demerger"
+        assert row["catalyst_expected_by"] == "2027-06-30"
+        assert row["catalyst_status"] == "active"
+
+    def test_a_company_with_no_catalyst_reads_empty_not_missing(self, wm):
+        wm.add("ASTRAL")
+
+        row = wm.list()[0]
+
+        assert row["catalyst"] == ""
+        assert row["catalyst_overdue"] is None
+
+    def test_a_passed_window_is_marked_overdue(self, wm):
+        wm.add("LATE", lane="rerating")
+        wm.record_catalyst("LATE", "Capacity commissioning", "2020-01-31")
+
+        assert wm.list()[0]["catalyst_overdue"] is True
+
+    def test_an_open_window_is_not(self, wm):
+        wm.add("ZENSAR", lane="rerating")
+        wm.record_catalyst("ZENSAR", "Demerger", "2099-06-30")
+
+        assert wm.list()[0]["catalyst_overdue"] is False
+
+    def test_an_unreadable_window_is_unknown_rather_than_open(self, wm):
+        """Three-valued in the house style. The alternative — falling back to
+        "not overdue" — renders an unreadable date as a window comfortably in
+        the future, which is the direction that would matter."""
+        wm.add("ODD", lane="rerating")
+        wm.record_catalyst("ODD", "Something", "sometime next year")
+
+        assert wm.list()[0]["catalyst_overdue"] is None
+
+    def test_a_spent_catalyst_still_shows(self, wm):
+        """Spent, not deleted: a position whose catalyst was spent without the
+        re-rating following is exactly the case worth being able to see."""
+        wm.add("DONE", lane="rerating")
+        wm.record_catalyst("DONE", "Plant commissioned", "2026-03-31")
+        wm.mark_catalyst_spent("DONE")
+
+        row = wm.list()[0]
+
+        assert row["catalyst"] == "Plant commissioned"
+        assert row["catalyst_status"] == "spent"

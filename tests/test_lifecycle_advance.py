@@ -1183,3 +1183,118 @@ class TestOverridingAConcentrationCap:
         assert self.proposal_for(result)["applied"] is False
         assert self.proposal_for(result)["needs_confirmation"] is True
         assert wm.get("ASTRAL")["state"] == "watch"
+
+
+class TestDecayOutOfWatch:
+    """A candidate whose quality decays while it waits for an entry price.
+
+    Both lanes' drop rules stopped at `qualify`, so a company that qualified,
+    moved to `watch`, and then fell below its lane's floor was unreachable by
+    anything except a fundamentals kill-switch — and those protect capital,
+    which a `watch` entry has none of. It sat there indefinitely, which is the
+    same criticism the core drop rule's own rationale levels at `screen`: a
+    stalled entry is indistinguishable from a considered one.
+
+    The precedence check matters as much as the drop. From `watch`, a buy-zone
+    trigger can fire in the same run, and the protective rule has to win — the
+    alternative is opening a position on the quarter a company stopped
+    qualifying for the lane it is being bought into.
+    """
+
+    def test_a_core_watch_entry_that_fails_its_gates_is_dropped(self, wm, evaluator):
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "watch", "seed")
+
+        outcome = run(StubService(verdict="not_eligible"), wm, evaluator)
+
+        assert outcome["proposal"]["to"] == "dropped"
+        assert outcome["proposal"]["trigger_id"] == "qualification_failed"
+        assert wm.get("ASTRAL")["state"] == "dropped"
+
+    def test_a_fast_lane_watch_entry_below_the_floor_is_dropped(self, wm, evaluator):
+        fast_lane_entry(wm, state="watch")
+
+        outcome = run(
+            StubService(metrics=fast_lane_metrics(), composite=4.4),
+            wm, evaluator, ticker="ZENSAR",
+        )
+
+        assert outcome["proposal"]["to"] == "dropped"
+        assert outcome["proposal"]["trigger_id"] == "fast_lane_qualification_failed"
+        assert wm.get("ZENSAR")["state"] == "dropped"
+
+    def test_the_drop_outranks_a_buy_zone_firing_in_the_same_run(
+        self, wm, evaluator
+    ):
+        """The company is priced to buy and no longer qualifies. Buying it
+        because both rules fired is precisely what precedence exists to stop."""
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "watch", "seed")
+
+        outcome = run(StubService(verdict="not_eligible"), wm, evaluator, apply=True)
+
+        assert outcome["proposal"]["to"] == "dropped"
+        assert "valuation_buy_zone" in outcome["proposal"]["superseded"]
+        assert wm.get("ASTRAL")["state"] == "dropped"
+
+    def test_the_fast_lane_drop_and_its_buy_zone_cannot_both_fire(
+        self, wm, evaluator
+    ):
+        """No precedence question arises on this side, and the reason is worth
+        pinning: the lane's drop floor (composite < 5.0) sits *below* its
+        `quality_floor` gate (>= 5.5), so a candidate low enough to drop can
+        never hold a `qualifies` verdict. The gap between the two thresholds is
+        deliberate — a candidate between 5.0 and 5.5 is neither dropped nor
+        buyable — and if either number ever moved past the other, this is where
+        the overlap would show up as a drop competing with a buy.
+        """
+        fast_lane_entry(wm, state="watch")
+
+        outcome = run(
+            StubService(metrics=fast_lane_metrics(), composite=4.4),
+            wm, evaluator, ticker="ZENSAR", apply=True,
+        )
+
+        assert outcome["proposal"]["to"] == "dropped"
+        assert outcome["lane_gates"]["verdict"] == "not_qualified"
+        assert outcome["proposal"]["superseded"] == []
+
+    def test_a_candidate_between_the_two_thresholds_is_left_alone(
+        self, wm, evaluator
+    ):
+        """The other side of that gap, stated so it is a decision rather than
+        an accident: above the drop floor and below the entry gate, a fast-lane
+        candidate keeps waiting."""
+        fast_lane_entry(wm, state="watch")
+
+        outcome = run(
+            StubService(metrics=fast_lane_metrics(), composite=5.2),
+            wm, evaluator, ticker="ZENSAR", apply=True,
+        )
+
+        assert outcome["proposal"] is None
+        assert wm.get("ZENSAR")["state"] == "watch"
+
+    def test_a_healthy_watch_entry_is_still_bought_not_dropped(self, wm, evaluator):
+        """The floor is a floor, not a new obstacle — a qualifying candidate
+        reaches `probe` exactly as it did."""
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "watch", "seed")
+
+        outcome = run(StubService(), wm, evaluator, apply=True)
+
+        assert outcome["proposal"]["to"] == "probe"
+        assert wm.get("ASTRAL")["state"] == "probe"
+
+    def test_the_drop_auto_applies_because_it_moves_no_money(self, wm, evaluator):
+        """A `watch` entry holds no capital, so removing it is not a decision
+        that waits for the owner — and a re-qualifying company is one
+        `watchlist add` away."""
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "watch", "seed")
+
+        outcome = run(StubService(verdict="not_eligible"), wm, evaluator)
+
+        assert outcome["proposal"]["applied"] is True
+        assert outcome["proposal"]["needs_confirmation"] is False
+        assert wm.get("ASTRAL")["state_history"][-1]["applied_by"] == "auto"
