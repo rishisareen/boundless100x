@@ -799,6 +799,250 @@ def watchlist_remove(
         console.print(f"[yellow]{ticker} not found in watchlist[/yellow]")
 
 
+@watchlist_app.command("exit")
+def watchlist_exit(
+    ticker: str = typer.Argument(help="NSE symbol whose exit is being confirmed"),
+    as_of: str = typer.Option(
+        None, "--as-of", help="Date of the sale (YYYY-MM-DD). Defaults to today."
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Record an owner-confirmed exit — the only path to `exited`.
+
+    A command of its own rather than a flag on `advance`, because it moves
+    money and no metric can observe that the owner sold. `advance` proposes
+    `exit_review`; this is what closes it.
+
+    The output states everything needed to reconcile the sale afterwards: the
+    transition, its date, the trigger the review was recorded under, the
+    friction reading (or why there is none), and the queue event's `exit_id` —
+    the id a retry would recompute, and therefore the one to quote if anything
+    about this run needs looking into.
+    """
+    setup_logging(verbose)
+
+    from datetime import date as date_type
+
+    from rich.markup import escape
+
+    from boundless100x.lifecycle import friction
+    from boundless100x.lifecycle.exit import confirm_exit
+    from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
+    from boundless100x.service import Boundless100xService
+    from boundless100x.watchlist import WatchlistManager
+
+    when = None
+    if as_of:
+        try:
+            when = date_type.fromisoformat(as_of)
+        except ValueError:
+            raise typer.BadParameter(f"--as-of {as_of!r} is not a YYYY-MM-DD date")
+
+    outcome = confirm_exit(
+        WatchlistManager(), ReinvestmentQueue(), ticker,
+        Boundless100xService(), when,
+    )
+
+    if not outcome["ok"]:
+        # The refusal already says which state the entry is in and that nothing
+        # was written; after a command that touches two stores, that second half
+        # is the part the owner needs.
+        console.print(f"[red]{escape(outcome['reason'])}[/red]")
+        raise typer.Exit(1)
+
+    verb = "reconciled" if outcome["adopted"] else "recorded"
+    console.print(
+        f"\n[bold green]{outcome['ticker']}: exit_review → exited[/bold green] "
+        f"on {outcome['exit_date']} ({verb})"
+    )
+    if outcome["adopted"]:
+        console.print(
+            "[dim]An earlier run had already queued this exit; its date and "
+            "figures were adopted rather than re-priced.[/dim]"
+        )
+    console.print(f"  trigger: {escape(outcome['trigger_id'] or '—')}")
+    reading = outcome["friction"]
+    colour = "yellow" if reading.get("available") else "dim"
+    console.print(f"  [{colour}]{escape(friction.describe(reading))}[/{colour}]")
+    console.print(f"  [dim]queue event: {escape(outcome['exit_id'])}[/dim]")
+    console.print(
+        "[dim]Holding period is measured from the `probe` confirmation date, "
+        "not a broker fill.[/dim]"
+    )
+
+
+# ── Reinvestment queue ──
+#
+# `queue` renders; `queue route` records. They are one group because they read
+# the same two stores, and separate commands because only one of them writes.
+
+queue_app = typer.Typer(
+    help="Where exit proceeds should go, and where they went",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+watchlist_app.add_typer(queue_app, name="queue")
+
+
+@queue_app.callback(invoke_without_command=True)
+def watchlist_queue(ctx: typer.Context):
+    """Show the stored routing snapshot and the exit event log.
+
+    **A pure read.** It never calls `advance()` and never builds a service: a
+    display command must not re-score the corpus or mutate lifecycle state as a
+    side effect of being looked at.
+
+    The snapshot is labelled with one of four states, resolved in precedence
+    order, and **only `Current` renders the proposal** — see
+    `reinvestment.snapshot_state`. The exits below it are read live rather than
+    from the snapshot, because an idle reading grows every day and the stored
+    one stopped growing when the run ended.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
+    from boundless100x.watchlist import WatchlistManager
+
+    _print_routing_snapshot(ReinvestmentQueue(), WatchlistManager())
+
+
+@queue_app.command("route")
+def watchlist_queue_route(
+    exit_id: str = typer.Argument(help="The exit event whose proceeds were deployed"),
+    candidate: str = typer.Argument(help="NSE symbol the proceeds went into"),
+    transition_at: str = typer.Option(
+        None, "--transition-at",
+        help="Which deployment transition moved this capital (its exact `at` "
+             "timestamp). Required only when the candidate holds more than one.",
+    ),
+):
+    """Record that an exit's proceeds were deployed into a company.
+
+    **A deployment, not an intention.** The candidate must already hold an
+    owner-applied `probe`/`scale` transition dated on or after the exit: the
+    idle reading measures exit-to-deployed-capital, and a plan that never
+    executed must not close it. The event stores `deployed_at` from that
+    transition and `recorded_at` from this command, so entering a route late
+    does not inflate the window it closes.
+
+    The candidate need not be the one the snapshot proposed. The proposal
+    advises; this records what actually happened.
+
+    Validation runs in a fixed order and every refusal names its cause. The
+    first check is whether any routable proceeds exist at all — with none, that
+    is the answer, and judging the arguments first would report a smaller
+    problem than the one in front of the owner.
+    """
+    from rich.markup import escape
+
+    from boundless100x.lifecycle.reinvestment import (
+        NO_PROCEEDS,
+        ReinvestmentQueue,
+        eligible_deployments,
+        exit_is_complete,
+    )
+    from boundless100x.watchlist import WatchlistManager
+
+    wm, queue = WatchlistManager(), ReinvestmentQueue()
+    candidate = candidate.upper()
+
+    def refuse(message: str) -> None:
+        console.print(f"[red]{escape(message)}[/red]")
+        console.print("[dim]Nothing was recorded.[/dim]")
+        raise typer.Exit(1)
+
+    # 1. Proceeds first, before any argument is judged.
+    if not queue.routable_exits(wm):
+        console.print(f"[yellow]{NO_PROCEEDS}[/yellow]")
+        console.print(
+            "[dim]A routing event deploys the proceeds of a completed exit; "
+            "there are none outstanding.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    # 2. An exit that exists, and is not already closed.
+    event = queue.find_exit(exit_id)
+    if event is None:
+        refuse(
+            f"no exit {exit_id} is recorded — a routing event must reference the "
+            f"exit whose proceeds it deploys"
+        )
+    routed = queue.routing_for(exit_id)
+    if routed is not None:
+        refuse(
+            f"exit {exit_id} was already routed into {routed.get('candidate')} "
+            f"on {routed.get('deployed_at')} — the log is append-only and an "
+            f"exit's proceeds are deployed once"
+        )
+
+    # 3. An exit the watchlist agrees completed. KTD10's crash window is not
+    #    routable proceeds, and the display already excludes it — enforced here
+    #    so the direct command cannot be a way round that exclusion.
+    sold = event["ticker"]
+    entry = wm.get(sold)
+    if not exit_is_complete(entry):
+        state = entry["state"] if entry else "no watchlist entry"
+        refuse(
+            f"{sold} is in {state!r} and holds no completed `exited` transition, "
+            f"so this exit is only half recorded — run `watchlist exit {sold}` "
+            f"to complete it before routing its proceeds"
+        )
+
+    # 4. A candidate that actually received capital after the exit.
+    candidate_entry = wm.get(candidate)
+    if candidate_entry is None:
+        refuse(f"{candidate} is not on the watchlist")
+
+    eligible = eligible_deployments(candidate_entry, event["at"])
+    if not eligible:
+        refuse(
+            f"{candidate} holds no owner-applied probe or scale transition dated "
+            f"on or after {event['at']} — the idle reading measures "
+            f"exit-to-deployed-capital, and a plan that never executed cannot "
+            f"close it"
+        )
+
+    # 5. One recorded date, never a guess between two.
+    if transition_at:
+        chosen = [record for record in eligible if record.get("at") == transition_at]
+        if not chosen:
+            refuse(
+                f"--transition-at {transition_at} matches no eligible deployment "
+                f"for {candidate}. Eligible: "
+                f"{', '.join(record['at'] for record in eligible)}"
+            )
+        eligible = chosen
+    elif len(eligible) > 1:
+        listed = ", ".join(
+            f"{record['to']} at {record['at']}" for record in eligible
+        )
+        refuse(
+            f"{candidate} holds {len(eligible)} eligible deployment transitions "
+            f"({listed}). `deployed_at` is a recorded fact, so choose one with "
+            f"--transition-at <timestamp> rather than letting it be guessed"
+        )
+
+    deployment = eligible[0]
+    routing = queue.record_routing(
+        exit_id=exit_id, candidate=candidate, deployed_at=deployment["at"]
+    )
+
+    view = next(
+        (v for v in queue.exit_views(wm) if v["exit_id"] == exit_id), {}
+    )
+    idle = view.get("idle_days")
+    console.print(
+        f"\n[bold green]{exit_id} → {candidate}[/bold green] "
+        f"(deployed {routing['deployed_at']}, {deployment['to']})"
+    )
+    console.print(
+        f"  [dim]recorded {routing['recorded_at']}; idle "
+        f"{'unknown' if idle is None else idle} day(s) between the sale and the "
+        f"deployment[/dim]"
+    )
+
+
 @watchlist_app.command("advance")
 def watchlist_advance(
     apply: bool = typer.Option(
@@ -815,13 +1059,19 @@ def watchlist_advance(
     setup_logging(verbose)
 
     from boundless100x.lifecycle.advance import advance
+    from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
     from boundless100x.service import Boundless100xService
     from boundless100x.watchlist import WatchlistManager
 
     svc = Boundless100xService()
     wm = WatchlistManager()
 
-    result = advance(svc, wm, apply=apply, quarterly=quarterly)
+    # The production store, so the run's routing view is derived from the real
+    # event log and written back to it. Without a queue the run still advances;
+    # routing simply reports itself unavailable — see `advance._routing`.
+    result = advance(
+        svc, wm, apply=apply, quarterly=quarterly, queue=ReinvestmentQueue()
+    )
     outcomes, errors = result["outcomes"], result["errors"]
 
     # Say when the corpus's valuation tightened entry, before showing what did
@@ -881,6 +1131,66 @@ def watchlist_advance(
             f"applied. Review the evidence, then re-run with --apply.[/yellow]"
         )
 
+    _print_routing_result(result.get("routing"))
+
+
+def _print_routing_result(routing) -> None:
+    """One line on where this run says exit proceeds should go.
+
+    Deliberately short, and printed last. The full view lives behind
+    `watchlist queue`, which can be read without re-scoring anything; repeating
+    it here would bury the transitions this command exists to propose.
+
+    **A candidate is named only when the view was durably stored.** A
+    `--quarterly` run deliberately does not write one — its ranking came from
+    whichever companies happened to be stale — and a full run whose write
+    failed has nothing behind the name either. In both cases the line says what
+    happened instead, so that what the owner reads here and what
+    `watchlist queue` will show them tomorrow cannot disagree.
+
+    An unavailable view says so with its reason. A run that quietly printed
+    nothing would be indistinguishable from one where the queue was empty, and
+    those are different facts.
+    """
+    from rich.markup import escape
+
+    if not routing:
+        return
+    if not routing.get("available"):
+        console.print(
+            f"\n[dim]Reinvestment routing unavailable: "
+            f"{escape(str(routing.get('reason', '')))}[/dim]"
+        )
+        return
+    if not routing.get("persisted"):
+        console.print(
+            f"\n[dim]Reinvestment: no candidate named — "
+            f"{escape(str(routing.get('persist_reason', 'the view was not stored')))}"
+            f"[/dim]"
+        )
+        return
+
+    proposal = routing.get("proposal")
+    if proposal:
+        console.print(
+            f"\n[bold]Reinvestment:[/bold] proceeds → "
+            f"[cyan]{escape(str(proposal.get('ticker')))}[/cyan] "
+            f"[dim]({proposal.get('lane')} lane; advisory — see "
+            f"`watchlist queue`)[/dim]"
+        )
+    else:
+        console.print(
+            f"\n[dim]Reinvestment: {escape(str(routing.get('reason', '')))}[/dim]"
+        )
+
+    blocked = routing.get("blocked") or []
+    if blocked:
+        console.print(
+            f"  [dim]{len(blocked)} candidate(s) blocked "
+            f"({', '.join(str(entry.get('ticker')) for entry in blocked)}) — "
+            f"reasons in `watchlist queue`[/dim]"
+        )
+
 
 # ── Display Helpers ──
 
@@ -938,6 +1248,152 @@ def _print_concentration(reading) -> None:
     for note in reading.get("notes") or []:
         console.print(f"  [dim]{escape(note)}[/dim]")
     console.print()
+
+
+def _snapshot_age(generated_at) -> str:
+    """How old the stored view is, in words, or that nobody can tell.
+
+    Display only. Freshness is decided by the revision counters — a clock
+    comparison would miss every mutation that does not re-score, and `as_of`
+    may be a historical business date in any case.
+    """
+    from datetime import datetime
+
+    if not generated_at:
+        return "generated at an unknown time"
+    try:
+        when = datetime.fromisoformat(str(generated_at))
+    except ValueError:
+        return f"generated {generated_at}"
+    days = (datetime.now() - when).days
+    if days < 0:
+        return f"generated {when:%Y-%m-%d %H:%M} (dated ahead of now)"
+    if days == 0:
+        return f"generated {when:%Y-%m-%d %H:%M} (today)"
+    return f"generated {when:%Y-%m-%d %H:%M} ({days} day(s) ago)"
+
+
+def _print_routing_snapshot(queue, watchlist) -> None:
+    """The routing view an owner reads: state first, then what it may show.
+
+    Two sources, deliberately. The **proposal and the blocked list come from
+    the snapshot**, because they are the output of a run that ranked candidates
+    and cannot be recomputed without one. The **exits come live** from the event
+    log, because an idle reading grows every day and a stored one stopped
+    growing when the run ended — and because the reconciliation notice for an
+    exit stranded in `exit_review` is an instruction about the state of the
+    stores *now*.
+
+    Only a `Current` snapshot renders its proposal. `Partial` and `Stale` keep
+    every diagnostic and print the refresh instruction where the candidate
+    would have gone: a candidate named by incomplete or superseded inputs is a
+    recommendation those inputs no longer back.
+    """
+    from rich.markup import escape
+
+    from boundless100x.lifecycle import friction
+    from boundless100x.lifecycle.reinvestment import (
+        NO_PROCEEDS,
+        SNAPSHOT_UNAVAILABLE,
+        snapshot_state,
+    )
+
+    snapshot = queue.latest_proposal() or {}
+    state = snapshot_state(
+        queue.latest_proposal(),
+        watchlist.data.get("revision"),
+        queue.data.get("revision"),
+    )
+    missing = state["state"] == SNAPSHOT_UNAVAILABLE
+
+    colour = {
+        "current": "green", "stale": "yellow",
+        "partial": "yellow", "unavailable": "dim",
+    }[state["state"]]
+    # No age for a snapshot that does not exist: "generated at an unknown time"
+    # invites the reader to wonder which run wrote it.
+    age = "" if missing else (
+        f" [dim]({_snapshot_age(state['generated_at'])}"
+        f"{', as of ' + str(state['as_of']) if state['as_of'] else ''})[/dim]"
+    )
+    console.print(
+        f"\n[bold]Reinvestment queue[/bold] — [{colour}]"
+        f"{state['state'].capitalize()}[/{colour}]{age}"
+    )
+    if state["reason"]:
+        console.print(f"  [dim]{escape(state['reason'])}[/dim]")
+
+    if state["renders_proposal"]:
+        proposal = snapshot.get("proposal")
+        if proposal:
+            console.print(
+                f"\n[bold]Proposed destination for proceeds:[/bold] "
+                f"[cyan]{escape(str(proposal.get('ticker')))}[/cyan] "
+                f"({proposal.get('lane')} lane, {proposal.get('state')})"
+            )
+            console.print(
+                f"  [dim]{escape(str(proposal.get('trigger_id') or 'no trigger'))}: "
+                f"{escape(str(proposal.get('evidence') or ''))}[/dim]"
+            )
+            console.print(
+                "  [dim]Advisory only — record what you actually deploy with "
+                "`watchlist queue route`.[/dim]"
+            )
+        elif snapshot.get("reason"):
+            console.print(f"\n[yellow]{escape(snapshot['reason'])}[/yellow]")
+    elif not missing:
+        # Where the candidate would have gone. Omitted when there is no
+        # snapshot at all, because the state's own reason already says to run
+        # the command that would produce one.
+        console.print(
+            "\n[dim]No candidate is shown for this snapshot — run "
+            "`watchlist advance` to refresh it.[/dim]"
+        )
+
+    # Printed in every state: which candidates were skipped, and why, is a true
+    # statement about the run that produced the snapshot even when the ranking
+    # itself has been superseded. Without it, an all-blocked run would render
+    # exactly like an empty pipeline.
+    blocked = snapshot.get("blocked") or []
+    if blocked:
+        console.print("\n[bold]Blocked candidates[/bold]")
+    for entry in blocked:
+        console.print(
+            f"  [cyan]{escape(str(entry.get('ticker')))}[/cyan] "
+            f"[dim]({entry.get('lane')} lane, {entry.get('state')})[/dim]"
+        )
+        for reason in entry.get("reasons") or []:
+            console.print(f"    [yellow]- {escape(str(reason))}[/yellow]")
+
+    views = queue.exit_views(watchlist)
+    if views:
+        console.print("\n[bold]Exit events[/bold]")
+    for view in views[-8:]:
+        idle = view["idle_days"]
+        idle_text = "unknown" if idle is None else f"{idle}"
+        if view["closed"]:
+            line = (
+                f"routed into {view['routed_into']} on {view['deployed_at']} "
+                f"— idle {idle_text} day(s)"
+            )
+            tone = "dim"
+        else:
+            line = f"awaiting routing — idle {idle_text} day(s)"
+            tone = "yellow"
+        console.print(
+            f"  [cyan]{escape(str(view['exit_id']))}[/cyan] "
+            f"[dim]{view['ticker']} ({view['lane']} lane), sold "
+            f"{view['at']}[/dim]"
+        )
+        console.print(f"    [{tone}]{escape(line)}[/{tone}]")
+        console.print(
+            f"    [dim]{escape(friction.describe(view['friction']))}[/dim]"
+        )
+        if view["note"]:
+            console.print(f"    [red]{escape(view['note'])}[/red]")
+
+    if not queue.routable_exits(watchlist):
+        console.print(f"\n[dim]{NO_PROCEEDS}[/dim]")
 
 
 def _print_exit_friction(outcomes) -> None:

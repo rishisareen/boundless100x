@@ -33,12 +33,20 @@ an estimate in the strict sense — the holding period runs from a `probe`
 confirmation date rather than a fill, and market bars stand in for trade
 prices — and `lifecycle/friction.py` is where that language is enforced.
 
-One run-level reading comes *out* of the loop the same way: after every company
+Two run-level readings come *out* of the loop the same way. After every company
 has been advanced, the portfolio's concentration is counted once — positioned
 names per lane and per sector, seeded from the watchlist so a failed fetch
 cannot make a position disappear from a cap check. It is a count of names
 rather than a share of capital, because no capital is recorded anywhere in this
 system; `lifecycle/portfolio.py` is where that decision is argued.
+
+Then, last and consulting that count, the reinvestment router asks where the
+proceeds of past exits should go. This is the one moment current trigger state
+exists, which is why it runs here rather than in the display command that reads
+it back. It writes a whole-run snapshot — only on a full run, never on
+`--quarterly` — and proposes without ever applying: `lifecycle/reinvestment.py`
+argues why a proposal must stay inert, and why a missing queue reads as
+*unavailable* rather than as an empty one.
 
 One run-level input reaches this loop: the deployment-pace modulator reads the
 cached corpus's median earnings-yield spread once, ahead of the evaluator's
@@ -48,7 +56,7 @@ why macro is allowed to slow buying and nothing else.
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 
 from boundless100x.action_policy import (
     _coverage_constraints,
@@ -57,6 +65,7 @@ from boundless100x.action_policy import (
 from boundless100x.lifecycle import friction as friction_module
 from boundless100x.lifecycle import pace as pace_module
 from boundless100x.lifecycle import portfolio
+from boundless100x.lifecycle import reinvestment
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.checkpoints import (
     evaluate_all,
@@ -549,6 +558,101 @@ def _concentration(service, watchlist, outcomes: list[dict]) -> dict:
     )
 
 
+def _routing(
+    queue, watchlist, outcomes, concentration, errors, quarterly, as_of
+) -> dict:
+    """Where this run says the proceeds of past exits should go.
+
+    **A missing queue means routing is unavailable, never a partial view.** The
+    idle readings and the route state live in the event log; without it there
+    is nothing to compute them from, and a view claiming "no proceeds awaiting
+    routing" when the queue simply was not supplied would be a false all-clear.
+    So it says so and persists nothing.
+
+    **Only a full run writes the snapshot.** A `--quarterly` run advances a
+    stale subset, and its ranking is drawn from whichever companies happened to
+    be 90 days old — overwriting the canonical view with it would promote a
+    lower-ranked candidate merely because the better one was not re-scored that
+    day. The view is still returned, and `persisted: False` with its reason is
+    what keeps "not written" from reading as "not computed".
+
+    A failure here costs the routing view and nothing else. Every company has
+    already been advanced by the time this runs, and throwing that away to
+    report a proposal would be the expensive half of the trade.
+
+    The snapshot is the router's own view (`as_of`, `proposal`, `reason`,
+    `blocked`, `idle`, `incomplete`, `ranked`) plus what only the run knows:
+    when it was generated, whether every ticker evaluated, and the revision of
+    each store at that moment.
+    """
+    if queue is None:
+        return {
+            "available": False,
+            "persisted": False,
+            "reason": (
+                "no reinvestment queue was supplied — idle readings and route "
+                "state live in its event log and cannot be computed without it"
+            ),
+        }
+
+    try:
+        view = queue.propose_routing(watchlist, outcomes, concentration, as_of=as_of)
+    except Exception as e:
+        logger.error(f"The routing view could not be built: {e}")
+        return {
+            "available": False,
+            "persisted": False,
+            "reason": f"the routing view could not be built ({e})",
+        }
+
+    errored = [ticker for ticker, _ in errors]
+    snapshot = {
+        **view,
+        "generated_at": datetime.now().isoformat(),
+        # `partial` names the tickers whose analysis failed, because a ranking
+        # built on an incomplete field is exactly as good as knowing which
+        # company is missing from it.
+        "status": (
+            reinvestment.SNAPSHOT_PARTIAL if errored
+            else reinvestment.SNAPSHOT_CURRENT
+        ),
+        "errors": errored,
+        "watchlist_revision": watchlist.data.get("revision"),
+        # Overwritten by `write_proposal` with the revision its own commit
+        # produces; correct as it stands for a run that does not persist.
+        "queue_revision": queue.data.get("revision"),
+    }
+
+    if quarterly:
+        return {
+            **snapshot,
+            "available": True,
+            "persisted": False,
+            "persist_reason": (
+                "a --quarterly run advances only stale entries, so its ranking "
+                "is drawn from a subset — the stored snapshot is left alone "
+                "rather than overwritten by an incomplete field"
+            ),
+        }
+
+    try:
+        snapshot = queue.write_proposal(snapshot)
+        persisted, persist_reason = True, ""
+    except Exception as e:
+        # The previous complete snapshot survives (atomic replace), and the
+        # run's own view is still returned — a failed write must not cost the
+        # caller the reading it already has in hand.
+        logger.error(f"The routing snapshot could not be written: {e}")
+        persisted, persist_reason = False, f"the snapshot could not be written ({e})"
+
+    return {
+        **snapshot,
+        "available": True,
+        "persisted": persisted,
+        "persist_reason": persist_reason,
+    }
+
+
 def advance(
     service,
     watchlist,
@@ -557,8 +661,9 @@ def advance(
     evaluator: TriggerEvaluator | None = None,
     as_of=None,
     pace_reading: dict | None = None,
+    queue=None,
 ) -> dict:
-    """Advance every tracked company. Returns outcomes, errors, and two run-level readings.
+    """Advance every tracked company. Returns outcomes, errors, and three run-level readings.
 
     The concentration reading is counted after the loop and from the watchlist,
     so it describes the portfolio as it stands once the run's own transitions
@@ -576,6 +681,10 @@ def advance(
 
     `pace_reading` lets a caller supply the corpus reading directly (tests, a
     future simulator) without touching `raw_data/`.
+
+    `queue` is the reinvestment store the routing view is derived from and
+    written to. It is optional and defaults to None — see `_routing` for why
+    that reads as *unavailable* rather than as an empty queue.
     """
     # Defence in depth for the same guarantee: this resolves once, before the
     # per-ticker loop's own isolation, so anything it raises would end the run
@@ -625,4 +734,10 @@ def advance(
         "errors": errors,
         "pace": pace,
         "concentration": concentration,
+        # Last, and after the concentration reading it consults: the router
+        # must see the portfolio as it stands once this run's own transitions
+        # have been applied.
+        "routing": _routing(
+            queue, watchlist, outcomes, concentration, errors, quarterly, as_of
+        ),
     }

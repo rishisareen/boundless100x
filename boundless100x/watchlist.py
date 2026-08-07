@@ -287,15 +287,38 @@ class WatchlistManager:
         trigger_id: str,
         evidence: str = "",
         applied_by: str = APPLIED_AUTO,
+        details: dict | None = None,
     ) -> dict:
         """Move a company to a new state, recording why.
 
         The evidence travels with the transition because a state without its
         reason cannot be reviewed later — and reviewing later is the point.
+
+        `details` is the structured half of that same argument. Prose is what a
+        person reads, but a report reading a transition back needs the figures
+        apart — a confirmed exit's friction payload has a gross return, a
+        holding period, a tax regime, a net return and a basis, and no amount of
+        parsing recovers those five from a sentence that mentions them. So a
+        caller with a payload attaches it whole, and the prose keeps saying the
+        same thing in the same line as before.
+
+        **Optional, and absent when not supplied.** A transition that carried no
+        payload records no `details` key at all, so every existing caller writes
+        exactly the record it wrote before and a stored history is unchanged.
+        Readers ask with `.get("details")` and get None either way.
+
+        The payload is deep-copied on the way in: the staged store is adopted as
+        `self.data`, and a caller's dict left wired into it would let a later
+        mutation of that dict silently edit an append-only record.
         """
         staged, entry = self._stage_entry(ticker)
         if not lifecycle_states.is_state(to_state):
             raise WatchlistError(f"unknown state {to_state!r}")
+        if details is not None and not isinstance(details, dict):
+            raise WatchlistError(
+                f"transition details must be an object, not {type(details).__name__} "
+                f"— the point of the field is that a reader can take it apart"
+            )
 
         record = {
             "at": _now(),
@@ -305,6 +328,8 @@ class WatchlistManager:
             "evidence": evidence,
             "applied_by": applied_by,
         }
+        if details is not None:
+            record["details"] = copy.deepcopy(details)
         entry["state_history"].append(record)
         entry["state"] = to_state
         self._commit(staged)
