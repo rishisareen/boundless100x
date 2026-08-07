@@ -188,6 +188,13 @@ boundless100x/
 - `.env` file at project root for `ANTHROPIC_API_KEY` (loaded by python-dotenv)
 
 ## Known Issues (as of Aug 2026)
+- **Open residuals live in `docs/residual-review-findings/`**, one file per
+  phase — reviewed findings deliberately not fixed, with the reasoning. Read
+  the Phase 3 file before touching the reinvestment queue or the concentration
+  guardrails: the largest open item is that removing a watchlist entry orphans
+  its unrouted exit proceeds, and the fix needs a decision about whether
+  completeness should be stamped onto the queue event rather than read from
+  live lifecycle state.
 - **BSE code**: resolved from BSE's own active-equity scrip master
   (`data_fetcher/bse_codes.py`), cached for a week — Screener stopped rendering
   bseindia.com links. Matching is by BSE symbol, then normalised company name.

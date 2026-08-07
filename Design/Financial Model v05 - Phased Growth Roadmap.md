@@ -568,11 +568,46 @@ the statute requires of it).
   is handed and yields well-formed, confident, wrong guidance.
 - *Validation:* metrics appear in scores.json via the registry; trajectory diffs reproduce from stored runs; headroom metric lands in the price element without altering composite weights
 
-**Phase 3 — Fast Lane + Portfolio Layer**
+**Phase 3 — Fast Lane + Portfolio Layer** — ✅ **complete 2026-08-07**, see
+`docs/plans/2026-08-07-006-feat-phase3-fast-lane-portfolio-plan.md` for the
+implementation record, the non-regression proof, and the corrections it forced
+(§9.2's growth gate had no metric that implemented it; `exited` had no producer
+and could not have one; a lane with its own gate set must not also be gated by
+the core lane's; §8.2's break-even cannot be computed from a tax-rate spread).
 - Lane gates (§9.2) + lane parameter sets (§4.4)
 - Core-satellite allocation config + reinvestment queue with explicit routing policy (§8.1)
 - Friction model (STCG/LTCG, slippage) as config; net-vs-gross reporting
+- **Growth gate needed a new metric** (implementation decision): §9.2's rule is
+  "latest TTM growth ≥ historical CAGR", and no registry metric answered it.
+  `quarterly_momentum` is a *second difference*, so a company shrinking at a
+  steady rate passes a not-decelerating test. `ttm_growth_vs_cagr` states the
+  rule literally, anchored on the existing `revenue_cagr_5yr` rather than a
+  second definition of the same company's CAGR.
+- **The fast lane needed the core lane's rules taken back** (implementation
+  decision): four core triggers became `lane: [core]`. Left universal,
+  `qualification_failed` drops any re-rating candidate the *100x* gates reject
+  before its own gates are consulted — a lane gated additionally by the core
+  lane's rules does not have its own gate set. The six fundamentals
+  kill-switches stay universal, deliberately (§6.2).
+- **`exited` is an owner command, not a trigger** (implementation decision,
+  KTD10): no metric can observe that the owner sold, so a trigger firing on
+  price would record a sale that may not have happened — the automated
+  execution §13 forbids. Two JSON stores cannot be written atomically, so the
+  window is made *recoverable* instead: queue event first keyed by a
+  deterministic `exit_id`, transition second, and a retry adopts the stored
+  payload rather than re-pricing.
+- **No computed break-even** (implementation decision): §8.2's "6–10 points per
+  cycle" is stated as the roadmap's estimate with the configured tax and
+  slippage assumptions beside it. A tax-rate spread is a rate applied to gains,
+  not a number of return points; folding it into arithmetic would ship a
+  confident wrong number until Phase 4's simulator derives a real one.
 - *Validation:* a fast-lane candidate passes all lane gates end-to-end; exit routing into the reinvestment queue produces the documented next action
+- *Validated:* a `not_eligible` fast-lane fixture walked
+  screen→qualify→watch→probe on its own gates (the case the pre-fix registry
+  would have dropped); `exited` proved unreachable across all 8 states except
+  by `watchlist exit`; a simulated crash between the two stores repaired by
+  re-running 120 days later with identical payloads; routing proposed a named
+  candidate. ASTRAL's composite held at 5.04 with the scoring hash unchanged.
 
 **Phase 4 — Strategy Simulator**
 - Phase-replay mechanics over truncated history (§10), per-lane tax/friction
