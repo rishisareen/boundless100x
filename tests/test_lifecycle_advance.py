@@ -320,6 +320,43 @@ class TestBookkeeping:
 
         run(Recorder(), wm, evaluator)
 
+    def test_a_ticker_whose_advance_raised_is_not_marked_freshly_scored(
+        self, wm, evaluator
+    ):
+        """`get_stale(90)` reads the snapshot's timestamp to decide what a
+        `--quarterly` run looks at, and the question it is asking is "was this
+        company successfully evaluated recently?" — not "did an evaluation of
+        it begin?".
+
+        Written the moment `analyze()` returned, a ticker that raised anywhere
+        downstream was reported in the run's errors *and* stamped fresh, so
+        every quarterly run for the next three months skipped the one company
+        whose last evaluation had failed. A thesis that broke on exactly that
+        day went unseen until the quarter was up.
+        """
+        wm.add("ASTRAL")
+
+        def evaluation_that_raises(*args, **kwargs):
+            raise RuntimeError("the trigger registry blew up mid-run")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(evaluator, "evaluate", evaluation_that_raises)
+            result = advance(StubService(), wm, evaluator=evaluator)
+
+        assert [ticker for ticker, _ in result["errors"]] == ["ASTRAL"]
+        assert wm.get("ASTRAL")["last_score_snapshot"] is None
+        assert wm.get_stale(90) == ["ASTRAL"]
+
+    def test_a_ticker_that_advanced_cleanly_is_marked_scored(self, wm, evaluator):
+        """The other half — the reorder must not stop a successful run being
+        recorded, or every run would re-score everything forever."""
+        wm.add("ASTRAL")
+
+        advance(StubService(), wm, evaluator=evaluator)
+
+        assert wm.get("ASTRAL")["last_score_snapshot"] is not None
+        assert wm.get_stale(90) == []
+
 
 class TestTheLaneView:
     """The assembled view every surface renders, carried out of the loop.
@@ -374,6 +411,56 @@ class TestCheckpointRecording:
     def test_a_run_without_the_llm_records_nothing(self, wm):
         wm.add("ASTRAL")
         record_checkpoints(wm, "ASTRAL", AnalysisResult(ticker="ASTRAL"))
+        assert wm.get("ASTRAL")["checkpoints"] == []
+
+    def monitorable(self, due: str) -> AnalysisResult:
+        return AnalysisResult(ticker="ASTRAL", llm_analysis={"pass2": {
+            "structured_monitorables": [{
+                "metric_id": "quarterly_opm_pct", "comparator": "gte",
+                "threshold": 20.0, "due_date": due,
+            }]
+        }})
+
+    def test_the_past_dating_check_follows_the_run_clock(self, wm):
+        """The one seam where "the same clock the rest of the run reads" did
+        not reach the recorder.
+
+        `record_from_pass2` refuses a checkpoint already due when recorded —
+        one due on the day it is written was never monitored. Left to default,
+        that refusal read `date.today()` while the evaluator, the friction
+        reading and the time stops all read the supplied date, so a backdated
+        replay disagreed with itself about what "today" meant.
+
+        Asserted in the direction the wall clock gets *wrong*: this due date is
+        comfortably in the future today, so a recorder still reading the wall
+        clock would keep it.
+        """
+        wm.add("ASTRAL")
+
+        record_checkpoints(wm, "ASTRAL", self.monitorable("2026-11-15"),
+                           as_of=date(2026, 12, 1))
+
+        assert wm.get("ASTRAL")["checkpoints"] == []
+
+    def test_a_backdated_replay_keeps_what_was_future_at_the_time(self, wm):
+        """The other direction, and the case a replay actually meets: a date
+        long past today was the future when the thesis was written, and the
+        run replaying that day must record it as the monitorable it was."""
+        wm.add("ASTRAL")
+
+        recorded = record_checkpoints(wm, "ASTRAL", self.monitorable("2025-06-01"),
+                                      as_of=date(2025, 1, 1))
+
+        assert len(recorded["checkpoints"]) == 1
+        assert recorded["demoted"] == []
+
+    def test_no_clock_supplied_still_reads_today(self, wm):
+        """The default is unchanged, so every existing caller behaves exactly
+        as it did — the fix completes a seam rather than moving one."""
+        wm.add("ASTRAL")
+
+        record_checkpoints(wm, "ASTRAL", self.monitorable("2020-01-01"))
+
         assert wm.get("ASTRAL")["checkpoints"] == []
 
     def test_checkpoints_are_evaluated_on_the_next_advance(self, wm, evaluator):

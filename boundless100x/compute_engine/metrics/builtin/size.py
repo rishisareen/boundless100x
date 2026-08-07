@@ -71,7 +71,14 @@ def compute_institutional_accumulation_trend(data: dict, params: dict) -> Metric
     * **The frame is read in file order, and the walk runs backward from the
       last row.** `shareholding.csv` is stored oldest first. Reading it the
       other way would report a company being sold as one being accumulated,
-      which is the single most expensive mistake this metric could make.
+      which is the single most expensive mistake this metric could make — so
+      the order is **verified rather than assumed**, and a frame that is not
+      ascending errors. Left unchecked it failed *closed*, which sounds safe
+      and is the wrong kind of wrong: a newest-first file breaks the adjacency
+      test at the very first step, the walk returns 0, and the gate reads "no
+      accumulation" indefinitely on a company being steadily accumulated, with
+      nothing anywhere saying why. A silent zero and a real zero are the same
+      number; only one of them is a reading.
     * **The unit counted is rises, not observations.** Four strictly increasing
       quarters yield 3 — three comparisons between four points — so the gate's
       `>= 2` asks for two consecutive rises across three quarters.
@@ -134,6 +141,28 @@ def compute_institutional_accumulation_trend(data: dict, params: dict) -> Metric
             error=(
                 f"{len(combined)} readable quarter(s) of FII+DII holding, needs "
                 f"2 — a rise is a comparison between two"
+            )
+        )
+
+    # Checked before the walk, because the walk cannot tell "this file is
+    # backwards" from "this company was not accumulated" — both come out as 0.
+    # `<=` rather than `<`: a repeated period is equally unwalkable, since the
+    # adjacency arithmetic below would compare a quarter against itself.
+    out_of_order = next(
+        (
+            (labels[i - 1], labels[i])
+            for i in range(1, len(periods))
+            if periods[i] <= periods[i - 1]
+        ),
+        None,
+    )
+    if out_of_order:
+        return MetricResult(
+            error=(
+                f"shareholding periods are not in ascending order "
+                f"({out_of_order[0]} is followed by {out_of_order[1]}) — this "
+                f"walk reads the file oldest-first, and reading it the other way "
+                f"would report a company being sold as one being accumulated"
             )
         )
 

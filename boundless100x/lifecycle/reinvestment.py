@@ -148,6 +148,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_QUEUE_PATH = Path(__file__).parent / "reinvestment_queue.json"
 
+# 1 is the shape this store has always written; the field is new, and a file
+# without it is read as version 1 rather than rejected.
+#
+# **Stamped because the validation below is deliberately unforgiving.** There
+# is one schema and no migration path — an event that does not match is a loud
+# error, because with one schema in existence an odd event means something is
+# wrong. That rule needs a version beside it to stay honest: without one, the
+# first future change that adds a required key turns every existing queue into
+# the same hard error as a corrupt one, and nothing in the message can tell an
+# owner which they are looking at. A version does not create a migration path.
+# It makes the absence of one *diagnosable*, which is the difference between
+# "this file predates the field" and "this file is damaged".
+#
+# **A commit preserves the version the file was loaded at**, rather than
+# stamping today's — the staged copy carries it through. The store never
+# rewrites an existing event, so a file whose events were written under an
+# older schema still contains them however new the appending code is, and
+# restamping would erase the only evidence of that. The consequence is
+# deliberate: whoever raises this number has to decide what an older file
+# means, and will meet the question here rather than discover it from a queue
+# silently claiming a version its contents never had.
+SCHEMA_VERSION = 1
+
 EXIT_EVENT = "exit"
 ROUTING_EVENT = "routing"
 CONFIRMED_EVENT = "confirmed"
@@ -232,6 +255,18 @@ REQUIRED_KEYS = {
     # when the watchlist agreed the sale completed, and a reconciling run days
     # later must not restate that as having happened when it caught up.
     CONFIRMED_EVENT: ("kind", "exit_id", "at", "recorded_at"),
+}
+
+# The subset of the above whose *value* must be a usable string, not merely
+# present. These are the fields that name something — a sale, a company — and a
+# null or empty one resolves to nothing downstream while passing a presence
+# check. Dates are deliberately not here: `states.as_date` already answers an
+# unreadable timestamp with None, and every reader of one treats that as a gap
+# with a reason rather than a fault.
+_IDENTIFIER_KEYS = {
+    EXIT_EVENT: ("exit_id", "ticker", "lane"),
+    ROUTING_EVENT: ("exit_id", "candidate"),
+    CONFIRMED_EVENT: ("exit_id",),
 }
 
 
@@ -552,24 +587,71 @@ class ReinvestmentQueue(_JsonStore):
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return {"events": [], "latest_proposal": None, "revision": 0}
+            return {
+                "events": [], "latest_proposal": None, "revision": 0,
+                "schema_version": SCHEMA_VERSION,
+            }
         with open(self.path) as f:
             data = json.load(f)
+
+        stored_version = self._schema_version_of(data)
 
         events = data.get("events", [])
         if not isinstance(events, list):
             raise ReinvestmentError("the queue's `events` must be a list")
         for index, event in enumerate(events):
-            self._validate_event(index, event)
+            self._validate_event(index, event, stored_version)
+
+        proposal = data.get("latest_proposal")
+        # Validated for the same reason every event is, and it was the one
+        # thing here that was not: `snapshot_state` reads it with `.get`, so a
+        # string or a list loaded silently and then raised `AttributeError`
+        # deep inside a display command. A store's own error names the file and
+        # says what to do; a traceback from a dict method names neither.
+        if proposal is not None and not isinstance(proposal, dict):
+            raise ReinvestmentError(
+                f"the queue's `latest_proposal` is a {type(proposal).__name__}, "
+                f"not an object — it holds the whole-run routing snapshot, and a "
+                f"value of any other shape cannot be one. Remove the key to "
+                f"clear it; `watchlist advance` writes a fresh snapshot."
+            )
 
         return {
             "events": events,
-            "latest_proposal": data.get("latest_proposal"),
+            "latest_proposal": proposal,
             "revision": _revision_of(data),
+            "schema_version": stored_version,
         }
 
     @staticmethod
-    def _validate_event(index: int, event: object) -> None:
+    def _schema_version_of(data: dict) -> int:
+        """The version this file claims, defaulting to 1 for a file without one.
+
+        A file predating the field is version 1 by definition — that is the
+        shape this store has always written — so its absence is an answer
+        rather than a fault. A *newer* version is refused outright: this code
+        cannot know what a later schema added, and reading it under today's
+        rules is how an event written by a future version gets silently
+        misread as one of today's.
+        """
+        version = data.get("schema_version", 1)
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ReinvestmentError(
+                f"the queue's `schema_version` is {version!r}, which is not a "
+                f"version number — the file has been edited outside this system"
+            )
+        if version > SCHEMA_VERSION:
+            raise ReinvestmentError(
+                f"the queue is at schema version {version} and this code reads "
+                f"version {SCHEMA_VERSION} — it was written by a newer version "
+                f"of boundless100x, and reading it under today's rules could "
+                f"misread an event rather than fail to. Upgrade rather than "
+                f"editing the file."
+            )
+        return version
+
+    @staticmethod
+    def _validate_event(index: int, event: object, schema_version: int = SCHEMA_VERSION) -> None:
         if not isinstance(event, dict):
             raise ReinvestmentError(f"event {index}: must be an object")
 
@@ -577,15 +659,40 @@ class ReinvestmentQueue(_JsonStore):
         if kind not in EVENT_KINDS:
             raise ReinvestmentError(
                 f"event {index}: unknown kind {kind!r} — the queue records "
-                f"{' and '.join(EVENT_KINDS)} events and nothing else"
+                f"{', '.join(EVENT_KINDS)} events and nothing else"
             )
 
         missing = [key for key in REQUIRED_KEYS[kind] if key not in event]
         if missing:
             raise ReinvestmentError(
-                f"event {index}: {kind} event is missing {', '.join(missing)}. The "
-                f"queue has a single schema and no migration path — fix or remove "
-                f"the event rather than letting it be repaired silently."
+                f"event {index}: {kind} event (schema version {schema_version}) is "
+                f"missing {', '.join(missing)}. The queue has a single schema and "
+                f"no migration path — fix or remove the event rather than letting "
+                f"it be repaired silently."
+            )
+
+        # **Presence is not shape.** Key-presence alone let `{"ticker": null}`
+        # load cleanly and then fail in `exit_views`, three call frames from
+        # anything that could name the file — which is exactly the silent
+        # repair the no-migration rule exists to prevent, arriving as a crash
+        # instead. Every identifying field is checked for being a usable string
+        # here, where the error can still say which event and which key.
+        for key in _IDENTIFIER_KEYS.get(kind, ()):
+            value = event.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ReinvestmentError(
+                    f"event {index}: {kind} event has {key}={value!r}, which is "
+                    f"not a usable identifier. The key is present but its value "
+                    f"cannot name anything, so nothing downstream could resolve "
+                    f"this event to a company or a sale."
+                )
+
+        if kind == EXIT_EVENT and not isinstance(event.get("friction"), dict):
+            raise ReinvestmentError(
+                f"event {index}: exit event has a {type(event.get('friction')).__name__} "
+                f"friction payload, not an object — the reading is stored whole "
+                f"so a report can take it apart, and a bare figure or a sentence "
+                f"cannot be taken apart"
             )
 
     # ── events ──
@@ -818,6 +925,29 @@ class ReinvestmentQueue(_JsonStore):
             if event.get("kind") == ROUTING_EVENT and event.get("exit_id") == exit_id:
                 return event
         return None
+
+    def deployments_consumed_by(self, candidate: str) -> dict[str, str]:
+        """`{deployed_at: exit_id}` for deployments that already closed an exit.
+
+        One deployment transition funding two exits is not impossible — this
+        system counts names and has never counted rupees, so a single `probe`
+        genuinely can absorb the proceeds of two sales — but it is far more
+        often a mistake, and an expensive one: the second exit's idle reading
+        closes on a deployment that had nothing to do with it, which is the one
+        number the whole store exists to measure. So `queue route` refuses by
+        default and names the exit already holding the transition, leaving the
+        owner to say that the sharing was real.
+
+        Keyed by timestamp because that is what `deployed_at` records and what
+        `--transition-at` selects, so the refusal can name the exact transition
+        rather than the company.
+        """
+        return {
+            event["deployed_at"]: event["exit_id"]
+            for event in self.routings()
+            if event.get("candidate") == candidate.upper()
+            and isinstance(event.get("deployed_at"), str)
+        }
 
     def unrouted_exits(self) -> list[dict]:
         """Exits whose proceeds have not been deployed, oldest first.

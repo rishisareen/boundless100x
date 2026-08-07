@@ -397,4 +397,4 @@ class TestTheVerdictVocabularyIsExportedFromItsSource:
         company nobody evaluated rather than as a missing entry in a map."""
         from boundless100x.output import report_generator
 
-        assert set(report_generator.LANE_VERDICTS) == set(LANE_VERDICTS)
+        assert set(report_generator.LANE_VERDICT_LABELS) == set(LANE_VERDICTS)

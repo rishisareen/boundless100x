@@ -97,9 +97,66 @@ class TestOrdering:
         assert compute_institutional_accumulation_trend(
             {"shareholding": rising}, {}
         ).value == 3
-        assert compute_institutional_accumulation_trend(
+        assert not compute_institutional_accumulation_trend(
             {"shareholding": rising.iloc[::-1].reset_index(drop=True)}, {}
-        ).value == 0
+        ).ok
+
+    def test_a_reversed_file_errors_rather_than_reporting_no_streak(self):
+        """Fail-closed was the safe direction and the wrong kind of wrong.
+
+        The backward walk breaks its adjacency test at the very first step on a
+        newest-first frame, so the metric returned `0` — a *fail*, not an
+        error. The gate then read "no accumulation" indefinitely on a company
+        being steadily accumulated, and nothing anywhere said why: a silent
+        zero and a real zero are the same number, and only one of them is a
+        reading. Verified rather than assumed, an unwalkable frame is
+        indeterminate and names its own cause.
+        """
+        rising = make_shareholding(quarters=4, fii=[9.0, 10.0, 11.0, 12.0], dii=1.0)
+
+        result = compute_institutional_accumulation_trend(
+            {"shareholding": rising.iloc[::-1].reset_index(drop=True)}, {}
+        )
+
+        assert result.value is None
+        assert "ascending order" in result.error
+        assert "sold" in result.error
+
+    def test_a_repeated_quarter_is_unwalkable_too(self):
+        """Not strictly ascending either, and the adjacency arithmetic would be
+        comparing a quarter against itself."""
+        result = streak(
+            [10.0, 11.0, 12.0],
+            labels=["Jun 2024", "Sep 2024", "Sep 2024"],
+        )
+
+        assert result.value is None
+        assert "ascending order" in result.error
+
+    def test_the_error_names_the_pair_that_broke_the_order(self):
+        """An unreadable frame is a fetch to go and look at, and the owner
+        needs the row to look at rather than the file."""
+        result = streak(
+            [10.0, 11.0, 12.0],
+            labels=["Jun 2024", "Dec 2024", "Sep 2024"],
+        )
+
+        assert "Dec 2024" in result.error
+        assert "Sep 2024" in result.error
+
+    def test_the_gate_reads_indeterminate_rather_than_failing(self):
+        """The consequence that matters upstream: `lane_gates` treats an
+        errored metric as indeterminate, never as a condition that failed. A
+        silent zero would have been a fail, and a fast lane nobody can enter
+        looks exactly like a lane with no qualifying candidates."""
+        rising = make_shareholding(quarters=4, fii=[9.0, 10.0, 11.0, 12.0], dii=1.0)
+
+        result = compute_institutional_accumulation_trend(
+            {"shareholding": rising.iloc[::-1].reset_index(drop=True)}, {}
+        )
+
+        assert result.ok is False
+        assert "institutional_accumulation_rising" not in result.flags
 
 
 class TestGapsAndUnreadableRows:

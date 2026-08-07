@@ -20,8 +20,13 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
-def _record_checkpoints_if_tracked(ticker: str, result) -> None:
-    """Persist Pass 2's structured monitorables for a watchlisted company."""
+def _record_checkpoints_if_tracked(ticker: str, result, as_of=None) -> None:
+    """Persist Pass 2's structured monitorables for a watchlisted company.
+
+    `as_of` is the run's own date where a caller has one. It reaches the
+    recorder's past-dating check, which would otherwise read the wall clock
+    while the rest of the run read a supplied date — see `record_checkpoints`.
+    """
     from boundless100x.lifecycle.advance import record_checkpoints
     from boundless100x.watchlist import WatchlistManager
 
@@ -29,7 +34,7 @@ def _record_checkpoints_if_tracked(ticker: str, result) -> None:
         wm = WatchlistManager()
         if wm.get(ticker) is None:
             return
-        recorded = record_checkpoints(wm, ticker, result)
+        recorded = record_checkpoints(wm, ticker, result, as_of=as_of)
         if recorded["checkpoints"]:
             console.print(
                 f"[dim]Recorded {len(recorded['checkpoints'])} checkpoint(s) "
@@ -1080,6 +1085,11 @@ def watchlist_queue_route(
         help="Which deployment transition moved this capital (its exact `at` "
              "timestamp). Required only when the candidate holds more than one.",
     ),
+    allow_shared_deployment: bool = typer.Option(
+        False, "--allow-shared-deployment",
+        help="Route into a deployment that already closed another exit. Only "
+             "when one purchase genuinely absorbed the proceeds of both sales.",
+    ),
 ):
     """Record that an exit's proceeds were deployed into a company.
 
@@ -1169,6 +1179,31 @@ def watchlist_queue_route(
             f"exit-to-deployed-capital, and a plan that never executed cannot "
             f"close it"
         )
+
+    # 4b. A deployment that has not already closed a different exit. Nothing
+    #     recorded that a transition had been consumed, so routing two exits
+    #     into the same `probe` both succeeded — and the second exit's idle
+    #     reading then closed on a purchase that had nothing to do with it,
+    #     which is the one figure this whole store exists to measure. Refused
+    #     rather than prevented outright, because a single deployment absorbing
+    #     two sales is genuinely possible in a system that counts names and has
+    #     never counted rupees.
+    consumed = queue.deployments_consumed_by(candidate)
+    if not allow_shared_deployment:
+        free = [record for record in eligible if record.get("at") not in consumed]
+        if not free:
+            listed = ", ".join(
+                f"{record['at']} (already closed {consumed[record['at']]})"
+                for record in eligible if record.get("at") in consumed
+            )
+            refuse(
+                f"every eligible deployment {candidate} holds has already closed "
+                f"another exit: {listed}. Routing a second exit into it would "
+                f"close this one's idle reading on a purchase that did not fund "
+                f"it. If one deployment really did absorb both sales, re-run "
+                f"with --allow-shared-deployment"
+            )
+        eligible = free
 
     # 5. One recorded date, never a guess between two.
     if transition_at:

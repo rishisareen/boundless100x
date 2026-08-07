@@ -379,7 +379,12 @@ LANE_LABELS: dict[str, str] = {
 # The labels are this layer's own — presentation is not the evaluator's job —
 # but the *keys* are imported, so the map is guaranteed to cover the verdicts
 # that actually arrive.
-LANE_VERDICTS: dict[str, tuple[str, str, str]] = {
+#
+# `_LABELS`, not `LANE_VERDICTS`: that name already belongs to `lane_gates`,
+# where it is the *vocabulary* — a tuple of the three verdict strings. One name
+# for two incompatible types across two modules is a reader's problem before it
+# is anyone else's, and the two are imported into the same test file.
+LANE_VERDICT_LABELS: dict[str, tuple[str, str, str]] = {
     LANE_QUALIFIES: (
         "Qualifies for the fast lane", "good",
         "Clears every fast-lane entry gate",
@@ -1120,7 +1125,7 @@ class ReportGenerator:
         gate_result = lane_context.get("lane_gates") or {}
         gates = gate_result.get("gates") or {}
         verdict = gate_result.get("verdict")
-        label, sentiment, description = LANE_VERDICTS.get(verdict, ("", "", ""))
+        label, sentiment, description = LANE_VERDICT_LABELS.get(verdict, ("", "", ""))
 
         return {
             "lane": lane,

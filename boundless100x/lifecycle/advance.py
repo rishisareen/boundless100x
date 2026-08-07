@@ -341,16 +341,25 @@ def _sector_of(result) -> str | None:
     return sector if isinstance(sector, str) and sector.strip() else None
 
 
-def record_checkpoints(watchlist, ticker: str, result) -> dict:
+def record_checkpoints(watchlist, ticker: str, result, as_of=None) -> dict:
     """Store the checkpoints Pass 2 proposed, if it produced any.
 
     Called after a full analysis; `advance` itself runs without the LLM, so
     checkpoints are written when a thesis is generated and checked on every
     run thereafter.
+
+    **`as_of` is the run's clock, and it has to reach the recorder.**
+    `record_from_pass2` refuses a checkpoint already due when it is recorded —
+    a checkpoint due on the day it is written was never monitored, and pending
+    versus due is the whole value of the mechanism. Left to default, that
+    refusal reads `date.today()` while everything else in the run reads the
+    supplied date, so a backdated replay would validate a `due_date` against a
+    "today" no other part of the run agrees with. This is the one seam where
+    the layer's "same clock throughout" discipline did not reach; it now does.
     """
     llm = result.llm_analysis or {}
     pass2 = llm.get("pass2") if isinstance(llm, dict) else None
-    recorded = record_from_pass2(pass2)
+    recorded = record_from_pass2(pass2, as_of=lifecycle_states.as_date(as_of))
 
     if recorded["checkpoints"]:
         watchlist.set_checkpoints(ticker, recorded["checkpoints"])
@@ -393,14 +402,20 @@ def advance_ticker(
     # one — so asking for it would re-read and re-parse the whole append-only
     # score-history log once per tracked ticker for a value nobody reads.
     result = service.analyze(ticker, use_llm=False, include_momentum=False)
-    watchlist.record_snapshot(ticker, result, service.engine.registry_hash)
 
-    # Re-read after the commit, not before it. `record_snapshot` stages onto a
-    # deep copy and **replaces** `watchlist.data` when the write succeeds, so
-    # any entry held across that call is a detached pre-commit object. The two
-    # happen to agree today — `record_snapshot` touches neither the catalyst
-    # nor the state history — but reading a detached copy is a bug waiting for
-    # the first mutator that does, and it would be invisible when it arrived.
+    # The snapshot is **not** written here. It stamps `last_score_snapshot.at`,
+    # which is the exact field `get_stale(90)` reads, so writing it the moment
+    # the analysis returned meant a ticker whose advance raised anywhere below
+    # was recorded in the run's `errors` *and* marked freshly scored — and
+    # `advance --quarterly` would then not look at it again for three months. A
+    # thesis that broke on the one day a ticker errored went unevaluated until
+    # the quarter was up. It is written at the end instead, so "scored" means
+    # the run got through, not that it started. See the commit below the
+    # transition.
+
+    # Every mutator stages onto a deep copy and **replaces** `watchlist.data`
+    # on a successful write, so an entry held across one is a detached
+    # pre-commit object. Read here, before anything in this function commits.
     entry = watchlist.get(ticker)
     lane = entry["lane"]
 
@@ -595,6 +610,21 @@ def advance_ticker(
             )
         proposal["applied"] = should_apply
         proposal["needs_confirmation"] = moves_money and not should_apply
+
+    # ── the scoring snapshot, last of this function's writes ──
+    #
+    # Last because `get_stale(90)` reads its timestamp to decide what a
+    # `--quarterly` run looks at, and that question is "was this company
+    # successfully evaluated recently?", not "did an evaluation of it begin?".
+    # Written up front, a ticker that raised below was reported as an error and
+    # simultaneously marked fresh, so the next three months of quarterly runs
+    # skipped the one company whose last run had failed.
+    #
+    # After the transition rather than before it, and the ordering is the safe
+    # one of the two: a snapshot write that fails leaves a recorded transition
+    # with a stale score, which the next run corrects. The reverse leaves a
+    # company that looks scored and never moved.
+    watchlist.record_snapshot(ticker, result, service.engine.registry_hash)
 
     return {
         "ticker": ticker,

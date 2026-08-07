@@ -425,6 +425,158 @@ class TestTheCommitMechanicsAreOneImplementation:
             ReinvestmentQueue(path=str(path))
 
 
+class TestLoadRefusesWhatItCannotUse:
+    """Validation at the door, because the alternative surfaces are worse.
+
+    This store validates loudly and repairs nothing — with one schema in
+    existence an odd event means something is wrong, and repairing it silently
+    is how proceeds end up attributed to a sale nobody made. Two holes in that
+    rule are closed here.
+
+    **Presence was checked, shape was not.** An event with `"ticker": null`
+    satisfied a required-key check and then failed three frames away in
+    `exit_views`, as an `AttributeError` naming neither the file nor the event.
+    That is the silent repair arriving as a crash instead.
+
+    **`latest_proposal` was not checked at all** while every event was. It is
+    read with `.get` in `snapshot_state`, so any non-object value loaded
+    happily and took down `watchlist queue` — a display command — with a
+    traceback.
+    """
+
+    def write(self, tmp_path, payload) -> str:
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def exit_event(self, **overrides) -> dict:
+        event = {
+            "kind": "exit", "exit_id": "SOLD:2026-08-01", "ticker": "SOLD",
+            "lane": "core", "trigger_id": "roiic_below_cost_of_capital",
+            "at": "2026-08-01", "friction": friction_payload(),
+        }
+        event.update(overrides)
+        return event
+
+    @pytest.mark.parametrize("key", ["exit_id", "ticker", "lane"])
+    @pytest.mark.parametrize("value", [None, "", "   ", 7, [], {}])
+    def test_an_identifying_field_that_names_nothing_is_refused(
+        self, tmp_path, key, value
+    ):
+        path = self.write(tmp_path, {"events": [self.exit_event(**{key: value})]})
+
+        with pytest.raises(ReinvestmentError, match=key):
+            ReinvestmentQueue(path=path)
+
+    def test_the_refusal_names_the_event_and_the_key(self, tmp_path):
+        """The whole point of moving the failure to load time: an error here
+        can still say which event and which field, where the crash it replaces
+        could say neither."""
+        path = self.write(tmp_path, {"events": [self.exit_event(ticker=None)]})
+
+        with pytest.raises(ReinvestmentError) as raised:
+            ReinvestmentQueue(path=path)
+
+        assert "event 0" in str(raised.value)
+        assert "ticker=None" in str(raised.value)
+
+    def test_a_friction_payload_that_is_not_an_object_is_refused(self, tmp_path):
+        """Stored whole so a report can take it apart — and a bare figure or a
+        sentence of evidence cannot be taken apart."""
+        path = self.write(tmp_path, {"events": [self.exit_event(friction="42%")]})
+
+        with pytest.raises(ReinvestmentError, match="friction"):
+            ReinvestmentQueue(path=path)
+
+    @pytest.mark.parametrize("proposal", ["a string", ["a", "list"], 7])
+    def test_a_latest_proposal_of_the_wrong_shape_is_refused(
+        self, tmp_path, proposal
+    ):
+        path = self.write(tmp_path, {"events": [], "latest_proposal": proposal})
+
+        with pytest.raises(ReinvestmentError, match="latest_proposal"):
+            ReinvestmentQueue(path=path)
+
+    def test_the_refusal_says_how_to_clear_it(self, tmp_path):
+        """A store's own error names the file and the way out; the
+        `AttributeError` it replaces named neither."""
+        path = self.write(tmp_path, {"events": [], "latest_proposal": "nonsense"})
+
+        with pytest.raises(ReinvestmentError) as raised:
+            ReinvestmentQueue(path=path)
+
+        assert "watchlist advance" in str(raised.value)
+
+    def test_a_null_latest_proposal_is_the_ordinary_empty_case(self, tmp_path):
+        """`None` means no snapshot has been written, which is where every
+        store starts — it must not be caught by the shape check."""
+        path = self.write(tmp_path, {"events": [], "latest_proposal": None})
+
+        assert ReinvestmentQueue(path=path).latest_proposal() is None
+
+
+class TestSchemaVersion:
+    """A version beside a schema that has no migration path.
+
+    The two belong together. Validation here is unforgiving by design, so
+    without a version the first future change that adds a required key turns
+    every existing queue into the same hard error as a corrupt one — and
+    nothing in the message could tell an owner which they were looking at. The
+    version does not create a migration path; it makes the absence of one
+    diagnosable.
+    """
+
+    def test_a_new_store_stamps_the_current_version(self, tmp_path):
+        queue = ReinvestmentQueue(path=str(tmp_path / "queue.json"))
+        record(queue, "ASTRAL")
+
+        written = json.loads((tmp_path / "queue.json").read_text())
+        assert written["schema_version"] == 1
+
+    def test_a_file_written_before_the_field_reads_as_version_one(self, tmp_path):
+        """Its absence is an answer, not a fault: version 1 is the shape this
+        store has always written, so a file without the key already is one."""
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps({"events": [], "revision": 3}))
+
+        assert ReinvestmentQueue(path=str(path)).data["schema_version"] == 1
+
+    def test_a_future_version_is_refused_rather_than_read(self, tmp_path):
+        """The direction that must fail closed. This code cannot know what a
+        later schema added, so reading it under today's rules risks misreading
+        an event rather than failing to read it — and a misread exit event is a
+        sale attributed to the wrong company."""
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps({"events": [], "schema_version": 99}))
+
+        with pytest.raises(ReinvestmentError, match="newer version"):
+            ReinvestmentQueue(path=str(path))
+
+    @pytest.mark.parametrize("stored", ["1", 0, -2, 1.5, True, None, []])
+    def test_a_version_that_is_not_a_version_number_is_refused(
+        self, tmp_path, stored
+    ):
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps({"events": [], "schema_version": stored}))
+
+        with pytest.raises(ReinvestmentError, match="schema_version"):
+            ReinvestmentQueue(path=str(path))
+
+    def test_a_commit_preserves_the_version_the_file_was_loaded_at(self, tmp_path):
+        """Never restamped with today's. The store does not rewrite existing
+        events, so a file whose events were written under an older schema still
+        holds them however new the appending code is — and a fresh stamp would
+        erase the only evidence of that.
+        """
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps({"events": [], "schema_version": 1}))
+        queue = ReinvestmentQueue(path=str(path))
+
+        record(queue, "ASTRAL")
+
+        assert json.loads(path.read_text())["schema_version"] == 1
+
+
 class TestStoreShape:
     def test_a_missing_file_loads_as_an_empty_queue(self, tmp_path):
         queue = ReinvestmentQueue(path=str(tmp_path / "nothing-here.json"))

@@ -87,7 +87,13 @@ survived triage.
 
 ## Reliability
 
-- **A snapshot is written before evaluation.** `record_snapshot` commits
+- **~~A snapshot is written before evaluation.~~** **Fixed** (Tranche 2):
+  `record_snapshot` is now the last write in `advance_ticker`, after the
+  transition, so "scored" means the run got through rather than that it
+  started. An errored ticker stays stale and the next `--quarterly` run picks
+  it up. The original follows.
+
+  A snapshot is written before evaluation. `record_snapshot` commits
   `last_score_snapshot.at` immediately after `analyze()`, and `get_stale(90)`
   reads exactly that. A ticker whose advance raises anywhere downstream is
   recorded in `errors` for the run and then reads as freshly scored for 90
@@ -103,7 +109,14 @@ survived triage.
   still interleave. Closing it properly needs an `O_EXCL` lockfile or `flock` —
   a design call, and arguably unnecessary for a single-owner CLI.
 
-- **One deployment transition can close several exits.** `queue route`
+- **~~One deployment transition can close several exits.~~** **Fixed**
+  (Tranche 2): `deployments_consumed_by` records which transitions have
+  already closed an exit, and `queue route` refuses one that has, naming the
+  exit holding it. Refused rather than made impossible — a system that counts
+  names and not rupees cannot rule out one purchase absorbing two sales — so
+  `--allow-shared-deployment` covers the real case. The original follows.
+
+  One deployment transition can close several exits. `queue route`
   validates that the candidate holds an eligible position transition after the
   exit, but nothing records that the transition has already been consumed.
   Routing exit A and exit B into the same `probe` both succeed.
@@ -130,25 +143,46 @@ survived triage.
   A dependency-free leaf module (the `forward_growth_schema.py` precedent)
   would remove the edge and let the shared names be public.
 
-- **`LANE_VERDICTS` names two incompatible types**: a tuple of the vocabulary
+- **~~`LANE_VERDICTS` names two incompatible types~~** — **fixed** (Tranche 2):
+  the report-layer map is now `LANE_VERDICT_LABELS`, leaving the name meaning
+  one thing repo-wide. The original follows.
+
+  `LANE_VERDICTS` names two incompatible types: a tuple of the vocabulary
   in `lane_gates.py`, and a label/sentiment dict in `report_generator.py`.
   Renaming the report-layer map to `LANE_VERDICT_LABELS` would leave the name
   meaning one thing repo-wide.
 
 ## Schema and contracts
 
-- **`reinvestment_queue.json` carries no `schema_version`**, unlike
+- **~~`reinvestment_queue.json` carries no `schema_version`~~** — **fixed**
+  (Tranche 2), while no queue file existed on disk anywhere, which is the
+  cheapest this could ever be. A file without the key reads as version 1; a
+  *newer* version is refused rather than read under today's rules; a commit
+  preserves the version the file was loaded at, since the store never rewrites
+  an existing event. The original follows.
+
+  `reinvestment_queue.json` carries no `schema_version`, unlike
   `score_history.jsonl`. It validates loudly against a per-kind required-key
   set with an explicit no-migration rule, so the first future change that adds
   a required key turns every existing queue into a hard error with no way to
   distinguish "written by an older version" from "corrupt".
 
-- **`latest_proposal` is loaded unvalidated** while every event is validated. A
+- **~~`latest_proposal` is loaded unvalidated~~** — **fixed** (Tranche 2): a
+  non-object is now the store's own error naming the file and how to clear it,
+  rather than an `AttributeError` from inside a display command. The original
+  follows.
+
+  `latest_proposal` is loaded unvalidated while every event is validated. A
   non-dict value loads silently and then raises `AttributeError` inside
   `snapshot_state`, so `watchlist queue` dies with a traceback instead of the
   store's own actionable message.
 
-- **Event validation checks key presence, not value shape.** An event with
+- **~~Event validation checks key presence, not value shape.~~** **Fixed**
+  (Tranche 2): every identifying field must be a usable string and an exit's
+  friction payload must be an object, checked at load where the error can
+  still name the event and the key. The original follows.
+
+  Event validation checks key presence, not value shape. An event with
   `"ticker": null` loads cleanly and crashes later in `exit_views`.
 
 - **`watchlist catalyst` writes state nothing on the CLI can read.** The
@@ -196,7 +230,12 @@ An independent re-review of `5ae71fc..6960a76` after the phase closed. It
 confirmed the findings above against the code and the green suite (1583), and
 added three more, none blocking.
 
-- **The checkpoint past-dating check does not follow the run clock.**
+- **~~The checkpoint past-dating check does not follow the run clock.~~**
+  **Fixed** (Tranche 2): `as_of` threads through `record_checkpoints` into
+  `record_from_pass2`, so a backdated replay validates `due_date`s against the
+  date the rest of the run reads. The original follows.
+
+  The checkpoint past-dating check does not follow the run clock.
   `record_from_pass2` gained an `as_of` parameter (`checkpoints.py`), but its
   only production caller, `record_checkpoints` (`advance.py`), never passes
   one, so the validation falls back to `date.today()` — and the `{today}` the
@@ -207,7 +246,13 @@ added three more, none blocking.
   friction, and the time stops) does not reach. The fix is one parameter
   through two signatures.
 
-- **The accumulation streak fails closed but silently on a reordered file.**
+- **~~The accumulation streak fails closed but silently on a reordered file.~~**
+  **Fixed** (Tranche 2): the periods must be strictly ascending or the metric
+  errors, so an unwalkable frame reads indeterminate and names the pair that
+  broke the order instead of returning a zero indistinguishable from a real
+  one. The original follows.
+
+  The accumulation streak fails closed but silently on a reordered file.
   `compute_institutional_accumulation_trend` walks backward assuming
   oldest-first `shareholding.csv` order (verified true of the corpus today).
   If a refetch ever wrote newest-first, the adjacency check breaks the walk at

@@ -958,3 +958,107 @@ class TestCappedTransitionDisplay:
                  "proposal": {"to": "probe", "concentration_withheld": False}}
 
         assert self.render([clear, {"ticker": "X", "proposal": None}]) == ""
+
+
+class TestOneDeploymentFundsOneExit:
+    """A deployment transition that has already closed an exit, offered again.
+
+    Nothing recorded that a transition had been consumed, so routing exit A and
+    exit B into the same `probe` both succeeded — and B's idle reading then
+    closed on a purchase that had nothing to do with it, which is the one
+    figure this store exists to measure.
+
+    Refused rather than made impossible. This system counts names and has never
+    counted rupees, so one deployment genuinely can absorb the proceeds of two
+    sales; what it cannot do is tell that case apart from the owner forgetting
+    which exit they had already routed. So the default is the refusal, the
+    message names the exit already holding the transition, and the flag is
+    there for when the sharing was real.
+    """
+
+    SECOND_AT = "2026-08-02"
+    SECOND_ID = f"OTHER:{SECOND_AT}"
+
+    def two_exits_one_deployment(self, stores):
+        """Two completed sales, and a single probe dated after both."""
+        sold(stores, ticker="SOLD", at=EXIT_AT)
+        sold(stores, ticker="OTHER", at=self.SECOND_AT)
+        deployed(stores)
+
+    def test_the_second_exit_into_the_same_deployment_is_refused(
+        self, run, stores
+    ):
+        self.two_exits_one_deployment(stores)
+        run("watchlist", "queue", "route", EXIT_ID, "ZENSAR")
+
+        result = run("watchlist", "queue", "route", self.SECOND_ID, "ZENSAR")
+
+        assert result.exit_code == 1
+        assert "already closed" in result.output
+        assert EXIT_ID in result.output
+        assert "Nothing was recorded" in result.output
+
+    def test_the_refusal_records_nothing(self, run, stores):
+        self.two_exits_one_deployment(stores)
+        run("watchlist", "queue", "route", EXIT_ID, "ZENSAR")
+
+        run("watchlist", "queue", "route", self.SECOND_ID, "ZENSAR")
+
+        assert stores.q().routing_for(self.SECOND_ID) is None
+
+    def test_the_refusal_offers_the_flag(self, run, stores):
+        self.two_exits_one_deployment(stores)
+        run("watchlist", "queue", "route", EXIT_ID, "ZENSAR")
+
+        result = run("watchlist", "queue", "route", self.SECOND_ID, "ZENSAR")
+
+        assert "--allow-shared-deployment" in result.output
+
+    def test_the_flag_records_the_shared_deployment(self, run, stores):
+        """When one purchase really did absorb both sales, the owner says so
+        and both idle readings close on the date capital actually moved."""
+        self.two_exits_one_deployment(stores)
+        run("watchlist", "queue", "route", EXIT_ID, "ZENSAR")
+
+        result = run("watchlist", "queue", "route", self.SECOND_ID, "ZENSAR",
+                     "--allow-shared-deployment")
+
+        assert result.exit_code == 0
+        assert stores.q().routing_for(self.SECOND_ID)["deployed_at"] == PROBE_AT
+
+    def test_an_unconsumed_second_deployment_is_chosen_over_the_used_one(
+        self, run, stores
+    ):
+        """The refusal is about exhausting the candidate's deployments, not
+        about the candidate. With a free transition available the route lands
+        on it — and without being asked, since only one remains eligible.
+
+        The first route names its transition explicitly: with two eligible and
+        neither consumed, `deployed_at` is a recorded fact the command refuses
+        to guess at. That refusal is `--transition-at`'s own, tested above, and
+        it fires before this one has anything to say.
+        """
+        self.two_exits_one_deployment(stores)
+        deployed(stores, at=SCALE_AT, to="scale")
+        run("watchlist", "queue", "route", EXIT_ID, "ZENSAR",
+            "--transition-at", PROBE_AT)
+
+        result = run("watchlist", "queue", "route", self.SECOND_ID, "ZENSAR")
+
+        assert result.exit_code == 0
+        assert stores.q().routing_for(self.SECOND_ID)["deployed_at"] == SCALE_AT
+
+    def test_a_deployment_consumed_by_another_candidate_is_irrelevant(
+        self, run, stores
+    ):
+        """Consumption is tracked per candidate. Two companies can hold
+        transitions at the same timestamp, and one being spent says nothing
+        about the other."""
+        self.two_exits_one_deployment(stores)
+        deployed(stores, ticker="ASTRAL", at=PROBE_AT, lane="core")
+        run("watchlist", "queue", "route", EXIT_ID, "ASTRAL")
+
+        result = run("watchlist", "queue", "route", self.SECOND_ID, "ZENSAR")
+
+        assert result.exit_code == 0
+        assert stores.q().routing_for(self.SECOND_ID)["candidate"] == "ZENSAR"
