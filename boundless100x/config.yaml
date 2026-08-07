@@ -141,6 +141,35 @@ friction:
                           # the gross return before tax, which is the order the
                           # costs are actually borne in
 
+# ── Portfolio (v05 §8.1, §14.1) ──
+# Sleeve split, tranche sizing, and concentration guardrails.
+#
+# THE CAPS BELOW ARE COUNTS OF POSITIONS, NOT PERCENTAGES OF CAPITAL. The
+# roadmap states them as percentages — 10–15% per core name, 5% per re-rating
+# name, 25–30% per sector — but this system records no invested amount, no
+# tranche and no cost basis anywhere, so a percentage would have no denominator
+# to check against. A count is a proxy for those percentages, honest only
+# because the sizing rules are near equal-weight; a computed-from-nothing
+# percentage would read as a measurement, which is worse than a coarse rule.
+#
+# `sleeve_split` and `tranche_size_pct` ARE percentages, and are placeholders:
+# nothing reads them yet, for the same reason — allocating between sleeves
+# needs rupee amounts this system does not hold. Starting points awaiting Phase
+# 5 simulator evidence. Deliberately outside the hashed `macro:` block, for the
+# same reason `deployment_pace:` and `friction:` are: policy, not an assumption
+# a metric computes with.
+portfolio:
+  sleeve_split:              # §14.1 — compounder sleeve vs. re-rating sleeve
+    core: 0.7
+    rerating: 0.3
+  tranche_size_pct:          # §4.4 — a core position built in thirds, a
+    core: 0.33               # re-rating position in halves
+    rerating: 0.5
+  max_positioned_per_lane:   # COUNT of positioned names, per lane
+    core: 8
+    rerating: 5
+  max_positioned_per_sector: 3   # COUNT of positioned names sharing a sector
+
 # ── Output ──
 output:
   formats: ["html", "md", "json"]

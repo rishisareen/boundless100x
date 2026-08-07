@@ -33,6 +33,13 @@ an estimate in the strict sense — the holding period runs from a `probe`
 confirmation date rather than a fill, and market bars stand in for trade
 prices — and `lifecycle/friction.py` is where that language is enforced.
 
+One run-level reading comes *out* of the loop the same way: after every company
+has been advanced, the portfolio's concentration is counted once — positioned
+names per lane and per sector, seeded from the watchlist so a failed fetch
+cannot make a position disappear from a cap check. It is a count of names
+rather than a share of capital, because no capital is recorded anywhere in this
+system; `lifecycle/portfolio.py` is where that decision is argued.
+
 One run-level input reaches this loop: the deployment-pace modulator reads the
 cached corpus's median earnings-yield spread once, ahead of the evaluator's
 construction, and hands in a trigger set whose *entry* thresholds are tighter
@@ -49,6 +56,7 @@ from boundless100x.action_policy import (
 )
 from boundless100x.lifecycle import friction as friction_module
 from boundless100x.lifecycle import pace as pace_module
+from boundless100x.lifecycle import portfolio
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.checkpoints import (
     evaluate_all,
@@ -266,6 +274,21 @@ def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict
         }
 
 
+def _sector_of(result) -> str | None:
+    """The sector this ticker's last fetch recorded, or None.
+
+    Only tickers fetched after the breadcrumb fix carry `metadata.sector`, so
+    None is the expected reading for part of the corpus rather than a fault.
+    Every layer of the lookup is guarded because `metadata.json` is scraped: a
+    file holding valid JSON of the wrong shape parses fine and then fails on
+    attribute access, and a concentration reading is not worth an advance run.
+    """
+    data = getattr(result, "data", None)
+    metadata = data.get("metadata") if isinstance(data, dict) else None
+    sector = metadata.get("sector") if isinstance(metadata, dict) else None
+    return sector if isinstance(sector, str) and sector.strip() else None
+
+
 def record_checkpoints(watchlist, ticker: str, result) -> dict:
     """Store the checkpoints Pass 2 proposed, if it produced any.
 
@@ -432,6 +455,12 @@ def advance_ticker(
         "ticker": ticker,
         "state": state,
         "lane": lane,
+        # The run's only path from a per-ticker analysis to the concentration
+        # reading: `result` is local to this function and never reaches the
+        # caller, so without carrying the sector out here `advance()` has no way
+        # to group positioned names by industry at all. Read rather than stored
+        # — see `lifecycle/portfolio.py` on why sector is resolved once per run.
+        "sector": _sector_of(result),
         "composite": (result.scores or {}).get("composite"),
         "verdict": (result.eligibility or {}).get("verdict", "indeterminate"),
         "lane_gates": lane_gate_result,
@@ -481,6 +510,45 @@ def _resolve_pace(service, evaluator, pace_reading) -> tuple[TriggerEvaluator, d
     )
 
 
+def _concentration(service, watchlist, outcomes: list[dict]) -> dict:
+    """How crowded the portfolio is, counted once after the whole run.
+
+    **Seeded from the watchlist, not from the run's outcomes**, and the
+    direction is the whole guarantee. A positioned name whose analysis failed
+    still holds its capital; built from successful outcomes, it would drop out
+    of its lane's total and a full lane would read as having room on the one day
+    its fetch broke — a guardrail that stops seeing a position is worse than no
+    guardrail, because absence reads as headroom.
+
+    The sector comes the other way, overlaid from each successful outcome, and
+    a name without one is excluded from sector *grouping* only. It is also why
+    this runs after the loop rather than inside it: the states it counts include
+    any transition the run just applied, and one reading per run mirrors how
+    `pace.py` resolves its corpus median.
+
+    A failure costs the reading, never the run — every ticker has already been
+    advanced by the time this is called, and throwing that away to report a
+    count would be the expensive half of the trade.
+    """
+    sectors = {
+        outcome["ticker"]: outcome.get("sector")
+        for outcome in outcomes
+        if outcome.get("ticker")
+    }
+    entries = []
+    for ticker in watchlist.tickers():
+        entry = watchlist.get(ticker) or {}
+        entries.append({
+            "ticker": ticker,
+            "lane": entry.get("lane"),
+            "state": entry.get("state"),
+            "sector": sectors.get(ticker),
+        })
+    return portfolio.check_concentration(
+        entries, getattr(service, "config", {})
+    )
+
+
 def advance(
     service,
     watchlist,
@@ -490,7 +558,12 @@ def advance(
     as_of=None,
     pace_reading: dict | None = None,
 ) -> dict:
-    """Advance every tracked company. Returns per-ticker outcomes and errors.
+    """Advance every tracked company. Returns outcomes, errors, and two run-level readings.
+
+    The concentration reading is counted after the loop and from the watchlist,
+    so it describes the portfolio as it stands once the run's own transitions
+    have been applied — including the positions of any company whose analysis
+    failed. See `_concentration`.
 
     A failure on one company must not stop the rest: a stale fetch for one
     holding is no reason to skip checking whether another one's thesis broke.
@@ -539,4 +612,17 @@ def advance(
             logger.error(f"Advance failed for {ticker}: {e}")
             errors.append((ticker, str(e)))
 
-    return {"outcomes": outcomes, "errors": errors, "pace": pace}
+    try:
+        concentration = _concentration(service, watchlist, outcomes)
+    except Exception as e:
+        logger.error(f"Concentration reading could not be built: {e}")
+        concentration = portfolio.unavailable(
+            f"the concentration reading could not be built ({e})"
+        )
+
+    return {
+        "outcomes": outcomes,
+        "errors": errors,
+        "pace": pace,
+        "concentration": concentration,
+    }

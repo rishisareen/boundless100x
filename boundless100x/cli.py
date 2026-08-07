@@ -833,6 +833,8 @@ def watchlist_advance(
     elif pace.get("reason"):
         console.print(f"[dim]Deployment pace: {pace['reason']}[/dim]\n")
 
+    _print_concentration(result.get("concentration"))
+
     if not outcomes and not errors:
         console.print("[dim]No companies to advance[/dim]")
         return
@@ -899,6 +901,43 @@ def _evidence_cell(evidence: str) -> str:
     from rich.markup import escape
 
     return escape(evidence or "")
+
+
+def _print_concentration(reading) -> None:
+    """How crowded the portfolio already is, before the table proposes adding to it.
+
+    Placed with the deployment-pace line and for the same reason: it is context
+    for reading the proposals below it. A proposal to enter a lane that is
+    already at its cap is a different thing from the same proposal in an empty
+    lane, and an owner should not have to scroll past the entry to learn that.
+
+    Every figure here is a COUNT of positioned names — this system records no
+    invested amount — so the line says so in the words themselves rather than
+    in a caption, and the breaches and same-sector notes are printed beneath it
+    where they cannot be missed.
+    """
+    from rich.markup import escape
+
+    from boundless100x.lifecycle import portfolio
+
+    if not reading:
+        return
+    # Nothing positioned and nothing to note is not a concentration reading
+    # worth a line. A reading that could not be *built* still prints: a gap has
+    # to be visible, or it reads as "checked, all clear".
+    if reading.get("available") and not reading.get("positioned") and not reading.get(
+        "notes"
+    ):
+        return
+
+    colour = "yellow" if reading.get("breaches") else "dim"
+    # Escaped, not trusted: the notes interpolate sector names read from a
+    # scraped breadcrumb, and rich would swallow anything bracketed — a cap
+    # breach silently truncated is the one line here that must always render.
+    console.print(f"[{colour}]{escape(portfolio.describe(reading))}[/{colour}]")
+    for note in reading.get("notes") or []:
+        console.print(f"  [dim]{escape(note)}[/dim]")
+    console.print()
 
 
 def _print_exit_friction(outcomes) -> None:
