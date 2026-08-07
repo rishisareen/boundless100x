@@ -28,6 +28,20 @@ def period_end_date(label) -> pd.Timestamp | None:
     return pd.Timestamp(year=int(match.group(2)), month=month, day=1) + pd.offsets.MonthEnd(0)
 
 
+def quarter_index(label) -> int | None:
+    """An orderable index for a quarter label, or None when it cannot be read.
+
+    `Mar 2026` sits one above `Dec 2025`, so "four quarters back" is arithmetic
+    on real periods rather than a row offset — the distinction that stops a
+    missing quarter silently pairing a period against one five or six earlier.
+    Derived from `period_end_date` so there is exactly one label parser: the
+    three-month bucket comes from the calendar month, which indexes a
+    Jan/Apr/Jul/Oct filer just as consecutively as a March one.
+    """
+    end = period_end_date(label)
+    return None if end is None else end.year * 4 + (end.month - 1) // 3
+
+
 def detect_fcf_outliers(
     fcf_series: np.ndarray,
     threshold_std: float = 2.0,

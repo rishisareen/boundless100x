@@ -13,12 +13,19 @@ import pandas as pd
 import pytest
 
 from boundless100x.lifecycle import checkpoints as cp
+from tests.conftest import quarter_labels
 
 
 def quarterly(revenue=None, opm=None, pat=None, periods=8) -> pd.DataFrame:
-    """A frame with the real column names Phase 0's parser writes."""
+    """A frame with the real column names *and labels* Phase 0's parser writes.
+
+    The labels used to be `Q0..Q7`, which Screener never produces and which no
+    period parser can read — so every checkpoint reading in this file silently
+    exercised the position-matched fallback rather than the period matching
+    production uses.
+    """
     return pd.DataFrame({
-        "quarter": [f"Q{i}" for i in range(periods)],
+        "quarter": quarter_labels(periods),
         "revenue": revenue or [100.0 + 10 * i for i in range(periods)],
         "expenses": [50.0] * periods,
         "operating_profit": [40.0] * periods,
@@ -35,7 +42,7 @@ def quarterly(revenue=None, opm=None, pat=None, periods=8) -> pd.DataFrame:
 
 def shareholding(promoter=60.0, fii=10.0, dii=5.0, periods=8) -> pd.DataFrame:
     return pd.DataFrame({
-        "quarter": [f"Q{i}" for i in range(periods)],
+        "quarter": quarter_labels(periods),
         "promoter_pct": [promoter] * periods,
         "fii_pct": [fii] * periods,
         "dii_pct": [dii] * periods,
@@ -140,7 +147,7 @@ class TestEvaluation:
     def test_the_detail_names_the_period_and_the_number(self):
         outcome = cp.evaluate(checkpoint(), self.data(), as_of=PAST)
         assert "25.00" in outcome["detail"]
-        assert outcome["period"] == "Q7"
+        assert outcome["period"] == quarter_labels(8)[-1]
 
 
 class TestYearOverYear:
@@ -221,3 +228,75 @@ class TestSummary:
 
     def test_an_empty_checkpoint_list_summarises_cleanly(self):
         assert cp.summarise([])["total"] == 0
+
+
+class TestPeriodMatching:
+    """A reading is anchored to the period it actually came from.
+
+    Two defects of the same shape as `quarterly_momentum`'s: reading
+    `values.iloc[-1]` off a dropna'd series while labelling it with the frame's
+    last row gives a value from one quarter under another quarter's name, and
+    `iloc[-1 - 4]` assumes the rows between are contiguous.
+    """
+
+    def yoy(self, values):
+        return cp._series_value(
+            {"source": "quarterly", "columns": ["revenue"], "transform": "yoy_pct"},
+            {"quarterly": quarterly(revenue=values)},
+        )
+
+    def test_a_clean_series_reads_its_real_yoy(self):
+        value, _, period = self.yoy([100 * (1.2 ** (i / 4)) for i in range(8)])
+
+        assert value == pytest.approx(20.0)
+        assert period == quarter_labels(8)[-1]
+
+    def test_a_gap_refuses_rather_than_comparing_across_it(self):
+        values = [100 * (1.2 ** (i / 4)) for i in range(8)]
+        values[3] = None
+
+        value, why, _ = self.yoy(values)
+
+        assert value is None
+        assert "one year before" in why
+
+    def test_the_period_names_the_row_the_value_came_from(self):
+        """A value from Dec must not be reported under Mar's name."""
+        values = [100.0 + 10 * i for i in range(8)]
+        values[-1] = None
+
+        value, _, period = cp._series_value(
+            {"source": "quarterly", "columns": ["revenue"], "transform": "latest"},
+            {"quarterly": quarterly(revenue=values)},
+        )
+
+        assert value == 160.0
+        assert period == quarter_labels(8)[-2]
+
+    def test_a_sum_takes_every_column_from_one_period(self):
+        """A total assembled from three different quarters totals nothing."""
+        frame = quarterly(periods=8)
+        frame.loc[frame.index[-1], "interest"] = None
+
+        value, _, period = cp._series_value(
+            {"source": "quarterly", "columns": ["interest", "depreciation"],
+             "transform": "sum"},
+            {"quarterly": frame},
+        )
+
+        assert value == 5.0
+        assert period == quarter_labels(8)[-2]
+
+    def test_unreadable_labels_fall_back_and_say_so(self):
+        """A source whose labels cannot be parsed still reads, but discloses it."""
+        frame = quarterly(periods=8)
+        frame["quarter"] = [f"Q{i}" for i in range(8)]
+
+        value, why, period = cp._series_value(
+            {"source": "quarterly", "columns": ["revenue"], "transform": "latest"},
+            {"quarterly": frame},
+        )
+
+        assert value == 170.0
+        assert "position-matched" in why
+        assert period is None

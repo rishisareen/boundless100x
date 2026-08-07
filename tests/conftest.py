@@ -124,8 +124,15 @@ def make_ratios(n: int = 10, roce: float = 22.0, **overrides) -> pd.DataFrame:
 
 
 def make_shareholding(quarters: int = 20, promoter: float = 60.0) -> pd.DataFrame:
+    """BSE quarterly shareholding, labelled the way the fetcher writes it.
+
+    Labels were `Q1 2021`-style, which no period parser reads — so anything
+    matching shareholding readings by period silently fell back to position.
+    Real files carry `Sep 2023`, `Dec 2023`, ... like every other quarterly
+    series.
+    """
     return pd.DataFrame({
-        "quarter": [f"Q{i % 4 + 1} {2021 + i // 4}" for i in range(quarters)],
+        "quarter": quarter_labels(quarters),
         "promoter_pct": [promoter] * quarters,
         "fii_pct": [8.0] * quarters,
         "dii_pct": [5.0] * quarters,

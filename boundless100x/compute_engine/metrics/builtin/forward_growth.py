@@ -37,6 +37,7 @@ import pandas as pd
 
 from boundless100x import forward_growth_schema as schema
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.builtin._helpers import quarter_index
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
 logger = logging.getLogger(__name__)
@@ -68,28 +69,6 @@ def _year_of(period) -> int | None:
     if len(token) == 2:
         return 2000 + int(token)
     return None
-
-
-_MONTHS = {m: i + 1 for i, m in enumerate(
-    ("jan", "feb", "mar", "apr", "may", "jun",
-     "jul", "aug", "sep", "oct", "nov", "dec")
-)}
-
-
-def _quarter_index(label) -> int | None:
-    """An orderable index for a Screener quarter label, or None.
-
-    `Mar 2026` -> a number one greater than `Dec 2025`, so "four quarters back"
-    is arithmetic on real periods rather than a row offset. Works for any
-    quarter-end scheme, not just March years: the three-month bucket is derived
-    from the calendar month, so a Jan/Apr/Jul/Oct filer indexes consecutively
-    too.
-    """
-    match = re.match(r"\s*([A-Za-z]{3})[a-z]*\s+(\d{4})", str(label or ""))
-    if not match:
-        return None
-    month = _MONTHS.get(match.group(1).lower())
-    return None if month is None else int(match.group(2)) * 4 + (month - 1) // 3
 
 
 def _usable_sections(payload: dict, required: tuple) -> set:
@@ -547,7 +526,7 @@ def compute_quarterly_momentum(data: dict, params: dict) -> MetricResult:
     numeric = pd.to_numeric(frame[field], errors="coerce")
     by_period: dict[int, float] = {}
     for label, value in zip(frame["quarter"], numeric):
-        index = _quarter_index(label)
+        index = quarter_index(label)
         if index is not None and pd.notna(value):
             by_period[index] = float(value)
 

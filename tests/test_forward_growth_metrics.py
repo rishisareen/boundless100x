@@ -669,9 +669,9 @@ class TestQuarterlyTimelineIntegrity:
 
     def test_a_non_march_filer_indexes_consecutively(self):
         """Jan/Apr/Jul/Oct quarter ends must not read as gaps."""
-        assert (fgm._quarter_index("Apr 2025") - fgm._quarter_index("Jan 2025")) == 1
-        assert (fgm._quarter_index("Jan 2026") - fgm._quarter_index("Oct 2025")) == 1
-        assert (fgm._quarter_index("Mar 2026") - fgm._quarter_index("Mar 2025")) == 4
+        assert (fgm.quarter_index("Apr 2025") - fgm.quarter_index("Jan 2025")) == 1
+        assert (fgm.quarter_index("Jan 2026") - fgm.quarter_index("Oct 2025")) == 1
+        assert (fgm.quarter_index("Mar 2026") - fgm.quarter_index("Mar 2025")) == 4
 
 
 class TestQuarterlyMomentum:

@@ -29,6 +29,7 @@ import pandas as pd
 import yaml
 
 from boundless100x.compute_engine.eligibility import COMPARATORS, _format_threshold
+from boundless100x.compute_engine.metrics.builtin._helpers import quarter_index
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,63 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
+def _period_index(frame) -> dict | None:
+    """`{quarter index: row position}`, or None when the labels cannot be read.
+
+    Later rows win a duplicated period, matching the "last row wins" reading
+    the positional code had.
+    """
+    if "quarter" not in frame.columns:
+        return None
+    index = {}
+    for row, label in enumerate(frame["quarter"]):
+        key = quarter_index(label)
+        if key is not None:
+            index[key] = row
+    return index or None
+
+
+def _label(frame, row: int) -> str:
+    return str(frame["quarter"].iloc[row])
+
+
+def _positional_value(frame, spec: dict, columns: list, transform: str):
+    """The pre-period-matching reading, for sources whose labels will not parse.
+
+    Kept so an unreadable label costs a *disclosed* approximation rather than
+    the whole checkpoint, and marked in the explanation so nobody mistakes it
+    for a period-matched reading.
+    """
+    note = " (position-matched: period labels unreadable)"
+    if transform == "sum":
+        total = 0.0
+        for column in columns:
+            values = pd.to_numeric(frame[column], errors="coerce").dropna()
+            if values.empty:
+                return None, f"{column} has no numeric values", None
+            total += float(values.iloc[-1])
+        return total, f"{' + '.join(columns)} = {total:,.2f}{note}", None
+
+    column = columns[0]
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    if values.empty:
+        return None, f"{column} has no numeric values", None
+    if transform == "yoy_pct":
+        if len(values) <= _QUARTERS_PER_YEAR:
+            return None, (
+                f"{column} has {len(values)} periods, needs "
+                f"{_QUARTERS_PER_YEAR + 1} for a year-over-year comparison"
+            ), None
+        latest, year_ago = float(values.iloc[-1]), float(values.iloc[-1 - _QUARTERS_PER_YEAR])
+        if year_ago == 0:
+            return None, f"{column} was zero a year earlier — no YoY basis", None
+        change = (latest - year_ago) / abs(year_ago) * 100
+        return change, (
+            f"{column} {latest:,.2f} vs {year_ago:,.2f} a year earlier{note}"
+        ), None
+    return float(values.iloc[-1]), f"{column} = {float(values.iloc[-1]):,.2f}{note}", None
+
+
 def _series_value(spec: dict, data: dict) -> tuple[float | None, str, str | None]:
     """Resolve a vocabulary entry against fetched data.
 
@@ -171,40 +229,59 @@ def _series_value(spec: dict, data: dict) -> tuple[float | None, str, str | None
     if missing:
         return None, f"column(s) {', '.join(missing)} absent from {spec['source']}", None
 
-    period_col = "quarter" if "quarter" in frame.columns else None
-    period = str(frame[period_col].iloc[-1]) if period_col else None
     transform = spec.get("transform", "latest")
 
+    # **Every reading is anchored to the period it actually came from.**
+    # Reading `values.iloc[-1]` off a `dropna()`'d series while labelling it
+    # with the frame's last row gives a value from one quarter under another
+    # quarter's name; taking `iloc[-1 - 4]` for a year-over-year comparison
+    # assumes the rows in between are contiguous, so one missing quarter pairs
+    # a period against one five or six earlier. Both are the defect fixed in
+    # `quarterly_momentum`, and both live here too.
+    periods = _period_index(frame)
+    if periods is None:
+        # Labels this cannot read: fall back to position, and say so, rather
+        # than assert a period the reading may not have come from.
+        return _positional_value(frame, spec, columns, transform)
+
     if transform == "sum":
-        total = 0.0
-        for column in columns:
-            value = pd.to_numeric(frame[column], errors="coerce").dropna()
-            if value.empty:
-                return None, f"{column} has no numeric values", period
-            total += float(value.iloc[-1])
-        return total, f"{' + '.join(columns)} = {total:,.2f}", period
+        # Every column must come from the *same* period — a total assembled
+        # from three different quarters is not a total of anything.
+        for index in sorted(periods, reverse=True):
+            row = periods[index]
+            values = [pd.to_numeric(frame[c], errors="coerce").iloc[row] for c in columns]
+            if all(pd.notna(v) for v in values):
+                total = float(sum(values))
+                return total, f"{' + '.join(columns)} = {total:,.2f}", _label(frame, row)
+        return None, (
+            f"no period has a value for every column ({', '.join(columns)})"
+        ), None
 
     column = columns[0]
-    values = pd.to_numeric(frame[column], errors="coerce").dropna()
-    if values.empty:
-        return None, f"{column} has no numeric values", period
+    numeric = pd.to_numeric(frame[column], errors="coerce")
+    readable = {i: numeric.iloc[row] for i, row in periods.items()
+                if pd.notna(numeric.iloc[row])}
+    if not readable:
+        return None, f"{column} has no numeric values", None
+
+    latest_index = max(readable)
+    latest = float(readable[latest_index])
+    period = _label(frame, periods[latest_index])
 
     if transform == "yoy_pct":
-        if len(values) <= _QUARTERS_PER_YEAR:
-            return (
-                None,
-                f"{column} has {len(values)} periods, needs "
-                f"{_QUARTERS_PER_YEAR + 1} for a year-over-year comparison",
-                period,
-            )
-        latest = float(values.iloc[-1])
-        year_ago = float(values.iloc[-1 - _QUARTERS_PER_YEAR])
+        year_ago_index = latest_index - _QUARTERS_PER_YEAR
+        if year_ago_index not in readable:
+            return None, (
+                f"{column} has no reading for the quarter one year before "
+                f"{period} — a year-over-year comparison would span a gap"
+            ), period
+        year_ago = float(readable[year_ago_index])
         if year_ago == 0:
             return None, f"{column} was zero a year earlier — no YoY basis", period
         change = (latest - year_ago) / abs(year_ago) * 100
         return change, f"{column} {latest:,.2f} vs {year_ago:,.2f} a year earlier", period
 
-    return float(values.iloc[-1]), f"{column} = {float(values.iloc[-1]):,.2f}", period
+    return latest, f"{column} = {latest:,.2f}", period
 
 
 def evaluate(
