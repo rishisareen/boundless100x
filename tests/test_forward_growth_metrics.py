@@ -37,11 +37,13 @@ FUNCTIONS = {
 
 
 def promise(metric="revenue", target_value=300.0, target_period="FY2025",
-            section="mdna", **extra):
+            section="mdna", subject=schema.SUBJECT_COMPANY, unit=None, **extra):
     entry = {
         "metric": metric,
         "target_value": target_value,
         "target_period": target_period,
+        "subject": subject,
+        "unit": unit or schema.settling_unit(schema.GUIDANCE, metric),
         "source_sentence": f"We target {target_value} in {target_period}.",
         "section": section,
     }
@@ -49,18 +51,20 @@ def promise(metric="revenue", target_value=300.0, target_period="FY2025",
     return entry
 
 
-def capex(amount=500.0, year="FY2027", section="mdna"):
+def capex(amount=500.0, year="FY2027", section="mdna", unit=schema.UNIT_INR_CR):
     return {
         "amount_inr_cr": amount,
+        "unit": unit,
         "commissioning_year": year,
         "source_sentence": f"A new plant of Rs {amount} crore commissions in {year}.",
         "section": section,
     }
 
 
-def tam(size=50000.0, section="mdna"):
+def tam(size=50000.0, section="mdna", unit=schema.UNIT_INR_CR):
     return {
         "market_size_inr_cr": size,
+        "unit": unit,
         "source_sentence": f"The addressable market is Rs {size} crore.",
         "section": section,
     }
@@ -267,6 +271,272 @@ class TestPromisesKept:
 
         assert all(s["settled_against"] == "financials.revenue" for s in settled)
         assert all(s["source_sentence"] for s in settled)
+
+
+# ── U4: percent-growth guidance (R5) ───────────────────────────────────────
+
+# Verbatim from SPLPETRO's MD&A (BSE 500405), the only ticker in the corpus
+# carrying company-subject guidance in more than one report year. Both shapes
+# below come from the same section of the same filer, which is the whole
+# difficulty: a percentage is the one figure where subject and quantity cannot
+# be told apart by type, grounding, or unit.
+CORPUS_COMPANY_GROWTH = (
+    "With various developments being pursued by the Company, particularly in "
+    "the field of engineering plastics, we expect SPC business to grow by 20% "
+    "in 2024-25 period."
+)
+CORPUS_MARKET_GROWTH = (
+    "Considering the projections made by appliance sector and also the "
+    "increase expected in other applications, Company estimates that domestic "
+    "market for PS in 2024-25 shall grow by about 5%."
+)
+
+
+def growth_promise(target_value=12.0, target_period="FY2025",
+                   metric="revenue_growth_pct", **extra):
+    return promise(
+        metric=metric, target_value=target_value, target_period=target_period,
+        **extra,
+    )
+
+
+def growth_data(guidance_2024, guidance_2025, revenue=None, **overrides):
+    """Two report years of guidance against an explicit revenue path."""
+    revenue = revenue if revenue is not None else [100.0, 1000.0, 1126.0]
+    data = fg_data({
+        "2024": year_payload(guidance=guidance_2024),
+        "2025": year_payload(guidance=guidance_2025),
+    })
+    data["financials"] = make_financials(len(revenue), revenue=revenue, **overrides)
+    return data
+
+
+class TestPercentGrowthGuidance:
+    def test_guidance_of_12pct_against_a_delivered_12_6pct_counts_as_kept(self):
+        # 1000 -> 1126 is +12.6%, comfortably inside the 0.95 tolerance of 12.
+        data = growth_data([], [growth_promise(12.0, "FY2025")])
+
+        result = fgm.compute_promises_kept(data, {"min_report_years": 1})
+
+        assert result.value == 100.0
+        settled = result.metadata["settled"][0]
+        assert settled["delivered"] == pytest.approx(12.6)
+        assert settled["settled_against"] == "financials.revenue YoY"
+
+    def test_guidance_of_20pct_against_a_delivered_3_4pct_counts_as_missed(self):
+        data = growth_data(
+            [], [growth_promise(20.0, "FY2025")],
+            revenue=[100.0, 1000.0, 1034.0],
+        )
+
+        result = fgm.compute_promises_kept(data, {"min_report_years": 1})
+
+        assert result.value == 0.0
+        assert result.metadata["settled"][0]["delivered"] == pytest.approx(3.4)
+
+    def test_a_growth_promise_with_no_prior_row_is_unsettleable_not_missed(self):
+        """The first year in the frame has nothing to have grown from."""
+        earliest = make_financials(3)["year"].iloc[0]          # e.g. "Mar 2023"
+        data = growth_data(
+            [growth_promise(12.0, earliest)], [growth_promise(12.0, earliest)],
+        )
+
+        result = fgm.compute_promises_kept(data, {})
+
+        assert not result.ok
+        assert "2 pending" in result.error
+
+    def test_delivered_growth_never_settles_across_a_missing_year(self):
+        """A two-year change is not a one-year promise, however close it looks."""
+        data = growth_data(
+            [], [growth_promise(12.0, "FY2025")],
+            revenue=[100.0, 1000.0, 1126.0],
+            year=["Mar 2022", "Mar 2023", "Mar 2025"],
+        )
+
+        result = fgm.compute_promises_kept(data, {"min_report_years": 1})
+
+        assert not result.ok
+        assert "1 pending" in result.error
+
+    def test_a_pat_growth_promise_settles_against_the_pat_column(self):
+        data = growth_data([], [growth_promise(20.0, "FY2025", metric="pat_growth_pct")])
+
+        settled = fgm.compute_promises_kept(
+            data, {"min_report_years": 1}
+        ).metadata["settled"][0]
+
+        assert settled["settled_against"] == "financials.pat YoY"
+
+    def test_absolute_guidance_still_settles_against_one_row(self):
+        """The growth path must not change what an absolute promise means."""
+        data = fg_data({
+            "2024": year_payload(guidance=[promise(target_value=200.0,
+                                                   target_period="FY2024")]),
+            "2025": year_payload(guidance=[promise(target_value=300.0,
+                                                   target_period="FY2025")]),
+        })
+
+        result = fgm.compute_promises_kept(data, {})
+
+        assert result.value == 100.0
+        assert all(
+            s["settled_against"] == "financials.revenue"
+            for s in result.metadata["settled"]
+        )
+
+
+class TestGuidanceSubject:
+    """KTD8 — the same sentence shape, and only one of them is a promise."""
+
+    def test_a_market_subject_growth_rate_never_enters_the_denominator(self):
+        data = growth_data(
+            [],
+            [
+                growth_promise(12.0, "FY2025", source_sentence=CORPUS_COMPANY_GROWTH),
+                growth_promise(
+                    99.0, "FY2025", subject=schema.SUBJECT_MARKET,
+                    source_sentence=CORPUS_MARKET_GROWTH,
+                ),
+            ],
+        )
+
+        result = fgm.compute_promises_kept(data, {"min_report_years": 1})
+
+        assert result.value == 100.0          # the market forecast was missed
+        assert result.metadata["due"] == 1
+        assert result.metadata["not_a_promise"] == 1
+
+    def test_a_company_subject_growth_rate_in_the_same_shape_does_count(self):
+        data = growth_data(
+            [], [growth_promise(20.0, "FY2025",
+                                source_sentence=CORPUS_COMPANY_GROWTH)],
+            revenue=[100.0, 1000.0, 1034.0],
+        )
+
+        result = fgm.compute_promises_kept(data, {"min_report_years": 1})
+
+        assert result.metadata["due"] == 1
+        assert result.value == 0.0            # 3.4% delivered against 20% guided
+
+    def test_a_year_of_only_market_forecasts_is_indeterminate_not_zero(self):
+        """Zero kept out of zero due is silence, not a broken promise."""
+        market = growth_promise(
+            99.0, "FY2025", subject=schema.SUBJECT_MARKET,
+            source_sentence=CORPUS_MARKET_GROWTH,
+        )
+        data = growth_data([market], [market])
+
+        result = fgm.compute_promises_kept(data, {})
+
+        assert not result.ok
+        assert result.value is None
+        assert "market" in result.error
+
+    def test_an_entry_with_no_subject_is_not_silently_counted(self):
+        """Pre-schema-5 sidecars carry no subject; they must not read as promises."""
+        legacy = promise(target_value=200.0, target_period="FY2024")
+        legacy.pop("subject")
+        data = fg_data({
+            "2024": year_payload(guidance=[legacy]),
+            "2025": year_payload(guidance=[legacy]),
+        })
+
+        assert not fgm.compute_promises_kept(data, {}).ok
+
+
+class TestUnitComparability:
+    """U5 — a figure this system cannot compare is set aside, never converted.
+
+    All three INR-comparable metrics have to check, and `capex_pipeline` is the
+    one that reads a field whose *name* asserts the unit. Without the check a
+    USD-stated commitment is added to a rupee total and the pipeline percentage
+    is silently wrong by two orders of magnitude.
+    """
+
+    def test_promises_kept_does_not_count_an_uncheckable_promise_as_missed(self):
+        data = fg_data({
+            "2024": year_payload(guidance=[
+                promise(target_value=200.0, target_period="FY2024"),
+                promise(target_value=9999.0, target_period="FY2024", unit="usd_mn"),
+            ]),
+            "2025": year_payload(guidance=[
+                promise(target_value=300.0, target_period="FY2025"),
+            ]),
+        })
+
+        result = fgm.compute_promises_kept(data, {})
+
+        assert result.value == 100.0
+        assert result.metadata["due"] == 2
+        assert result.metadata["set_aside_for_unit"] == ["usd_mn"]
+
+    def test_promises_kept_is_indeterminate_when_only_foreign_promises_remain(self):
+        foreign = promise(target_value=9999.0, target_period="FY2024", unit="usd_mn")
+        data = fg_data({
+            "2024": year_payload(guidance=[foreign]),
+            "2025": year_payload(guidance=[foreign]),
+        })
+
+        result = fgm.compute_promises_kept(data, {})
+
+        assert not result.ok
+        assert "usd_mn" in result.error
+
+    def test_a_usd_capex_amount_is_excluded_from_the_pipeline_sum(self):
+        data = fg_data({"2025": year_payload(capex_entries=[
+            capex(amount=150.0),
+            capex(amount=900.0, year="FY2028", unit="usd_mn"),
+        ])})
+
+        result = fgm.compute_capex_pipeline(data, {})
+
+        assert result.value == pytest.approx(50.0)   # 150 of 300, the USD ignored
+        assert result.metadata["announced_inr_cr"] == 150.0
+        assert result.metadata["set_aside_for_unit"] == ["usd_mn"]
+
+    def test_capex_pipeline_is_indeterminate_when_every_amount_is_foreign(self):
+        data = fg_data({"2025": year_payload(capex_entries=[
+            capex(amount=900.0, unit="usd_mn"),
+        ])})
+
+        result = fgm.compute_capex_pipeline(data, {})
+
+        assert not result.ok
+        assert "usd_mn" in result.error
+        assert "exchange rate" in result.error
+
+    def test_tam_runway_is_indeterminate_when_the_market_is_only_stated_in_usd(self):
+        data = fg_data({"2025": year_payload(tam_entries=[
+            tam(size=2250.0, unit="usd_bn"),
+        ])})
+
+        result = fgm.compute_tam_runway(data, {})
+
+        assert not result.ok
+        assert "usd_bn" in result.error
+
+    def test_tam_runway_uses_the_inr_entry_when_one_is_present(self):
+        data = fg_data({"2025": year_payload(tam_entries=[
+            tam(size=2250.0, unit="usd_bn"),
+            tam(size=50000.0),
+        ])})
+
+        result = fgm.compute_tam_runway(data, {})
+
+        assert result.ok
+        assert result.metadata["tam_inr_cr"] == 50000.0
+        assert result.metadata["set_aside_for_unit"] == ["usd_bn"]
+
+    def test_a_usd_market_never_wins_the_largest_stated_market_contest(self):
+        """2250 > 50000 is false in crore and true in nothing — but the raw
+        numbers do not know that, so the filter has to run before the max."""
+        data = fg_data({"2025": year_payload(tam_entries=[
+            tam(size=99999.0, unit="usd_bn"),
+            tam(size=50000.0),
+        ])})
+
+        assert fgm.compute_tam_runway(data, {}).metadata["tam_inr_cr"] == 50000.0
 
 
 # ── capex_pipeline ─────────────────────────────────────────────────────────

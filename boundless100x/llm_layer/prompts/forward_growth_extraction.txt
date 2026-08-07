@@ -9,8 +9,27 @@ Three kinds of statement matter:
 
 1. GUIDANCE — a stated target for a named financial quantity. It must carry a
    number and a period. "Revenue of Rs 1,500 crore in FY2026" is guidance.
-   "We expect strong growth" is not: it names no quantity and no target, and
-   nothing that happens later can settle it. Omit it.
+   **So is a growth rate**: "revenue growth of 12% in FY2026", "we expect the
+   SPC business to grow by 20% in 2024-25" — a target expressed as a rate of
+   change is a target, and `revenue_growth_pct` and `pat_growth_pct` are the
+   ids for it. "We expect strong growth" is not guidance: it names no quantity
+   and no target, and nothing that happens later can settle it. Omit it.
+
+   Every guidance entry MUST say whose growth it describes, in `subject`:
+
+     company — the company itself, one of its businesses, segments, plants or
+               products. "Company expects to grow SPC business by 30%."
+     market  — a market, an industry, the economy, a government forecast, or
+               anything else that is not this company. "The XPS market is
+               expected to grow by about 10%", "global growth is projected at
+               3.3%".
+
+   Read the subject from the sentence rather than assuming it. A statement can
+   name the company and still be about a market: "the Company expects the
+   market to grow by 4-5%" is `market`, because it is the market that is
+   forecast to grow, not the company. When a sentence is genuinely ambiguous
+   about which is growing, use `market` — a forecast wrongly filed as a promise
+   makes management look accountable for the economy.
 
 2. CAPEX — announced capacity or capital expenditure, with the year it is
    expected to be commissioned or completed.
@@ -36,13 +55,17 @@ omitted than guessed:
 - `guidance.metric` MUST be one of the ids listed above. There are no others.
   If management guided something outside that list, omit it rather than
   inventing an id or bending it into a neighbouring one.
-- Report each figure in the units named above — amounts in INR crore, margins
-  in percent — and **only when the statement itself is already in that unit**.
-  Do NOT convert. A converted figure cannot appear in the sentence you quoted,
-  so it fails the grounding check above and is discarded anyway; and a
-  conversion this system cannot check is a number nobody can audit. If a
-  statement gives its figure in USD, in millions or billions, or in lakh, omit
-  the entry. Reporting nothing is correct; reporting a converted figure is not.
+- Report each figure **exactly as the statement gives it**, and name that unit
+  in `unit`. A market stated as "USD 860 billion" is `market_size_inr_cr: 860`
+  with `unit: usd_bn`; "Rs 1,500 crore" is `1500` with `unit: inr_cr`; "18.5%"
+  is `18.5` with `unit: pct`. The `_inr_cr` in a field's name is history, not
+  an instruction — `unit` is what says what the number means.
+- Do NOT convert, ever, for any reason. This system holds no exchange rate, so
+  a converted figure is one nobody can check, and it could not appear in the
+  sentence you quoted so it fails the grounding rule above anyway. Report what
+  the filing said. A figure whose unit cannot be used is set aside downstream
+  with its reason recorded, which is far better than a figure that was silently
+  guessed at.
 - Report each year under the report year it was published in, using the
   `=== REPORT YEAR ... ===` headings below.
 - If a section contains none of these three kinds of statement, return empty
@@ -63,15 +86,18 @@ Respond ONLY with valid JSON matching this exact schema:
       "guidance": [
         {{"metric": "<id from the list above>", "target_value": <number>,
           "target_value_high": <number or omit>, "target_period": "<e.g. FY2026>",
+          "subject": "<company|market>", "unit": "<unit as stated>",
           "source_sentence": "<verbatim>", "section": "<mdna|chairman>"}}
       ],
       "capex": [
-        {{"amount_inr_cr": <number>, "commissioning_year": "<e.g. FY2027>",
+        {{"amount_inr_cr": <number as stated>, "unit": "<unit as stated>",
+          "commissioning_year": "<e.g. FY2027>",
           "description": "<what is being built, or omit>",
           "source_sentence": "<verbatim>", "section": "<mdna|chairman>"}}
       ],
       "tam": [
-        {{"market_size_inr_cr": <number>, "market": "<what market, or omit>",
+        {{"market_size_inr_cr": <number as stated>, "unit": "<unit as stated>",
+          "market": "<what market, or omit>",
           "period": "<as-of period, or omit>",
           "source_sentence": "<verbatim>", "section": "<mdna|chairman>"}}
       ]

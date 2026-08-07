@@ -145,12 +145,29 @@ def _settling_frames(data: dict) -> dict:
     return frames
 
 
+def _column_value(frame, labels, column: str, year: int) -> float | None:
+    """The numeric value of a column in the row whose label names `year`."""
+    match = frame[labels.str.contains(rf"\b{year}\b", regex=True, na=False)]
+    if match.empty:
+        return None
+    value = pd.to_numeric(match[column], errors="coerce").dropna()
+    return float(value.iloc[-1]) if not value.empty else None
+
+
 def _delivered(frames: dict, metric: str, year: int) -> tuple[float | None, str]:
     """What the accounts actually show for a guided quantity in a fiscal year.
 
     Returns `(value, "frame.column")`, or `(None, "")` when no settling row
     exists. Screener labels an annual column by its period end (`Mar 2026`), so
     the row for FY N is the one whose label names year N.
+
+    **A growth-rate promise is settled from two rows, and both must be named.**
+    "Revenue growth of 12% in FY2026" is delivered by the change from FY2025 to
+    FY2026, so the prior year is looked up by its own label rather than taken as
+    whichever row happens to sit above. A company whose FY2025 column is absent
+    from the frame is unsettleable — settling it against FY2024 instead would
+    silently compare a two-year change against a one-year promise and read a
+    kept promise as spectacularly beaten.
     """
     spec = schema.GUIDANCE_METRICS.get(metric)
     if spec is None:
@@ -160,21 +177,24 @@ def _delivered(frames: dict, metric: str, year: int) -> tuple[float | None, str]
     if frame is None or spec["column"] not in frame.columns:
         return None, ""
 
-    labels = frame["year"].astype(str) if "year" in frame.columns else None
-    if labels is None:
+    if "year" not in frame.columns:
+        return None, ""
+    labels = frame["year"].astype(str)
+
+    current = _column_value(frame, labels, spec["column"], year)
+    if current is None:
         return None, ""
 
-    match = frame[labels.str.contains(rf"\b{year}\b", regex=True, na=False)]
-    if match.empty:
-        return None, ""
+    if spec.get("growth"):
+        prior = _column_value(frame, labels, spec["column"], year - 1)
+        if prior is None or prior == 0:
+            return None, ""
+        return (
+            (current - prior) / abs(prior) * 100.0,
+            f"{spec['frame']}.{spec['column']} YoY",
+        )
 
-    value = pd.to_numeric(match[spec["column"]], errors="coerce").dropna()
-    if value.empty:
-        return None, ""
-
-    delivered = float(value.iloc[-1])
-    if spec.get("absolute"):
-        delivered = abs(delivered)
+    delivered = abs(current) if spec.get("absolute") else current
     return delivered, f"{spec['frame']}.{spec['column']}"
 
 
@@ -199,6 +219,13 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
       the same reason: zero kept out of zero due is silence, not a record.
     * **A period that cannot be resolved to a column is discarded**, not
       guessed at.
+    * **Only the company's own growth is a promise** (KTD8). Market, industry
+      and economy forecasts outnumber company-subject statements about four to
+      one in the same MD&A sections, and a percentage cannot be told apart by
+      type, grounding, or unit — so the entry's declared `subject` decides.
+      Counting market forecasts would make this a measure of macroeconomic
+      luck rather than management credibility, which is worse than the blank
+      it would replace.
 
     Requires guidance from at least two report years (A5). One year of targets
     is a snapshot; credibility is a pattern, and a company that hit its single
@@ -221,10 +248,23 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
 
     frames = _settling_frames(data)
     settled: list[dict] = []
-    pending = discarded = 0
+    pending = discarded = not_a_promise = 0
+    wrong_unit: list[str] = []
 
     for report_year in sorted(by_year):
         for entry in by_year[report_year]:
+            if entry.get("subject") != schema.SUBJECT_COMPANY:
+                # Stored, auditable, and not management's promise to keep.
+                not_a_promise += 1
+                continue
+
+            if not schema.is_settleable(schema.GUIDANCE, entry, entry.get("metric")):
+                # A promise this system cannot check is not a promise it may
+                # count as missed — an uncheckable target says nothing about
+                # management's credibility either way.
+                wrong_unit.append(str(entry.get("unit")))
+                continue
+
             target = entry.get("target_value")
             if not schema.is_number(target):
                 discarded += 1
@@ -253,11 +293,16 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
             })
 
     if not settled:
+        units = (
+            f", {len(wrong_unit)} stated in {'/'.join(sorted(set(wrong_unit)))} "
+            f"rather than a unit the accounts can settle" if wrong_unit else ""
+        )
         return MetricResult(
             error=(
                 f"no guided period has come due yet ({pending} pending, "
-                f"{discarded} unresolvable) — zero kept out of zero due is "
-                f"silence, not a credibility record"
+                f"{discarded} unresolvable, {not_a_promise} about a market "
+                f"rather than the company{units}) — zero kept out of zero due "
+                f"is silence, not a credibility record"
             )
         )
 
@@ -269,6 +314,8 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
             "due": len(settled),
             "pending": pending,
             "discarded": discarded,
+            "not_a_promise": not_a_promise,
+            "set_aside_for_unit": sorted(set(wrong_unit)),
             "report_years": sorted(by_year),
             "tolerance": tolerance,
             "settled": settled,
@@ -313,8 +360,18 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
         return MetricResult(error="Could not read the latest fiscal year label")
 
     projects: dict[tuple, dict] = {}
+    wrong_unit: list[str] = []
     for report_year in sorted(by_year):
         for entry in by_year[report_year]:
+            if not schema.is_settleable(schema.CAPEX, entry):
+                # `amount_inr_cr` asserts a unit in its own name that `unit`
+                # makes variable. Without this check a USD-stated commitment
+                # would be summed straight into a rupee total and silently
+                # corrupt the pipeline percentage — the easiest of the three
+                # to miss, because nothing about the field name suggests a
+                # check is needed.
+                wrong_unit.append(str(entry.get("unit")))
+                continue
             amount = entry.get("amount_inr_cr")
             if not schema.is_number(amount):
                 continue
@@ -332,6 +389,15 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
             }
 
     if not projects:
+        if wrong_unit:
+            return MetricResult(
+                error=(
+                    f"every announced capex figure is stated in "
+                    f"{'/'.join(sorted(set(wrong_unit)))} rather than INR crore — "
+                    f"this pipeline holds no exchange rate, so the amounts are "
+                    f"stored but cannot be sized against rupee revenue"
+                )
+            )
         return MetricResult(
             error=(
                 f"no announced capacity commissioning after FY{latest_year} — "
@@ -350,6 +416,7 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
             "from_fiscal_year": latest_year,
             "through_fiscal_year": ordered[-1]["commissioning_year"],
             "projects": ordered,
+            "set_aside_for_unit": sorted(set(wrong_unit)),
             "unit": "pct_of_revenue",
             "direction": "higher_is_better",
         },
@@ -388,12 +455,26 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
     # The newest report's largest stated market: management restates and
     # revises TAM, and the current view is the one a thesis rests on.
     newest = max(by_year)
+    wrong_unit = sorted({
+        str(entry.get("unit")) for entry in by_year[newest]
+        if not schema.is_settleable(schema.TAM, entry)
+    })
     sizes = [
         float(entry["market_size_inr_cr"])
         for entry in by_year[newest]
-        if schema.is_number(entry.get("market_size_inr_cr"))
+        if schema.is_settleable(schema.TAM, entry)
+        and schema.is_number(entry.get("market_size_inr_cr"))
     ]
     if not sizes:
+        if wrong_unit:
+            return MetricResult(
+                error=(
+                    f"the stated addressable market is given in "
+                    f"{'/'.join(wrong_unit)} rather than INR crore — this "
+                    f"pipeline holds no exchange rate, so the figure is stored "
+                    f"but cannot be compared with rupee revenue"
+                )
+            )
         return MetricResult(error="No numeric addressable-market figure extracted")
     tam = max(sizes)
     if tam <= 0:
@@ -433,6 +514,7 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
             "report_year": newest,
             "saturated": saturated,
             "cap_years": cap_years,
+            "set_aside_for_unit": wrong_unit,
             "sources": by_year[newest],
             "unit": "years",
             "direction": "higher_is_better",

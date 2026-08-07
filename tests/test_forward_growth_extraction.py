@@ -35,6 +35,8 @@ def guidance_entry(**overrides) -> dict:
         "metric": "revenue",
         "target_value": 1500,
         "target_period": "FY2026",
+        "subject": schema.SUBJECT_COMPANY,
+        "unit": schema.UNIT_INR_CR,
         "source_sentence": GUIDANCE_SENTENCE,
         "section": "mdna",
     }
@@ -293,7 +295,7 @@ class TestWellFormedResponses:
             **{
                 "2025": {
                     "tam": [{
-                        "market_size_inr_cr": 40000,
+                        "market_size_inr_cr": 40000, "unit": schema.UNIT_INR_CR,
                         "source_sentence": TAM_SENTENCE,
                         "section": "chairman",
                     }],
@@ -330,6 +332,7 @@ class TestGroundingAgainstTheSubmittedText:
             "metric": "pat",
             "target_value": 999,
             "target_period": "FY2031",
+            "subject": schema.SUBJECT_COMPANY, "unit": schema.UNIT_INR_CR,
             "source_sentence": "We will earn Rs 999 crore of PAT in FY2031.",
             "section": "mdna",
         }]}})
@@ -401,7 +404,7 @@ class TestGroundingAgainstTheSubmittedText:
             "We expect capex of USD 500 million by FY2027."
         )}}
         raw = response(**{"2025": {"capex": [{
-            "amount_inr_cr": 500,
+            "amount_inr_cr": 500, "unit": schema.UNIT_INR_CR,
             "commissioning_year": "FY2027",
             "source_sentence": "We expect capex of USD 500 million by FY2027.",
             "section": "mdna",
@@ -411,7 +414,7 @@ class TestGroundingAgainstTheSubmittedText:
         )
 
         assert result["years"]["2025"]["capex"] == []
-        assert any("INR crore" in d["reason"] for d in result["discarded"])
+        assert any("inr_cr figure" in d["reason"] for d in result["discarded"])
 
     @pytest.mark.parametrize("phrasing", [
         "capex of Rs 500 crore by FY2027",
@@ -421,7 +424,7 @@ class TestGroundingAgainstTheSubmittedText:
     def test_a_figure_in_the_right_unit_still_grounds(self, phrasing):
         payload = {"2025": {"mdna": f"OUTLOOK\nWe expect {phrasing}."}}
         raw = response(**{"2025": {"capex": [{
-            "amount_inr_cr": 500,
+            "amount_inr_cr": 500, "unit": schema.UNIT_INR_CR,
             "commissioning_year": "FY2027",
             "source_sentence": f"We expect {phrasing}.",
             "section": "mdna",
@@ -548,6 +551,222 @@ class TestClosedVocabulary:
             assert metric_id in block
         for kind in schema.ENTRY_KINDS:
             assert kind in block
+
+
+# ── U4: percent-growth guidance and its subject (R5, R5a, KTD8) ────────────
+
+# Both verbatim from SPLPETRO's MD&A (BSE 500405). Same filer, same section,
+# same sentence shape — and only the first is a promise.
+CORPUS_COMPANY_GROWTH = (
+    "With various developments being pursued by the Company, particularly in "
+    "the field of engineering plastics, we expect SPC business to grow by 20% "
+    "in 2024-25 period."
+)
+CORPUS_MARKET_GROWTH = (
+    "Considering the projections made by appliance sector and also the "
+    "increase expected in other applications, Company estimates that domestic "
+    "market for PS in 2024-25 shall grow by about 5%."
+)
+
+
+class TestPercentGrowthEntries:
+    def _validate(self, raw, mdna_text):
+        sections = make_ar_sections(provenance="found", sections={"mdna": mdna_text})
+        return fg.validate_extraction(
+            raw, {"2025": {"mdna": mdna_text}}, fg.gate_sections(sections)
+        )
+
+    def test_a_growth_rate_grounds_without_any_inr_unit_check(self):
+        """A percentage carries its unit in the numeral — no currency to check."""
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            metric="revenue_growth_pct", target_value=20, target_period="FY2025",
+            source_sentence=CORPUS_COMPANY_GROWTH,
+        )]}})
+
+        result = self._validate(raw, CORPUS_COMPANY_GROWTH)
+
+        assert len(result["years"]["2025"]["guidance"]) == 1
+
+    def test_a_market_subject_growth_rate_is_stored_rather_than_dropped(self):
+        """Keeping it makes the corpus's actual content visible in the data."""
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            metric="revenue_growth_pct", target_value=5, target_period="FY2025",
+            subject=schema.SUBJECT_MARKET,
+            source_sentence=CORPUS_MARKET_GROWTH,
+        )]}})
+
+        kept = self._validate(raw, CORPUS_MARKET_GROWTH)["years"]["2025"]["guidance"]
+
+        assert len(kept) == 1
+        assert kept[0]["subject"] == schema.SUBJECT_MARKET
+
+    def test_a_subject_outside_the_closed_set_is_discarded_with_its_reason(self):
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            metric="revenue_growth_pct", target_value=20, target_period="FY2025",
+            subject="the analysts", source_sentence=CORPUS_COMPANY_GROWTH,
+        )]}})
+
+        result = self._validate(raw, CORPUS_COMPANY_GROWTH)
+
+        assert result["years"]["2025"]["guidance"] == []
+        assert any("the analysts" in d["reason"] for d in result["discarded"])
+
+    def test_an_entry_with_no_subject_at_all_is_discarded(self):
+        entry = guidance_entry(
+            metric="revenue_growth_pct", target_value=20, target_period="FY2025",
+            source_sentence=CORPUS_COMPANY_GROWTH,
+        )
+        entry.pop("subject")
+        raw = response(**{"2025": {"guidance": [entry]}})
+
+        result = self._validate(raw, CORPUS_COMPANY_GROWTH)
+
+        assert result["years"]["2025"]["guidance"] == []
+        assert any("subject" in d["reason"] for d in result["discarded"])
+
+    def test_the_prompt_names_both_subjects_and_the_growth_ids(self):
+        prompt = fg.prompt_template()
+        for subject in schema.GUIDANCE_SUBJECTS:
+            assert subject in prompt
+        assert "revenue_growth_pct" in fg.vocabulary_prompt_block()
+        assert "pat_growth_pct" in fg.vocabulary_prompt_block()
+
+
+# ── U5: the figure is stored in the unit the filing stated (R6, KTD5) ──────
+
+# ZYDUSLIFE (532321) states every market figure in USD billion, which is why
+# four owner-approved extraction calls against it produced nothing under the
+# old rule. The figure was always there; the schema had no way to hold it.
+USD_TAM_SENTENCE = (
+    "The global medicines market is expected to reach USD 2,250 billion by 2028."
+)
+INR_TAM_SENTENCE = (
+    "The addressable market for our products is estimated at Rs 40,000 crore."
+)
+USD_CAPEX_SENTENCE = "We expect capex of USD 500 million by FY2027."
+
+
+class TestStatedUnitRetention:
+    def _validate(self, raw, text):
+        sections = make_ar_sections(provenance="found", sections={"mdna": text})
+        return fg.validate_extraction(
+            raw, {"2025": {"mdna": text}}, fg.gate_sections(sections)
+        )
+
+    def test_a_usd_stated_market_size_is_stored_and_grounds(self):
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 2250, "unit": "usd_bn",
+            "source_sentence": USD_TAM_SENTENCE, "section": "mdna",
+        }]}})
+
+        kept = self._validate(raw, USD_TAM_SENTENCE)["years"]["2025"]["tam"]
+
+        assert len(kept) == 1
+        assert kept[0]["unit"] == "usd_bn"
+        assert kept[0]["market_size_inr_cr"] == 2250
+
+    def test_a_declared_unit_the_sentence_does_not_carry_is_discarded(self):
+        """The figure says billion; the entry claims million. Not the same claim."""
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 2250, "unit": "usd_mn",
+            "source_sentence": USD_TAM_SENTENCE, "section": "mdna",
+        }]}})
+
+        result = self._validate(raw, USD_TAM_SENTENCE)
+
+        assert result["years"]["2025"]["tam"] == []
+        assert any("usd_mn figure" in d["reason"] for d in result["discarded"])
+
+    def test_a_rupee_figure_claimed_as_dollars_is_discarded(self):
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 40000, "unit": "usd_bn",
+            "source_sentence": INR_TAM_SENTENCE, "section": "mdna",
+        }]}})
+
+        assert self._validate(raw, INR_TAM_SENTENCE)["years"]["2025"]["tam"] == []
+
+    def test_a_dollar_figure_still_needs_its_dollar_marker(self):
+        """"500 million" alone is as likely to be rupees as dollars."""
+        sentence = "We expect capex of 500 million by FY2027."
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 500, "unit": "usd_mn",
+            "commissioning_year": "FY2027",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        assert self._validate(raw, sentence)["years"]["2025"]["capex"] == []
+
+    def test_a_usd_capex_commitment_is_stored_rather_than_thrown_away(self):
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 500, "unit": "usd_mn",
+            "commissioning_year": "FY2027",
+            "source_sentence": USD_CAPEX_SENTENCE, "section": "mdna",
+        }]}})
+
+        kept = self._validate(raw, USD_CAPEX_SENTENCE)["years"]["2025"]["capex"]
+
+        assert len(kept) == 1
+        assert kept[0]["unit"] == "usd_mn"
+
+    def test_a_lakh_figure_is_stored_in_lakh(self):
+        sentence = "The project will cost Rs 250 lakh and commissions in FY2027."
+        raw = response(**{"2025": {"capex": [{
+            "amount_inr_cr": 250, "unit": "inr_lakh",
+            "commissioning_year": "FY2027",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        kept = self._validate(raw, sentence)["years"]["2025"]["capex"]
+
+        assert len(kept) == 1
+        assert kept[0]["unit"] == "inr_lakh"
+
+    def test_a_unit_outside_the_closed_set_is_discarded_with_its_reason(self):
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 2250, "unit": "eur_bn",
+            "source_sentence": USD_TAM_SENTENCE, "section": "mdna",
+        }]}})
+
+        result = self._validate(raw, USD_TAM_SENTENCE)
+
+        assert result["years"]["2025"]["tam"] == []
+        assert any("eur_bn" in d["reason"] for d in result["discarded"])
+
+    def test_an_entry_with_no_unit_at_all_is_discarded(self):
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 40000,
+            "source_sentence": INR_TAM_SENTENCE, "section": "mdna",
+        }]}})
+
+        result = self._validate(raw, INR_TAM_SENTENCE)
+
+        assert result["years"]["2025"]["tam"] == []
+        assert any("unit" in d["reason"] for d in result["discarded"])
+
+    def test_the_prompt_and_vocabulary_carry_the_closed_unit_set(self):
+        block = fg.vocabulary_prompt_block()
+        for unit in schema.UNITS:
+            assert unit in block
+        assert "Do NOT convert" in fg.prompt_template()
+
+
+class TestSchemaBumpInvalidatesSidecars:
+    def test_a_sidecar_written_under_the_old_schema_is_not_served(self, tmp_path):
+        """Which entries survive changed, so the old answers are not answers."""
+        payload = submission()
+        sidecar = tmp_path / "forward_growth.extraction.json"
+        stale = {
+            "version": {
+                "schema_version": schema.SCHEMA_VERSION - 1,
+                "prompt_digest": fg.prompt_digest(),
+                "model": "claude-sonnet-4-6",
+                "source_digest": fg._source_digest(payload),
+            },
+            "years": {"2025": {"guidance": [guidance_entry()]}},
+        }
+        sidecar.write_text(json.dumps(stale))
+
+        assert fg.read_sidecar(sidecar, payload, "claude-sonnet-4-6") is None
 
 
 class TestDegenerateResponses:
@@ -810,6 +1029,7 @@ class TestStageOnePointFive:
     def test_a_found_report_produces_populated_forward_growth(self, monkeypatch, tmp_path):
         llm = RecordingLLM(response={"years": {"2025": {"guidance": [{
             "metric": "revenue", "target_value": 1500, "target_period": "FY2026",
+            "subject": schema.SUBJECT_COMPANY, "unit": schema.UNIT_INR_CR,
             "source_sentence": GUIDANCE_SENTENCE, "section": "mdna",
         }]}}})
         svc = service_for(monkeypatch, tmp_path, analysable(provenance="found"), llm)
@@ -868,6 +1088,7 @@ class TestStageOnePointFive:
         """The `watchlist advance` path: hydration is not gated on use_llm."""
         llm = RecordingLLM(response={"years": {"2025": {"guidance": [{
             "metric": "revenue", "target_value": 1500, "target_period": "FY2026",
+            "subject": schema.SUBJECT_COMPANY, "unit": schema.UNIT_INR_CR,
             "source_sentence": GUIDANCE_SENTENCE, "section": "mdna",
         }]}}})
         svc = service_for(monkeypatch, tmp_path, analysable(provenance="found"), llm)
@@ -930,6 +1151,7 @@ class TestStageOnePointFive:
         # And the next run must actually retry rather than read an outage back.
         working = RecordingLLM(response={"years": {"2025": {"guidance": [{
             "metric": "revenue", "target_value": 1500, "target_period": "FY2026",
+            "subject": schema.SUBJECT_COMPANY, "unit": schema.UNIT_INR_CR,
             "source_sentence": GUIDANCE_SENTENCE, "section": "mdna",
         }]}}})
         retried = service_for(

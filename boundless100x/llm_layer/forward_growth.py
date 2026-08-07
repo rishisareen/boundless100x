@@ -343,7 +343,23 @@ def vocabulary_prompt_block() -> str:
     lines.append("")
     lines.append("Valid values for guidance.metric (nothing else is accepted):")
     for metric_id, spec in sorted(schema.GUIDANCE_METRICS.items()):
-        lines.append(f"  {metric_id} — reported as {spec['unit']}")
+        lines.append(f"  {metric_id} — settled against a {spec['unit']} figure")
+
+    lines.append("")
+    lines.append("Valid values for unit (nothing else is accepted):")
+    lines.append(
+        f"  {', '.join(schema.SETTLING_UNITS)} — units this system can settle "
+        f"against the accounts"
+    )
+    lines.append(
+        f"  {', '.join(schema.FOREIGN_UNITS)} — report these as stated too; the "
+        f"figure is kept and simply not settled"
+    )
+
+    lines.append("")
+    lines.append(
+        f"Valid values for guidance.subject: {', '.join(schema.GUIDANCE_SUBJECTS)}"
+    )
     return "\n".join(lines)
 
 
@@ -430,15 +446,40 @@ _WRONG_CURRENCY_BEFORE_NUMBER = re.compile(
     r"(?:\bus\s*\$|\busd|\beur|\bgbp|\bjpy|[$€£¥])\W{0,3}$", re.I
 )
 
+_USD_BEFORE_NUMBER = re.compile(r"(?:\bus\s*\$|\busd|\$)\W{0,3}$", re.I)
+
 # Deliberately tight. A wide window makes any foreign figure elsewhere in the
 # sentence condemn a sound one — "revenue grew from USD 100 million to
 # Rs 1,500 crore" carries both, and the rupee figure in it is good evidence.
 _UNIT_WINDOW_BEFORE = 12
 _UNIT_WINDOW_AFTER = 18
 
-# Fields whose value must be an INR-crore (or plain INR) quantity. A percent
-# field is exempt: "18%" carries its unit in the numeral itself.
-_INR_UNITS = frozenset({"inr_cr", "inr"})
+# What each declared unit must read like where its numeral sits (U5). The
+# check that used to ask "is this INR crore?" now asks "is this the unit the
+# entry says it is?" — a strictly wider question, and the one that lets a
+# foreign figure be stored honestly instead of being thrown away.
+_SCALE_AFTER = {
+    "inr_cr": re.compile(r"^\W{0,3}(?:crores?|cr)\b", re.I),
+    "inr_lakh": re.compile(r"^\W{0,3}lakhs?\b", re.I),
+    "inr_mn": re.compile(r"^\W{0,3}(?:million|mn)\b", re.I),
+    "usd_mn": re.compile(r"^\W{0,3}(?:million|mn)\b", re.I),
+    "usd_bn": re.compile(r"^\W{0,3}(?:billion|bn)\b", re.I),
+}
+# A dollar marker has to precede the numeral for a USD claim to stand. Without
+# it, "500 million" is as likely to be rupees.
+_NEEDS_USD_MARKER = frozenset({"usd_mn", "usd_bn"})
+
+# Units an Indian filing routinely leaves implicit — a table headed "Rs crore"
+# writes the figures bare. For these, and only these, the absence of a
+# conflicting unit beside the numeral grounds the claim, which is exactly the
+# rule that stood before stated units existed. Everything else has to be
+# written out, because nothing in an Indian filing defaults to dollars.
+_IMPLICIT_UNITS = frozenset({"inr_cr", "inr"})
+
+# A percent field is exempt from all of it: "18%" carries its unit in the
+# numeral, and a guided range writes "4-5%" with the lower bound — the promise
+# — nowhere near the sign.
+_UNCHECKED_UNITS = frozenset({"pct", None})
 
 # Ceiling on an optional free-text field. These are the only parts of an entry
 # nothing else constrains — not grounded, not settled against a number — so a
@@ -456,17 +497,21 @@ def _number_appears(sentence: str, value, unit: str | None = None) -> bool:
 
     **The unit check is the load-bearing half.** Matching the bare numeral
     proves only that the digits occur somewhere — and "capex of USD 500 million
-    by FY2027" genuinely contains `500`, so an entry claiming
-    `amount_inr_cr: 500` grounds cleanly while being wrong by two orders of
-    magnitude. `compute_promises_kept` then settles that against real INR-crore
-    financials. The prompt does forbid non-INR figures, but a prompt rule
-    nothing enforces is not a rule; this is the enforcement.
+    by FY2027" genuinely contains `500`, so an entry claiming 500 in INR crore
+    grounds cleanly while being wrong by two orders of magnitude, and
+    `compute_promises_kept` then settles it against real INR-crore financials.
+    The prompt does state the rule, but a prompt rule nothing enforces is not a
+    rule; this is the enforcement.
 
-    So when `unit` is an INR quantity, at least one occurrence of the numeral
-    must carry neither a foreign currency before it nor a wrong scale word
-    after it. Checking per occurrence rather than per sentence matters:
+    Since U5 the entry declares the unit itself, so the question became "is the
+    numeral denominated the way this entry says it is?" rather than "is it INR
+    crore?". A USD figure now grounds *as a USD figure* — it is the reading
+    metrics that refuse it, with the reason, instead of the boundary throwing
+    the filing's own words away.
+
+    Checking per occurrence rather than per sentence matters throughout:
     "revenue grew from USD 100 million to Rs 1,500 crore" carries both, and the
-    rupee figure in it is perfectly good evidence.
+    rupee figure in it is perfectly good evidence for an `inr_cr` claim.
     """
     return bool(_number_positions(sentence, value, unit))
 
@@ -483,17 +528,27 @@ def _number_positions(sentence: str, value, unit: str | None = None) -> list[tup
         for candidate in candidates
         for match in re.finditer(re.escape(candidate), haystack)
     )
-    if unit not in _INR_UNITS:
+    if unit in _UNCHECKED_UNITS:
         return positions
 
-    return [
-        (start, end)
-        for start, end in positions
-        if not _WRONG_SCALE_AFTER_NUMBER.match(haystack[end:end + _UNIT_WINDOW_AFTER])
-        and not _WRONG_CURRENCY_BEFORE_NUMBER.search(
-            haystack[max(0, start - _UNIT_WINDOW_BEFORE):start]
-        )
-    ]
+    kept = []
+    for start, end in positions:
+        after = haystack[end:end + _UNIT_WINDOW_AFTER]
+        before = haystack[max(0, start - _UNIT_WINDOW_BEFORE):start]
+
+        scale = _SCALE_AFTER.get(unit)
+        stated = scale is not None and scale.match(after)
+        if unit in _NEEDS_USD_MARKER:
+            stated = bool(stated) and bool(_USD_BEFORE_NUMBER.search(before))
+        if stated:
+            kept.append((start, end))
+            continue
+
+        # An implicit rupee figure: nothing beside the numeral contradicts it.
+        if unit in _IMPLICIT_UNITS and not _WRONG_SCALE_AFTER_NUMBER.match(after) \
+                and not _WRONG_CURRENCY_BEFORE_NUMBER.search(before):
+            kept.append((start, end))
+    return kept
 
 
 # How far apart a value and the period it is guided for may sit and still be
@@ -613,6 +668,14 @@ def _validate_entry(
                     f"{_MAX_FREE_TEXT} characters"
                 )
 
+    # The stated unit is closed like every other vocabulary here, and it is
+    # checked before the figure so the grounding message can name a real unit.
+    unit = kept["unit"]
+    if unit not in schema.UNITS:
+        return drop(
+            f"unit {unit!r} is outside the closed set ({', '.join(schema.UNITS)})"
+        )
+
     if kind == schema.GUIDANCE:
         spec = schema.GUIDANCE_METRICS.get(kept["metric"])
         if spec is None:
@@ -620,19 +683,28 @@ def _validate_entry(
                 f"guidance metric {kept['metric']!r} is outside the closed set "
                 f"({', '.join(sorted(schema.GUIDANCE_METRICS))})"
             )
+        # KTD8. Closed like every other vocabulary here: an invented subject
+        # would be silently treated as not-the-company by promises-kept and
+        # would look identical to a market forecast, so it is refused at the
+        # boundary where the reason can still be recorded.
+        if kept["subject"] not in schema.GUIDANCE_SUBJECTS:
+            return drop(
+                f"guidance subject {kept['subject']!r} is outside the closed set "
+                f"({', '.join(schema.GUIDANCE_SUBJECTS)})"
+            )
         if not _is_number(kept["target_value"]):
             return drop(f"target_value {kept['target_value']!r} is not a number")
         if "target_value_high" in kept and not _is_number(kept["target_value_high"]):
             return drop(f"target_value_high {kept['target_value_high']!r} is not a number")
-        if not _number_appears(sentence, kept["target_value"], spec["unit"]):
+        if not _number_appears(sentence, kept["target_value"], unit):
             return drop(
                 f"target_value does not appear in its own source_sentence as a "
-                f"{spec['unit']} figure"
+                f"{unit} figure"
             )
         if not _period_appears(sentence, kept["target_period"]):
             return drop("target_period does not appear in its own source_sentence")
         if not _value_and_period_cohere(
-            sentence, kept["target_value"], spec["unit"], kept["target_period"]
+            sentence, kept["target_value"], unit, kept["target_period"]
         ):
             return drop(
                 "target_value and target_period appear in the source_sentence but "
@@ -643,15 +715,15 @@ def _validate_entry(
     elif kind == schema.CAPEX:
         if not _is_number(kept["amount_inr_cr"]):
             return drop(f"amount_inr_cr {kept['amount_inr_cr']!r} is not a number")
-        if not _number_appears(sentence, kept["amount_inr_cr"], "inr_cr"):
+        if not _number_appears(sentence, kept["amount_inr_cr"], unit):
             return drop(
-                "amount_inr_cr does not appear in its own source_sentence as an "
-                "INR crore figure"
+                f"amount_inr_cr does not appear in its own source_sentence as a "
+                f"{unit} figure"
             )
         if not _period_appears(sentence, kept["commissioning_year"]):
             return drop("commissioning_year does not appear in its own source_sentence")
         if not _value_and_period_cohere(
-            sentence, kept["amount_inr_cr"], "inr_cr", kept["commissioning_year"]
+            sentence, kept["amount_inr_cr"], unit, kept["commissioning_year"]
         ):
             return drop(
                 "amount_inr_cr and commissioning_year appear in the source_sentence "
@@ -661,10 +733,10 @@ def _validate_entry(
     elif kind == schema.TAM:
         if not _is_number(kept["market_size_inr_cr"]):
             return drop(f"market_size_inr_cr {kept['market_size_inr_cr']!r} is not a number")
-        if not _number_appears(sentence, kept["market_size_inr_cr"], "inr_cr"):
+        if not _number_appears(sentence, kept["market_size_inr_cr"], unit):
             return drop(
-                "market_size_inr_cr does not appear in its own source_sentence as "
-                "an INR crore figure"
+                f"market_size_inr_cr does not appear in its own source_sentence as "
+                f"a {unit} figure"
             )
 
     return kept

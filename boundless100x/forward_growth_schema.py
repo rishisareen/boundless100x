@@ -44,7 +44,23 @@ changes which entries survive belongs in this number.
 #     `amount_inr_cr: 500` entry, wrong by two orders of magnitude, and
 #     promises-kept settled it against real INR-crore financials. Optional
 #     free-text fields are also type- and length-bounded now.
-SCHEMA_VERSION = 4
+# 5 — guidance can be a growth *rate*, and every guidance entry must now say
+#     whose growth it describes. The corpus scan found market and economy
+#     growth rates outnumbering company-subject ones roughly four to one, in
+#     the same sections and the same sentence shape; a percentage is the one
+#     figure where subject and quantity cannot be told apart by type,
+#     grounding, or unit. Entries validated before this rule carry no subject
+#     and must be re-extracted rather than counted.
+# 6 — a figure is stored in the unit the filing stated it in, never converted
+#     and no longer discarded for being foreign. Version 3 made a non-INR
+#     statement yield nothing at all; that lost the reading *and* hid the
+#     coverage gap, which then showed up as an absent signal indistinguishable
+#     from a filing that said nothing. Every figure-bearing entry now carries
+#     its stated `unit`, grounding checks the numeral against *that* unit, and
+#     the metrics needing INR comparability set aside what they cannot use and
+#     say so. Which entries survive changes in both directions, so nothing
+#     validated under the old rule may be read from cache.
+SCHEMA_VERSION = 6
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like
@@ -77,23 +93,105 @@ ENTRY_KINDS = (GUIDANCE, CAPEX, TAM)
 #                     never read (KTD4).
 COMMON_FIELDS = ("source_sentence", "section")
 
+# ── Guidance subject (KTD8) ──
+# Whose growth a guidance entry describes. Only the company's own is a promise
+# management can be held to; a market, industry or economy forecast is not,
+# however confidently it is stated and however much it looks like one.
+#
+# This is the one place in the schema where subject cannot be inferred from
+# anything else. "expected to grow by 20%" is a promise or a macro forecast
+# depending only on what the sentence is about — the type is the same, the
+# grounding is the same, the unit is the same. The corpus bears that out:
+# market-subject growth rates outnumber company-subject ones roughly four to
+# one, in the same MD&A sections, and one real sentence reads "the Company
+# expects the market to grow by 4-5%" — naming the company and still promising
+# nothing. So the extractor is asked for the subject explicitly and
+# promises-kept counts only `company`.
+#
+# Market-subject entries are stored rather than dropped, and it is worth being
+# honest about what that buys: no current metric reads them. `tam_runway` needs
+# a market *size*, not a market *growth rate*. Keeping them is cheap, makes the
+# corpus's actual content visible in the data rather than in a one-off scan,
+# and follows the same rule as a foreign-currency figure — a grounded reading
+# is worth storing even when nothing can yet use it.
+SUBJECT_COMPANY = "company"
+SUBJECT_MARKET = "market"
+GUIDANCE_SUBJECTS = (SUBJECT_COMPANY, SUBJECT_MARKET)
+
+# ── Stated units (KTD5) ──
+# The unit the *filing* stated a figure in. Nothing here converts: an exchange
+# rate moves constantly and feeds both regime hashes, so every revision of one
+# would reset every ticker's momentum baseline — a cost far out of proportion
+# to the coverage it buys.
+#
+# But storing the figure as stated is strictly better than discarding it, which
+# is what schema 3 did. A discarded reading is lost twice over: the entry is
+# gone, and the coverage gap it represents shows up downstream as an absent
+# signal, indistinguishable from a filing that said nothing at all. Stored, the
+# entry stays grounded and auditable, the gap is visible in the data, and a
+# later FX decision finds the figures already recorded.
+#
+# The first three are the units metrics settle in. The rest are the foreign and
+# mis-scaled ones the corpus actually contains — a pharma exporter states its
+# market in USD billion, and Indian filings mix crore, lakh and million freely.
+# Anything outside the set is refused, like every other vocabulary here.
+UNIT_INR_CR = "inr_cr"
+UNIT_INR = "inr"
+UNIT_PCT = "pct"
+SETTLING_UNITS = (UNIT_INR_CR, UNIT_INR, UNIT_PCT)
+FOREIGN_UNITS = ("usd_mn", "usd_bn", "inr_lakh", "inr_mn")
+UNITS = SETTLING_UNITS + FOREIGN_UNITS
+
 FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
     GUIDANCE: {
-        "required": ("metric", "target_value", "target_period") + COMMON_FIELDS,
+        "required": ("metric", "target_value", "target_period", "subject", "unit")
+                    + COMMON_FIELDS,
         # A range is guided as often as a point target in Indian annual
         # reports. The lower bound is the promise (U5), so the high end is
         # optional context rather than part of the test.
         "optional": ("target_value_high",),
     },
     CAPEX: {
-        "required": ("amount_inr_cr", "commissioning_year") + COMMON_FIELDS,
+        "required": ("amount_inr_cr", "commissioning_year", "unit") + COMMON_FIELDS,
         "optional": ("description",),
     },
     TAM: {
-        "required": ("market_size_inr_cr",) + COMMON_FIELDS,
+        "required": ("market_size_inr_cr", "unit") + COMMON_FIELDS,
         "optional": ("market", "period"),
     },
 }
+
+# The figure field each kind carries, and the unit that field's *name* asserts.
+# `amount_inr_cr` and `market_size_inr_cr` say "INR crore" in their own names,
+# so a USD-stated figure in them is only safe because `unit` records the truth
+# and every consumer checks it — which `capex_pipeline` did not, summing
+# `amount_inr_cr` straight into a rupee total.
+FIGURE_FIELDS = {
+    GUIDANCE: "target_value",
+    CAPEX: "amount_inr_cr",
+    TAM: "market_size_inr_cr",
+}
+_KIND_UNITS = {CAPEX: UNIT_INR_CR, TAM: UNIT_INR_CR}
+
+
+def settling_unit(kind: str, metric: str | None = None) -> str | None:
+    """The stated unit an entry must carry for a metric to be able to read it.
+
+    Guidance settles in whatever unit its guided quantity is measured in; capex
+    and TAM settle in INR crore, because that is what their field names claim
+    and what the frames they are compared against are denominated in. An entry
+    in any other unit is kept and skipped, never converted.
+    """
+    if kind == GUIDANCE:
+        spec = GUIDANCE_METRICS.get(metric)
+        return spec["unit"] if spec else None
+    return _KIND_UNITS.get(kind)
+
+
+def is_settleable(kind: str, entry: dict, metric: str | None = None) -> bool:
+    """Whether an entry's stated unit is one the reading metric can use."""
+    expected = settling_unit(kind, metric)
+    return expected is not None and (entry or {}).get("unit") == expected
 
 # Closed set of guided quantities. Each names the fetched column that settles
 # it, so a promise whose quantity is outside this set is not a promise this
@@ -109,6 +207,13 @@ FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
 # carries acquisitions and treasury investments — a capex promise settled in
 # an M&A year therefore reads generously. Each settled promise records the
 # column and both values in metadata so that is auditable rather than hidden.
+#
+# **`growth: True` settles against the change between two consecutive annual
+# rows** rather than against one column (KTD4). This is the shape Indian filers
+# actually guide in — the corpus holds five company-subject growth-rate
+# statements and not one forward absolute-INR-crore figure — and it needs no
+# exchange rate, because a percentage carries its unit in the numeral and so
+# grounds in its own sentence whatever currency the accounts are kept in.
 GUIDANCE_METRICS: dict[str, dict] = {
     "revenue": {"frame": "financials", "column": "revenue", "unit": "inr_cr"},
     "pat": {"frame": "financials", "column": "pat", "unit": "inr_cr"},
@@ -118,6 +223,12 @@ GUIDANCE_METRICS: dict[str, dict] = {
     },
     "capex": {
         "frame": "cashflow", "column": "cfi", "unit": "inr_cr", "absolute": True,
+    },
+    "revenue_growth_pct": {
+        "frame": "financials", "column": "revenue", "unit": "pct", "growth": True,
+    },
+    "pat_growth_pct": {
+        "frame": "financials", "column": "pat", "unit": "pct", "growth": True,
     },
 }
 
@@ -161,5 +272,7 @@ def schema_fingerprint() -> dict:
         "schema_version": SCHEMA_VERSION,
         "fields": {kind: FIELDS[kind] for kind in ENTRY_KINDS},
         "guidance_metrics": GUIDANCE_METRICS,
+        "guidance_subjects": GUIDANCE_SUBJECTS,
+        "units": UNITS,
         "required_sections": REQUIRED_SECTIONS,
     }
