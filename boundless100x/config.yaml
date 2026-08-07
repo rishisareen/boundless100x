@@ -170,6 +170,59 @@ portfolio:
     rerating: 5
   max_positioned_per_sector: 3   # COUNT of positioned names sharing a sector
 
+# ── Simulator (Phase 4 strategy simulator, KTD3) ──
+# The simulated owner's policy block. §14.4 gives every money-moving
+# transition a human confirmer; the replay has no human, so it substitutes
+# this config, stating per decision kind what production leaves to the
+# owner's judgement: how long a proposal sits before it is confirmed, how
+# wide a fabricated fast-lane catalyst's window is, and what happens when a
+# transition would breach a concentration cap. Every value below is recorded
+# into the run's own output artifact verbatim, so a result can be
+# re-derived from its own record.
+#
+# Deliberately outside the hashed `macro:` block, for the same reason
+# `deployment_pace:`, `friction:` and `portfolio:` are: owner policy, not an
+# assumption a metric computes with.
+simulator:
+  starting_pool: 100        # SETTLED (decision 1): unitless "capital units".
+                             # Every simulator output is a ratio, so the unit
+                             # cancels and no simulated figure can be mistaken
+                             # for a real rupee amount.
+  confirmation_lag_days:    # SETTLED (decision 2): trading days between a
+                             # proposal and its confirmation. DELIBERATELY
+                             # NON-ZERO — an instantaneous simulated owner
+                             # would flatter cash drag and deployment pace to
+                             # exactly zero, the two readings this phase
+                             # exists to produce honestly rather than assume.
+    entry: 5                 # probe / scale
+    exit: 2                  # exit_review -> exited
+    route: 5                 # routing an exit's proceeds into the next candidate
+  catalyst_window_months: 6 # SETTLED (decision 3): the aggressive end of
+                             # §9.1's 6-18 month horizon, not the midpoint —
+                             # the fabricated fast-lane catalyst (KTD6) is
+                             # what drives catalyst-spent exits, and the owner
+                             # prefers the lane's discipline tested at its
+                             # tightest stated bound.
+  cap_posture: enforced     # SETTLED (decision 5, REOPENED then RESETTLED
+                             # 2026-08-07): one of enforced / advisory /
+                             # override, mapped onto `advance.decide()`'s own
+                             # `override_caps: bool` (enforced -> False,
+                             # withheld; advisory/override -> True, proceeds
+                             # with the breach recorded). `enforced` is what
+                             # `advance --apply` actually runs under today —
+                             # see CLAUDE.md, "Two lanes" — so it is the
+                             # baseline; the other two postures ship as
+                             # reachable config values for a Phase 5 sweep of
+                             # what the guardrail cost or saved.
+  # reduce_fraction is DELIBERATELY ABSENT — no key, no default.
+  # DEFERRED (decision 4): the §14.3 "reduce" severity's partial-sale
+  # fraction is unsettled by the owner. Inventing a number here would read
+  # as settled when it is not. In the baseline every valuation_saturation
+  # exit resolves through the same review-then-confirm path as any other
+  # kill-switch (a full exit after the exit lag) and is tagged `reduce` only
+  # so the affected sample is counted separately — the partial-sale
+  # mechanics ship built but inactive until the owner settles a fraction.
+
 # ── Output ──
 output:
   formats: ["html", "md", "json"]

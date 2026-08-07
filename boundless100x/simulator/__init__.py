@@ -22,11 +22,19 @@ Submodules, in the order the replay loop consumes them:
                       market) is U7; this module stops at "a watchlist
                       populated with lane-assigned candidates at their
                       screen dates."
+  * `owner.py`      — the simulated-owner policy (U3, KTD3/KTD6): pure
+                      functions deciding when an already-produced
+                      `advance.decide()` proposal is confirmed, whether a
+                      fast-lane candidate earns a fabricated catalyst, and
+                      when a routed exit's proceeds are accepted. Never
+                      calls `TriggerEvaluator`/`LaneGateEvaluator`/
+                      `advance.decide()` itself — see its own module
+                      docstring for why that boundary is load-bearing.
 
-Not yet built (later units, per the plan's Implementation Units): `owner.py`
-(U3, the simulated-owner policy), `ledger.py` (U4, modeled capital),
-`friction_cash.py` (U5, cash-level friction), `outputs.py` (U6, the six §10
-readings). `simulate(config_overrides) -> dict` — the one importable
-entry point R10 requires for a Phase 5 sweep to loop over without
-subprocesses — lands in this file once U7 exists to drive it end to end.
+Not yet built (later units, per the plan's Implementation Units): `ledger.py`
+(U4, modeled capital), `friction_cash.py` (U5, cash-level friction),
+`outputs.py` (U6, the six §10 readings). `simulate(config_overrides) -> dict`
+— the one importable entry point R10 requires for a Phase 5 sweep to loop
+over without subprocesses — lands in this file once U7 exists to drive it
+end to end.
 """
