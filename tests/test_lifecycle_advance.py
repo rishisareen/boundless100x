@@ -24,6 +24,7 @@ from boundless100x.lifecycle import lane_gates as lane_gates_module
 from boundless100x.lifecycle.advance import (
     advance,
     advance_ticker,
+    decide,
     record_checkpoints,
     routing_safety,
 )
@@ -1546,3 +1547,139 @@ class TestTheRunsResolutionsAreAllLiveAtOnce:
         assert result["errors"] == []
         assert {o["ticker"] for o in result["outcomes"]} == {"ASTRAL", "ZENSAR"}
         assert wm.get("ZENSAR")["state"] == "qualify"
+
+
+class TestTheDecisionCoreIsPure:
+    """`decide` — every rule between the readings and the writes, and no I/O.
+
+    Extracted from `advance_ticker` because a point-in-time replay needs the
+    rules without `service.analyze`, and a second statement of them would drift
+    from this one with nothing to say which one the money followed. The
+    property that makes the extraction worth anything is that it performs no
+    writes, so that is asserted directly against a store that raises on any —
+    not inferred from `advance_ticker` still passing.
+    """
+
+    class ExplodingWatchlist:
+        """Any write is a bug. Reads are not offered, because `decide` takes
+        its entry as an argument and must never reach for a store at all."""
+
+        def __getattr__(self, name):
+            raise AssertionError(
+                f"decide() must perform no I/O — it called watchlist.{name}"
+            )
+
+    @staticmethod
+    def entry(state="watch", lane="core", history=None) -> dict:
+        return {
+            "state": state,
+            "lane": lane,
+            "state_history": history or [{"to": state, "at": "2026-01-01"}],
+            "catalyst": {},
+            "checkpoints": [],
+        }
+
+    def core(self, metrics=None, *, state="watch", evaluator=None, **kwargs):
+        return decide(
+            "ASTRAL",
+            self.entry(state=state),
+            state,
+            "core",
+            metrics=metrics if metrics is not None else healthy_metrics(),
+            scores={"composite": 6.4, "elements": {}, "flags": []},
+            eligibility={"verdict": "eligible"},
+            as_of=AS_OF,
+            evaluator=evaluator or TriggerEvaluator(load_triggers()),
+            **kwargs,
+        )
+
+    def test_it_decides_without_touching_a_store(self):
+        """The whole point of the split. A store handed in would be a seam the
+        replay has to satisfy; `decide` is not given one."""
+        decision = self.core()
+
+        assert decision["proposal"]["to"] == "probe"
+        # And the belt: nothing in the module reaches for a watchlist by any
+        # other route either.
+        assert "watchlist" not in decide.__code__.co_varnames
+
+    def test_a_write_attempt_would_be_caught(self):
+        """Guards the guard: if a future edit reintroduces a store argument,
+        this fixture is what turns it into a failure rather than a silent
+        dependency."""
+        with pytest.raises(AssertionError, match="no I/O"):
+            self.ExplodingWatchlist().set_kill_switch_status("ASTRAL", {})
+
+    def test_applied_is_a_decision_not_a_claim_that_a_write_happened(self):
+        """`decide` performs nothing, so `applied` says the caller *should*
+        write — the one place the extracted vocabulary could mislead."""
+        decision = self.core(state="watch", apply=False)
+
+        assert decision["proposal"]["applied"] is False
+        assert decision["proposal"]["needs_confirmation"] is True
+        assert decision["moves_money"] is True
+
+    def test_precedence_survives_the_extraction(self):
+        """A kill-switch still outranks a buy zone. Restated here rather than
+        left to `advance_ticker`'s coverage because this is now where the rule
+        lives, and it is the one a replay would most flatter by getting wrong."""
+        metrics = healthy_metrics()
+        metrics["roiic"] = metric(3.0)
+
+        decision = self.core(metrics)
+
+        assert decision["proposal"]["to"] == "dropped"
+        assert "valuation_buy_zone" in decision["proposal"]["superseded"]
+
+    def test_kill_switch_status_is_derived_and_returned_not_written(self):
+        status = self.core()["kill_switch_status"]
+
+        assert status  # every declared trigger, per the evaluation
+        assert set(status.values()) <= {"fired", "clear", "unknown"}
+
+    def test_nothing_fired_still_reports_moves_money_false(self):
+        """The quiet path. `moves_money` is read by the caller to choose
+        `applied_by`, so it must exist even when no proposal does."""
+        decision = self.core(state="qualify", metrics=healthy_metrics())
+
+        assert decision["moves_money"] is False
+
+    def test_a_concentration_breach_withholds_the_transition(self):
+        """The gate is consulted inside the core, so the replay gets it by
+        calling rather than by restating it."""
+        decision = self.core(
+            apply=True,
+            concentration_gate=lambda lane, sector: ["the core lane is full"],
+        )
+
+        assert decision["proposal"]["concentration_withheld"] is True
+        assert decision["proposal"]["applied"] is False
+        assert "the core lane is full" in decision["proposal"]["evidence"]
+
+    def test_an_override_lets_it_through_and_records_the_breach(self):
+        decision = self.core(
+            apply=True,
+            concentration_gate=lambda lane, sector: ["the core lane is full"],
+            override_caps=True,
+        )
+
+        assert decision["proposal"]["applied"] is True
+        assert "overridden by the owner" in decision["proposal"]["evidence"]
+
+    def test_the_sector_is_read_off_the_data_dict(self):
+        """Takes the raw frames rather than an AnalysisResult, which is what
+        lets a truncated replay view answer the same question."""
+        decision = decide(
+            "ASTRAL",
+            self.entry(),
+            "watch",
+            "core",
+            metrics=healthy_metrics(),
+            scores={"composite": 6.4, "elements": {}, "flags": []},
+            eligibility={"verdict": "eligible"},
+            data={"metadata": {"sector": "Chemicals"}},
+            as_of=AS_OF,
+            evaluator=TriggerEvaluator(load_triggers()),
+        )
+
+        assert decision["sector"] == "Chemicals"

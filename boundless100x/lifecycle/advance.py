@@ -243,7 +243,7 @@ def routing_safety(
     return {"lane": lane, "clear": not reasons, "reasons": reasons}
 
 
-def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict | None:
+def _friction_for_exit(ticker: str, entry: dict, data, as_of, config) -> dict | None:
     """What a proposed exit is modeled to keep after tax and slippage.
 
     Attached to an `exit_review` proposal because that is the one transition
@@ -275,11 +275,11 @@ def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict
     """
     return friction_module.reading_for_exit(
         entry,
-        (result.data or {}).get("price"),
+        (data or {}).get("price"),
         # The same clock the rest of the run reads, so a replay of an old
         # decision reproduces the figure it was decided on.
         as_of or date.today(),
-        config=getattr(service, "config", {}),
+        config=config or {},
         basis=friction_module.BASIS_ESTIMATE,
         label=ticker,
     )
@@ -326,7 +326,7 @@ def _lane_context(
         return None
 
 
-def _sector_of(result) -> str | None:
+def _sector_of(data) -> str | None:
     """The sector this ticker's last fetch recorded, or None.
 
     Only tickers fetched after the breadcrumb fix carry `metadata.sector`, so
@@ -334,8 +334,11 @@ def _sector_of(result) -> str | None:
     Every layer of the lookup is guarded because `metadata.json` is scraped: a
     file holding valid JSON of the wrong shape parses fine and then fails on
     attribute access, and a concentration reading is not worth an advance run.
+
+    Takes the raw data dict rather than the analysis result, so `decide` can
+    ask the question of a replayed, truncated corpus view — which has the same
+    `metadata` key and no result object around it.
     """
-    data = getattr(result, "data", None)
     metadata = data.get("metadata") if isinstance(data, dict) else None
     sector = metadata.get("sector") if isinstance(metadata, dict) else None
     return sector if isinstance(sector, str) and sector.strip() else None
@@ -370,56 +373,65 @@ def record_checkpoints(watchlist, ticker: str, result, as_of=None) -> dict:
     return recorded
 
 
-def advance_ticker(
-    service,
-    watchlist,
+def decide(
     ticker: str,
-    evaluator: TriggerEvaluator,
-    apply: bool = False,
+    entry: dict,
+    state: str,
+    lane: str,
+    *,
+    metrics: dict,
+    scores: dict | None = None,
+    eligibility: dict | None = None,
+    data: dict | None = None,
     as_of=None,
-    pace: dict | None = None,
+    evaluator: TriggerEvaluator,
     lane_gates: LaneGateEvaluator | None = None,
+    pace: dict | None = None,
+    apply: bool = False,
     concentration_gate=None,
     override_caps: bool = False,
+    config: dict | None = None,
 ) -> dict:
-    """Re-score one company and decide what its state should be next.
+    """What should happen to this company next, given readings already in hand.
 
-    `lane_gates` is the run's validated lane-gate evaluator, injected the way
-    `evaluator` already is — `advance()` builds one per run against the
-    engine's metric ids. It is optional so a direct caller (a test, a future
-    single-ticker surface) still works; that caller gets an unvalidated
-    evaluator built here, which is the seam `lane_view` has always used.
+    **The whole rule set, and no I/O.** Everything between "the analysis is
+    done" and "the watchlist is written" lives here: the checkpoint outcomes,
+    the fast lane's gate result, the trigger evaluation, the kill-switch
+    status derivation, the precedence sort, the deployment-pace evidence
+    clause, the friction estimate on an exit proposal, the concentration
+    guardrail, and `moves_money → should_apply`.
 
-    `concentration_gate` is `(lane, sector) -> [reasons]`, supplied by
-    `advance()` and consulted **before** a transition that would take a
-    position. Optional for the same seam reason: a direct caller with no gate
-    gets the pre-guardrail behaviour, which is what every non-`advance()`
-    caller wants.
+    Split out of `advance_ticker` because those are *production rules* and a
+    second caller now needs them. `advance_ticker` cannot be reused whole —
+    it opens with `service.analyze`, which fetches, takes the LLM path and
+    appends to `score_history.jsonl`, none of which a point-in-time replay may
+    do. Restating the rules on the other side of that boundary would leave two
+    statements of them with nothing to say which one the money followed, and
+    the drift would be invisible in the worst direction: a replay that ranked a
+    buy-zone above a kill-switch would report a *better* result for doing so.
+    This is the same move `friction.reading_for_exit` and
+    `portfolio.would_breach` already made in this layer, for the same reason.
+
+    **It performs no writes and reads no source**, which is the property that
+    makes it replayable and the one a test pins directly. Every input arrives
+    as an argument: the readings (`metrics`, `scores`, `eligibility`, and the
+    raw `data` dict the price series and sector are read from), the entry and
+    its `state`/`lane` as the caller resolved them, the run's evaluators, and
+    the run-level `pace` and `concentration_gate` seams. `config` supplies the
+    friction rates only.
+
+    `state` and `lane` are passed rather than re-derived from `entry` because
+    the caller resolves them at specific moments — `state` before the analysis,
+    `entry` after it — and this function must not quietly disagree with the
+    caller about when either was read.
+
+    Returns the decision, never the effects: `{checkpoint_outcomes,
+    checkpoints, lane_gates, evaluation, kill_switch_status, sector, proposal,
+    moves_money, friction_estimate, routing_safety}`. The caller decides what
+    to write and in what order — an ordering that is itself load-bearing, and
+    argued where it happens.
     """
-    state = watchlist.get(ticker)["state"]
-
-    # No report is built on this path, and momentum is only ever rendered into
-    # one — so asking for it would re-read and re-parse the whole append-only
-    # score-history log once per tracked ticker for a value nobody reads.
-    result = service.analyze(ticker, use_llm=False, include_momentum=False)
-
-    # The snapshot is **not** written here. It stamps `last_score_snapshot.at`,
-    # which is the exact field `get_stale(90)` reads, so writing it the moment
-    # the analysis returned meant a ticker whose advance raised anywhere below
-    # was recorded in the run's `errors` *and* marked freshly scored — and
-    # `advance --quarterly` would then not look at it again for three months. A
-    # thesis that broke on the one day a ticker errored went unevaluated until
-    # the quarter was up. It is written at the end instead, so "scored" means
-    # the run got through, not that it started. See the commit below the
-    # transition.
-
-    # Every mutator stages onto a deep copy and **replaces** `watchlist.data`
-    # on a successful write, so an entry held across one is a detached
-    # pre-commit object. Read here, before anything in this function commits.
-    entry = watchlist.get(ticker)
-    lane = entry["lane"]
-
-    outcomes = evaluate_all(entry.get("checkpoints"), result.data, as_of)
+    outcomes = evaluate_all(entry.get("checkpoints"), data, as_of)
     checkpoint_summary = summarise(outcomes)
 
     # Only the fast lane asks this question, so only the fast lane is evaluated
@@ -431,7 +443,7 @@ def advance_ticker(
     # the direct-call seam keeps working.
     lane_gate_result = (
         (lane_gates or LaneGateEvaluator()).evaluate(
-            result.metrics, result.scores, entry.get("catalyst", {})
+            metrics, scores, entry.get("catalyst", {})
         )
         if lane == RERATING_LANE
         else None
@@ -439,9 +451,9 @@ def advance_ticker(
 
     evaluation = evaluator.evaluate(
         state,
-        metrics=result.metrics,
-        scores=result.scores,
-        eligibility=result.eligibility,
+        metrics=metrics,
+        scores=scores,
+        eligibility=eligibility,
         checkpoint_results=checkpoint_summary,
         lane_gate_result=lane_gate_result,
         # `{}` rather than a bare `.get("catalyst")`: an entry somebody has
@@ -458,14 +470,15 @@ def advance_ticker(
         as_of=as_of,
     )
 
-    watchlist.set_kill_switch_status(ticker, {
+    # Derived here, written by the caller — the split this function exists for.
+    kill_switch_status = {
         trigger_id: (
             "fired" if detail["fired"] is True
             else "unknown" if detail["fired"] is None
             else "clear"
         )
         for trigger_id, detail in evaluation["triggers"].items()
-    })
+    }
 
     candidates = sorted(
         (
@@ -498,10 +511,15 @@ def advance_ticker(
     friction_estimate = None
 
     # Read once and used twice — by the concentration gate below and by the
-    # outcome this returns. The run's only path from a per-ticker analysis to
-    # the sector census: `result` is local to this function and never reaches
-    # the caller. Read rather than stored, per `lifecycle/portfolio.py`.
-    sector = _sector_of(result)
+    # decision this returns. The run's only path from a per-ticker analysis to
+    # the sector census: the analysis is local to the caller and never reaches
+    # `advance()`. Read rather than stored, per `lifecycle/portfolio.py`.
+    sector = _sector_of(data)
+
+    # False rather than undefined when nothing fired: the caller reads it to
+    # choose `applied_by`, and a name that only exists on one branch would
+    # raise on the quiet path rather than on the interesting one.
+    moves_money = False
 
     proposal = candidates[0] if candidates else None
     if proposal:
@@ -539,16 +557,16 @@ def advance_ticker(
             }
             proposal["evidence"] = f"{proposal['evidence']} [deployment pace: {clause}]"
 
-        # Appended to the evidence *before* the transition below writes it, so
-        # the append-only history records the net figure beside the gross one
-        # rather than only the reason the exit was proposed. An unavailable
+        # Appended to the evidence *before* the caller's transition writes it,
+        # so the append-only history records the net figure beside the gross
+        # one rather than only the reason the exit was proposed. An unavailable
         # reading is still attached — the CLI says why it could not be
         # computed — but nothing goes into the evidence, because a recorded
         # line claiming a friction estimate that does not exist is worse than
         # a line that never mentioned one.
         if proposal["to"] == lifecycle_states.EXIT_REVIEW:
             reading = friction_estimate = _friction_for_exit(
-                service, ticker, entry, result, as_of
+                ticker, entry, data, as_of, config
             )
             if reading is not None:
                 proposal["friction"] = reading
@@ -598,18 +616,120 @@ def advance_ticker(
         withheld = bool(cap_reasons) and not override_caps
         proposal["concentration_withheld"] = withheld
 
+        # Decided here, *performed* by the caller. `applied` says the caller
+        # should write the transition and will; it is not a claim that a write
+        # has already happened, because nothing in this function writes.
         should_apply = (apply and not withheld) if moves_money else True
-
-        if should_apply:
-            watchlist.transition(
-                ticker,
-                proposal["to"],
-                proposal["trigger_id"],
-                evidence=proposal["evidence"],
-                applied_by=APPLIED_OWNER if moves_money else APPLIED_AUTO,
-            )
         proposal["applied"] = should_apply
         proposal["needs_confirmation"] = moves_money and not should_apply
+
+    return {
+        "checkpoint_outcomes": outcomes,
+        "checkpoints": checkpoint_summary,
+        "lane_gates": lane_gate_result,
+        "evaluation": evaluation,
+        "kill_switch_status": kill_switch_status,
+        "sector": sector,
+        "proposal": proposal,
+        # Carried beside the proposal rather than on it: the caller needs it to
+        # choose `applied_by`, and the proposal payload is rendered and
+        # recorded, so it stays exactly the shape it has always been.
+        "moves_money": moves_money,
+        "friction_estimate": friction_estimate,
+        "routing_safety": routing_safety(
+            lane, eligibility, scores, lane_gate_result
+        ),
+    }
+
+
+def advance_ticker(
+    service,
+    watchlist,
+    ticker: str,
+    evaluator: TriggerEvaluator,
+    apply: bool = False,
+    as_of=None,
+    pace: dict | None = None,
+    lane_gates: LaneGateEvaluator | None = None,
+    concentration_gate=None,
+    override_caps: bool = False,
+) -> dict:
+    """Re-score one company, decide what its state should be next, record it.
+
+    Two halves since the decision core was extracted: this function owns the
+    analysis and the **writes**, and `decide` owns every rule between them. The
+    split exists because a point-in-time replay needs the rules without the
+    analysis — `service.analyze` fetches, takes the LLM path and appends to
+    `score_history.jsonl`, none of which a replay may do — and a second copy of
+    the rules would drift from this one with nothing to say which the money
+    followed. See `decide`.
+
+    `lane_gates` is the run's validated lane-gate evaluator, injected the way
+    `evaluator` already is — `advance()` builds one per run against the
+    engine's metric ids. It is optional so a direct caller (a test, a future
+    single-ticker surface) still works; that caller gets an unvalidated
+    evaluator built here, which is the seam `lane_view` has always used.
+
+    `concentration_gate` is `(lane, sector) -> [reasons]`, supplied by
+    `advance()` and consulted **before** a transition that would take a
+    position. Optional for the same seam reason: a direct caller with no gate
+    gets the pre-guardrail behaviour, which is what every non-`advance()`
+    caller wants.
+    """
+    state = watchlist.get(ticker)["state"]
+
+    # No report is built on this path, and momentum is only ever rendered into
+    # one — so asking for it would re-read and re-parse the whole append-only
+    # score-history log once per tracked ticker for a value nobody reads.
+    result = service.analyze(ticker, use_llm=False, include_momentum=False)
+
+    # The snapshot is **not** written here. It stamps `last_score_snapshot.at`,
+    # which is the exact field `get_stale(90)` reads, so writing it the moment
+    # the analysis returned meant a ticker whose advance raised anywhere below
+    # was recorded in the run's `errors` *and* marked freshly scored — and
+    # `advance --quarterly` would then not look at it again for three months. A
+    # thesis that broke on the one day a ticker errored went unevaluated until
+    # the quarter was up. It is written at the end instead, so "scored" means
+    # the run got through, not that it started. See the commit below the
+    # transition.
+
+    # Every mutator stages onto a deep copy and **replaces** `watchlist.data`
+    # on a successful write, so an entry held across one is a detached
+    # pre-commit object. Read here, before anything in this function commits.
+    entry = watchlist.get(ticker)
+    lane = entry["lane"]
+
+    decision = decide(
+        ticker,
+        entry,
+        state,
+        lane,
+        metrics=result.metrics,
+        scores=result.scores,
+        eligibility=result.eligibility,
+        data=result.data,
+        as_of=as_of,
+        evaluator=evaluator,
+        lane_gates=lane_gates,
+        pace=pace,
+        apply=apply,
+        concentration_gate=concentration_gate,
+        override_caps=override_caps,
+        config=getattr(service, "config", {}),
+    )
+
+    # ── the writes, in the order they have to happen in ──
+    proposal = decision["proposal"]
+    watchlist.set_kill_switch_status(ticker, decision["kill_switch_status"])
+
+    if proposal and proposal["applied"]:
+        watchlist.transition(
+            ticker,
+            proposal["to"],
+            proposal["trigger_id"],
+            evidence=proposal["evidence"],
+            applied_by=APPLIED_OWNER if decision["moves_money"] else APPLIED_AUTO,
+        )
 
     # ── the scoring snapshot, last of this function's writes ──
     #
@@ -635,23 +755,21 @@ def advance_ticker(
         # transition above and from a re-read entry, so it describes where the
         # company now stands rather than where it stood when the run began, and
         # handed both the lane-gate result and the friction estimate already
-        # computed above rather than paying for a second of either. A failure
-        # costs the view, never the advance.
+        # computed by `decide` rather than paying for a second of either. A
+        # failure costs the view, never the advance.
         "lane_context": _lane_context(
-            service, watchlist, ticker, result, as_of, lane_gate_result,
-            friction_estimate,
+            service, watchlist, ticker, result, as_of, decision["lane_gates"],
+            decision["friction_estimate"],
         ),
-        "sector": sector,
+        "sector": decision["sector"],
         "composite": (result.scores or {}).get("composite"),
         "verdict": (result.eligibility or {}).get("verdict", "indeterminate"),
-        "lane_gates": lane_gate_result,
+        "lane_gates": decision["lane_gates"],
         "proposal": proposal,
-        "indeterminate": evaluation["indeterminate"],
-        "checkpoints": checkpoint_summary,
-        "checkpoint_outcomes": outcomes,
-        "routing_safety": routing_safety(
-            lane, result.eligibility, result.scores, lane_gate_result
-        ),
+        "indeterminate": decision["evaluation"]["indeterminate"],
+        "checkpoints": decision["checkpoints"],
+        "checkpoint_outcomes": decision["checkpoint_outcomes"],
+        "routing_safety": decision["routing_safety"],
     }
 
 
