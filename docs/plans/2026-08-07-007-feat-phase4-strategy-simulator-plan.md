@@ -1396,3 +1396,59 @@ confirmation timing change. Phase 5 starts from a proven callable.
   starting after mid-2024, or a corpus refetch that deepens `quarterly`/
   `shareholding` further back, would be needed before Phase 5 has any
   fast-lane transitions to sweep over at all.
+
+### Code review
+
+Seven-reviewer pass (correctness, project-standards, testing,
+maintainability, performance, reliability, adversarial — local roster
+only, the cross-model peer was declined) over the full phase diff
+(~9100 executable changed lines). Two real defects, both in the
+settle-after-lag architecture the confirm-then-settle design introduces,
+confirmed with a constructed scenario and fixed in a follow-up commit
+(`69b24ed`):
+
+- **Concentration cap checked at proposal time, not at settlement.**
+  `settle_entry`/`settle_route` wrote a money-moving transition using the
+  occupancy `decide()` saw days earlier; two proposals scheduled the same
+  date could both read the same stale under-cap reading and both settle,
+  silently breaching a configured cap — the exact caps Phase 5 calibrates
+  from this simulator's output. Fixed by re-checking `concentration_gate`
+  live, immediately before each write.
+- **`settle_exit` durably wrote before validating its price bar.**
+  `confirm_exit`'s three-store write (queue event, `EXIT_REVIEW`→`EXITED`
+  transition, confirmation stamp) ran before the bar `Ledger.sell` needed
+  was resolved; a non-positive close (not filtered by `price_bars`'
+  hygiene) could leave the watchlist/queue saying "exited" while the
+  ledger still held the position for the rest of the run. Fixed by
+  validating the bar first, matching `settle_entry`'s own order.
+
+Neither defect changed the full-corpus run's recorded numbers above — the
+real corpus's single trade never reached either edge case — so this is a
+structural-safety fix confirmed against, not a revision of, the figures
+already recorded. Also fixed: kill-switch status is now written only when
+it changed (was a full store commit per ticker per date regardless), and
+three duplicated attribute-or-dict-key lookups in `outputs.py` became one
+helper.
+
+Six further findings recorded as follow-up rather than applied here (all
+single-reviewer, none rising to a defect a full-corpus run currently
+hits):
+
+- `simulator/outputs.py` lands at 1273 lines, the largest file in the
+  new package, bundling five concerns behind one module (portfolio
+  metrics, the KTD9 benchmark builder, gate coverage, exclusions/
+  limitations, result assembly). Mitigating context: three pre-existing
+  files in this codebase already exceed 1000 lines. A future dedicated
+  pass should split along the module's own section markers.
+- `simulator/replay.py::settle_route` (the reinvestment-routing
+  settlement — the only code that redeploys an exit's proceeds, KTD3) has
+  zero test coverage; every fixture in this diff has at most one live
+  candidate at exit time, so `owner.route` always returns `"hold"` and
+  the function's body is never entered.
+- Three narrower testing gaps (the new `simulate` CLI command and
+  `_coerce_cli_value`; `simulate()`'s `tickers=`/`start`/`end` branches;
+  `Ledger`'s bar-validation `ValueError` paths and the sell-fraction
+  guard).
+- The already-documented redundant-per-ticker-load residual (above) is
+  now technically a 4th instance with `run_replay`'s own preload
+  included, not a 3rd — noted, not newly urgent at this corpus size.
