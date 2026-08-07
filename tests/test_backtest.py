@@ -190,6 +190,54 @@ class TestRealizedReturn:
         assert span["years"] > 1
         assert "from" in span and "to" in span
 
+    def test_a_trailing_unpublished_adjusted_close_does_not_nan_the_return(
+        self, tmp_path, backtest_factory
+    ):
+        """The source publishes today's raw close before its adjusted one.
+
+        A series fetched today therefore ends in a single NaN `adj_close`.
+        Reading the last row unconditionally turned that into a NaN realized
+        return on 5 of 15 corpus tickers the moment they gained an adjusted
+        series — invisible until then, because they had been falling back to
+        the raw close.
+        """
+        write_ticker(tmp_path, "GOODCO")
+        path = tmp_path / "GOODCO" / "price_volume.csv"
+        price = pd.read_csv(path)
+        price["adj_close"] = price["close"]
+        price["adj_close_is_estimated"] = False
+        price.loc[price.index[-1], "adj_close"] = None
+        price.to_csv(path, index=False)
+
+        bt = backtest_factory()
+        data = bt._load(tmp_path / "GOODCO")
+        _, truncation_date, _ = bt._truncate(data)
+
+        realized, span = bt._realized_return(data["price"], truncation_date)
+
+        assert realized is not None and realized == realized  # not NaN
+        assert span["price_series"] == "adj_close"
+        assert span["to"] == str(price["date"].iloc[-2])[:10]
+
+    def test_a_series_whose_adjusted_column_is_entirely_absent_of_values_is_skipped(
+        self, tmp_path, backtest_factory
+    ):
+        write_ticker(tmp_path, "GOODCO")
+        path = tmp_path / "GOODCO" / "price_volume.csv"
+        price = pd.read_csv(path)
+        price["adj_close"] = None
+        price["adj_close_is_estimated"] = False
+        price.to_csv(path, index=False)
+
+        bt = backtest_factory()
+        data = bt._load(tmp_path / "GOODCO")
+        _, truncation_date, _ = bt._truncate(data)
+
+        realized, span = bt._realized_return(data["price"], truncation_date)
+
+        assert realized is None
+        assert "both sides" in span["reason"]
+
 
 class TestCorrelationAndOutput:
     def test_correlation_reproduces_a_known_ranking(self, backtest_factory):

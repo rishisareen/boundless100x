@@ -209,12 +209,16 @@ class WalkForwardBacktest:
         excluded rather than silently measured on an unadjusted series.
         Legacy files predating the flag (single `close` column, no alias)
         fall back to the raw close, same as before.
-        """
-        at_or_before = price[price["date"] <= truncation_date]
-        after = price[price["date"] > truncation_date]
-        if at_or_before.empty or after.empty:
-            return None, {"reason": "no price on both sides of the truncation date"}
 
+        **Rows with no value in the chosen column are dropped before the
+        endpoints are picked.** The source publishes the most recent bar's raw
+        close before its adjusted one, so a series fetched today routinely ends
+        in a single NaN `adj_close`. Reading the last row unconditionally turns
+        that into a NaN return — and it stayed invisible while the tickers it
+        affects had no adjusted series at all and fell back to `close`. The
+        corpus refetch gave all 22 an adjusted series and five of them promptly
+        produced NaN realized returns, which is how this surfaced.
+        """
         if "adj_close" in price.columns and "adj_close_is_estimated" in price.columns:
             if bool(price["adj_close_is_estimated"].iloc[-1]):
                 return None, {
@@ -223,6 +227,13 @@ class WalkForwardBacktest:
                 }
 
         column = "adj_close" if "adj_close" in price.columns else "close"
+        priced = price[pd.to_numeric(price[column], errors="coerce").notna()]
+
+        at_or_before = priced[priced["date"] <= truncation_date]
+        after = priced[priced["date"] > truncation_date]
+        if at_or_before.empty or after.empty:
+            return None, {"reason": "no price on both sides of the truncation date"}
+
         start_row, end_row = at_or_before.iloc[-1], after.iloc[-1]
         start, end = float(start_row[column]), float(end_row[column])
         days = (end_row["date"] - start_row["date"]).days
