@@ -310,6 +310,7 @@ class WatchlistManager(_JsonStore):
         evidence: str = "",
         applied_by: str = APPLIED_AUTO,
         details: dict | None = None,
+        at: str | None = None,
     ) -> dict:
         """Move a company to a new state, recording why.
 
@@ -329,6 +330,20 @@ class WatchlistManager(_JsonStore):
         exactly the record it wrote before and a stored history is unchanged.
         Readers ask with `.get("details")` and get None either way.
 
+        `at` is the same seam, for the same reason (Phase 4's strategy
+        simulator, KTD1/KTD7). Every production caller runs in real time, where
+        "the moment this transition happened" and "now" are the same instant,
+        so `_now()` was never a parameter — but a *replay* moves a company
+        through this exact machinery on a historical `as_of` that is never
+        "now", and `since_state_entry` (`lifecycle/evaluator.py`) and every
+        holding-period reading in `lifecycle/friction.py` read this field back
+        as the transition's own date. Left at the default, every transition a
+        replay writes would be stamped with the date the *code ran*, not the
+        date being replayed — `(as_of - entered).days` would come out negative
+        for a past replay date and a time-stop trigger would never be able to
+        fire. `None` (every existing caller, unchanged) still resolves to
+        `_now()`.
+
         The payload is deep-copied on the way in: the staged store is adopted as
         `self.data`, and a caller's dict left wired into it would let a later
         mutation of that dict silently edit an append-only record.
@@ -343,7 +358,7 @@ class WatchlistManager(_JsonStore):
             )
 
         record = {
-            "at": _now(),
+            "at": at or _now(),
             "from": entry["state"],
             "to": to_state,
             "trigger_id": trigger_id,

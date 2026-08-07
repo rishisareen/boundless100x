@@ -218,6 +218,99 @@ def backtest(
     console.print(f"[green]Report written to {out / 'backtest.json'}[/green]")
 
 
+def _coerce_cli_value(raw: str):
+    """A `--set key=value` value, type-coerced from the string the shell
+    handed us.
+
+    `simulate(config, overrides)`'s dot-path values reach real config
+    consumers — a trading-day lag becomes an argument to
+    `pandas.bdate_range(periods=n+1)`, a cap becomes an argument compared
+    with `>` against a count — so `"0"` must become the int `0`, not the
+    string `"0"` (which is truthy and not an int, and would raise or
+    silently misbehave three frames downstream rather than at the CLI
+    boundary where the mistake is easiest to see). Bool before int/float,
+    because `int("true")` raises and `"true"` should not fall through to a
+    string; int before float, so `"5"` stays exactly `5` rather than
+    becoming `5.0`. Anything that coerces to neither is left as the string
+    it arrived as — a lane name, a posture, a trigger id.
+    """
+    lowered = raw.strip().lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+@app.command()
+def simulate(
+    tickers: str = typer.Option(
+        None, help="Comma-separated NSE symbols to restrict the replay to"
+    ),
+    start: str = typer.Option(None, help="Replay window start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, help="Replay window end date (YYYY-MM-DD)"),
+    set_overrides: list[str] = typer.Option(
+        None, "--set",
+        help="Override a config value: dotted.path.to.key=value (repeatable)",
+    ),
+    output_dir: str = typer.Option(
+        str(Path(__file__).parent / "output" / "simulations"),
+        help="Where to write the report",
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Replay the production lifecycle rules over the corpus's own history.
+
+    Truncates every active ticker to each replay date, scores and evaluates
+    it through the same production evaluators `watchlist advance` uses, and
+    hands money-moving proposals to a simulated owner (`config.yaml`'s
+    `simulator:` block) rather than a person — see
+    `docs/plans/2026-08-07-007-feat-phase4-strategy-simulator-plan.md`.
+    """
+    setup_logging(verbose)
+
+    from datetime import date
+
+    from boundless100x.simulator import outputs as outputs_module
+    from boundless100x.simulator import simulate as run_simulation
+
+    overrides = {}
+    for item in set_overrides or []:
+        if "=" not in item:
+            console.print(f"[red]--set {item!r} is not key=value — skipped[/red]")
+            continue
+        key, _, raw_value = item.partition("=")
+        overrides[key.strip()] = _coerce_cli_value(raw_value.strip())
+
+    ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+
+    console.print("\n[bold blue]Strategy simulator[/bold blue]\n")
+    result = run_simulation(
+        None, overrides or None, tickers=ticker_list, start=start, end=end,
+    )
+
+    console.print(outputs_module.render_summary(result))
+
+    if result.get("errors"):
+        console.print(f"\n[bold yellow]Errors ({len(result['errors'])}):[/bold yellow]")
+        for entry in result["errors"][:10]:
+            console.print(
+                f"  [yellow]! {entry.get('ticker')} ({entry.get('date')}): "
+                f"{entry.get('error')}[/yellow]"
+            )
+
+    out = Path(output_dir) / date.today().strftime("%Y%m%d")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "simulation.json").write_text(json.dumps(result, indent=2, default=str))
+    console.print(f"\n[green]Report written to {out / 'simulation.json'}[/green]")
+
+
 @app.command()
 def screen(
     tickers: str = typer.Argument(help="Comma-separated NSE symbols to screen"),

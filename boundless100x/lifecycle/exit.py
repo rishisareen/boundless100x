@@ -323,7 +323,16 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
     # ── step 3: the transition, second ──
     # The same payload reaches both stores, and `details` is what makes that
     # possible: the prose says it, the structured field is what a report reads
-    # back apart.
+    # back apart. `at=exit_date` for the same reason `record_exit` above takes
+    # it explicitly: `exit_date` is the sale's own date (the owner's `as_of`,
+    # or the adopted event's original date on a retry), not the moment this
+    # command happens to run. In real-time use the two are the same instant
+    # (`as_of` defaults to `date.today()`), so this changes nothing for a
+    # live `watchlist exit` — but a caller passing a genuinely historical
+    # `as_of` (Phase 4's replay) would otherwise have every `EXITED`
+    # transition stamped with wall-clock time instead of the date being
+    # replayed, silently breaking `since_state_entry` and every holding-period
+    # reading downstream of it (`lifecycle/friction.py`).
     record = watchlist.transition(
         ticker,
         lifecycle_states.EXITED,
@@ -331,6 +340,7 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
         evidence=evidence,
         details=friction,
         applied_by=APPLIED_OWNER,
+        at=exit_date,
     )
 
     # ── step 4: the completion stamp, last ──
