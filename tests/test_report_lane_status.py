@@ -56,18 +56,49 @@ GATE_LABELS = (
     "Institutional accumulation", "Catalyst identified", "Liquidity floor",
 )
 
-_CHART = re.compile(r'(<div class="chart-container">).*')
+_CHART = re.compile(r'(<div class="chart-container">)(.*)')
 _STAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
+
+# What a container normalises to. Two placeholders, not one — see `_placeholder`.
+CHART_RENDERED = "[chart]"
+CHART_EMPTY = "[empty chart]"
+
+# The opening tag itself, so a test counting containers and the regex matching
+# them cannot drift into disagreeing about what one looks like.
+CONTAINER = '<div class="chart-container">'
+
+
+def _placeholder(match: re.Match) -> str:
+    """Replace a chart payload, **recording whether there was one**.
+
+    The earlier form rewrote the whole match to `\\1[chart]</div>`, which meant
+    the `.*` swallowed the closing tag too: a full Plotly payload and a bare
+    `<div class="chart-container"></div>` normalised to the *same* string.
+    Every chart builder returns `""` on failure, so a data-contract change that
+    made all seven charts silently stop rendering would have left this golden
+    green — the one thing a golden is for.
+
+    Still greedy to end of line, because a Plotly payload contains its own
+    `</div>` and stopping at the first one would leave the trailing script in
+    the comparison, where its fresh uuid differs every run. Emptiness is
+    decided by stripping the container's own closing tag off the end and
+    looking at what is left.
+    """
+    body = match.group(2)
+    inner = body[:-len("</div>")] if body.endswith("</div>") else body
+    marker = CHART_RENDERED if inner.strip() else CHART_EMPTY
+    return f"{match.group(1)}{marker}</div>"
 
 
 def normalise(text: str) -> str:
     """Strip the two things that differ between two identical runs.
 
     Plotly stamps a fresh uuid on every chart div, so the chart payloads are
-    replaced wholesale rather than compared; a chart appearing or disappearing
-    still shows up, because the placeholder is emitted per container.
+    replaced rather than compared — but *whether a chart rendered at all* is
+    not a run-to-run difference, and is preserved. A chart appearing,
+    disappearing, or quietly failing to build all change the normalised text.
     """
-    return _STAMP.sub("<generated>", _CHART.sub(r"\1[chart]</div>", text))
+    return _STAMP.sub("<generated>", _CHART.sub(_placeholder, text))
 
 
 def gate(label, passed, reason):
@@ -438,6 +469,80 @@ class TestRendering:
             body = lane_body(output)
             assert "spent" in body.lower()
             assert "overdue" not in body.lower()
+
+
+class TestTheGoldenSeesChartsStopRendering:
+    """What actually protects the golden from silently losing every chart.
+
+    A residual finding held that it did not: `_CHART` rewrote a container line
+    to `[chart]</div>` whether or not anything was inside, so — the argument
+    went — every chart builder returning `""` would leave the golden green.
+
+    **The conclusion was wrong, and this class is why.** The template guards
+    every container with `{% if chart %}`, so an empty chart removes the
+    container *and its card* rather than rendering an empty one: the count
+    drops from three to one, which the comparison sees whichever normaliser is
+    used. Verified against the real generator before the normaliser was
+    touched.
+
+    The observation behind the finding was still correct — the two cases did
+    normalise identically — and that conflation is closed here, because it is
+    one `{% if %}` away from mattering. Both facts get a test, so neither is
+    rediscovered as a surprise.
+    """
+
+    def dashboard(self, tmp_path, dead_charts=False, monkeypatch=None):
+        if dead_charts:
+            for builder in ("_roce_trend_chart", "_pe_band_chart",
+                            "_growth_chart", "_cashflow_quality_chart"):
+                monkeypatch.setattr(
+                    ReportGenerator, builder, lambda self, *a, **k: ""
+                )
+        generator = ReportGenerator(output_dir=str(tmp_path))
+        report_dir = Path(generator.generate(make_result("TEST"), formats=["html"]))
+        return (report_dir / "TEST_dashboard.html").read_text()
+
+    def test_dead_charts_change_the_normalised_report(self, tmp_path, monkeypatch):
+        """The property the golden actually needs, asserted end to end against
+        the real generator rather than against a hand-written fragment."""
+        healthy = normalise(self.dashboard(tmp_path / "a"))
+        dead = normalise(self.dashboard(tmp_path / "b", True, monkeypatch))
+
+        assert healthy != dead
+
+    def test_it_is_the_container_count_that_falls(self, tmp_path, monkeypatch):
+        """Naming the mechanism, because the finding assumed a different one.
+        An empty chart does not render an empty container — the template's
+        `{% if %}` removes the container entirely."""
+        healthy = self.dashboard(tmp_path / "a")
+        dead = self.dashboard(tmp_path / "b", True, monkeypatch)
+
+        assert healthy.count(CONTAINER) > dead.count(CONTAINER)
+
+    def test_an_empty_container_would_not_be_mistaken_for_a_full_one(self):
+        """The latent conflation, closed. Nothing emits an empty container
+        today; one removed `{% if %}` would, and the golden must not read it as
+        a chart that rendered."""
+        full = (
+            f'  {CONTAINER}<div id="abc" class="plotly-graph-div">x</div>'
+            f'<script>Plotly.newPlot("abc")</script></div>'
+        )
+        empty = f"  {CONTAINER}</div>"
+
+        assert normalise(full) != normalise(empty)
+        assert CHART_RENDERED in normalise(full)
+        assert CHART_EMPTY in normalise(empty)
+
+    def test_a_rendered_chart_still_normalises_away_its_uuid(self):
+        """The reason any of this is normalised: Plotly stamps a fresh uuid
+        every run, and two identical runs must compare equal."""
+        def chart(uuid):
+            return (
+                f'  {CONTAINER}<div id="{uuid}" class="plotly-graph-div"></div>'
+                f'<script>Plotly.newPlot("{uuid}")</script></div>'
+            )
+
+        assert normalise(chart("aaa-111")) == normalise(chart("bbb-222"))
 
 
 class TestUntrackedReportsAreUnchanged:

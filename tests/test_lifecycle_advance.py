@@ -1298,3 +1298,251 @@ class TestDecayOutOfWatch:
         assert outcome["proposal"]["applied"] is True
         assert outcome["proposal"]["needs_confirmation"] is False
         assert wm.get("ASTRAL")["state_history"][-1]["applied_by"] == "auto"
+
+
+class TestTheRunsResolutionsAreAllLiveAtOnce:
+    """Three interactions that `advance()` composes and no test exercised.
+
+    Every routing test injects an evaluator, which short-circuits pace
+    resolution outright; every pace test passes no queue. So the two run-level
+    resolutions were each covered alone and never together — and they are not
+    independent: a tightened pace threshold withholds a `→ probe` proposal,
+    and whether a candidate's entry trigger fired is the *first* key the
+    routing ranking sorts on.
+
+    Nothing here injects an evaluator, so the real pace path runs.
+    """
+
+    def spread(self, median, contributors=12) -> dict:
+        """A corpus reading, in the shape `pace.corpus_spread` returns.
+
+        Defined here rather than imported from `test_pace_modulator`, which
+        already imports from this module — the dependency would be a cycle
+        between two test files, which is a worse problem than five duplicated
+        lines.
+        """
+        return {
+            "median_pp": median,
+            "contributors": contributors,
+            "tickers": [f"T{i}" for i in range(contributors)],
+        }
+
+    def buyable(self) -> dict:
+        """Metrics that clear the shipped entry bar but not a tightened one."""
+        metrics = healthy_metrics()
+        metrics["pe_vs_historical"] = metric(55.0)
+        metrics["trailing_peg"] = metric(1.8)
+        return metrics
+
+    def watching(self, wm, *tickers):
+        for ticker in tickers:
+            wm.add(ticker)
+            wm.transition(ticker, "watch", "seed")
+
+    def queue_with_proceeds(self, tmp_path, wm):
+        """A queue holding one completed, unrouted exit — so routing has
+        capital to place and produces a proposal rather than `NO_PROCEEDS`."""
+        from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
+
+        queue = ReinvestmentQueue(path=str(tmp_path / "queue.json"))
+        wm.add("SOLD")
+        wm.transition("SOLD", "probe", "seed", applied_by="owner")
+        wm.transition("SOLD", "exit_review", "roiic_below_cost_of_capital")
+        transition = wm.transition("SOLD", "exited",
+                                   "roiic_below_cost_of_capital",
+                                   applied_by="owner")
+        event = queue.record_exit(
+            ticker="SOLD", lane="core", trigger_id="roiic_below_cost_of_capital",
+            friction={"available": False, "reason": "no probe"},
+            at="2026-08-01", exit_id="SOLD:2026-08-01",
+        )
+        queue.record_confirmation(event["exit_id"], at=transition["at"])
+        return queue
+
+    def routing_of(self, result) -> dict:
+        return result["routing"]
+
+    # ── pace × routing ──
+
+    def mixed_service(self):
+        """Two candidates that respond differently to a tightened bar.
+
+        Per ticker, because the interaction is invisible otherwise: with one
+        metric set both candidates fire together, the ranking falls to its
+        alphabetical last resort, and a test asserting the winner would pass
+        whatever the pace did.
+
+        `ASTRAL` clears the shipped entry bar (P/E ≤ 60, PEG ≤ 2.0) and not a
+        tightened one. `ZENSAR` clears both. Alphabetically ASTRAL leads, so a
+        flip to ZENSAR can only have come from the pace.
+        """
+        cheap, dear = healthy_metrics(), healthy_metrics()
+        dear["pe_vs_historical"], dear["trailing_peg"] = metric(55.0), metric(1.8)
+        cheap["pe_vs_historical"], cheap["trailing_peg"] = metric(30.0), metric(1.0)
+        by_ticker = {"ASTRAL": dear, "ZENSAR": cheap}
+
+        class PerTicker(StubService):
+            def analyze(self, ticker, **kwargs):
+                self._metrics = by_ticker.get(ticker, healthy_metrics())
+                return super().analyze(ticker, **kwargs)
+
+        return PerTicker()
+
+    def test_a_wide_spread_ranks_the_alphabetically_first_of_two_that_both_fire(
+        self, wm, tmp_path
+    ):
+        """The baseline the next test flips. Both entry triggers fire, both
+        composites are equal, so the ranking reaches its last key — the
+        ticker — and ASTRAL leads."""
+        self.watching(wm, "ASTRAL", "ZENSAR")
+        queue = self.queue_with_proceeds(tmp_path, wm)
+
+        wide = advance(self.mixed_service(), wm, queue=queue,
+                       pace_reading=self.spread(median=3.0))
+
+        assert wide["pace"]["applied"] is False
+        assert self.routing_of(wide)["ranked"] == ["ASTRAL", "ZENSAR"]
+        assert self.routing_of(wide)["proposal"]["entry_trigger_fired"] is True
+
+    def test_a_tightened_pace_changes_which_candidate_routing_ranks_first(
+        self, wm, tmp_path
+    ):
+        """The interaction neither suite could see.
+
+        Compressed, ASTRAL no longer clears the entry bar and its proposal is
+        withheld; ZENSAR still clears it. Whether an entry trigger fired is the
+        *first* key the routing ranking sorts on, so the leader flips — against
+        the alphabetical order that decided it a moment ago, which is what says
+        the pace caused it.
+        """
+        self.watching(wm, "ASTRAL", "ZENSAR")
+        queue = self.queue_with_proceeds(tmp_path, wm)
+
+        tight = advance(self.mixed_service(), wm, queue=queue,
+                        pace_reading=self.spread(median=-4.0))
+
+        assert tight["pace"]["applied"] is True
+        assert self.routing_of(tight)["ranked"] == ["ZENSAR", "ASTRAL"]
+        assert self.routing_of(tight)["proposal"]["ticker"] == "ZENSAR"
+
+    def test_the_withheld_candidate_is_still_ranked_just_lower(
+        self, wm, tmp_path
+    ):
+        """A tightened entry bar is not a disqualification. ASTRAL is still a
+        `watch` entry that could receive proceeds — it simply has no fired
+        trigger arguing for it — so it stays in the ranking rather than
+        vanishing from it or being reported as blocked."""
+        self.watching(wm, "ASTRAL", "ZENSAR")
+        queue = self.queue_with_proceeds(tmp_path, wm)
+
+        tight = advance(self.mixed_service(), wm, queue=queue,
+                        pace_reading=self.spread(median=-4.0))
+
+        assert "ASTRAL" in self.routing_of(tight)["ranked"]
+        assert [b["ticker"] for b in self.routing_of(tight)["blocked"]] == []
+
+    # ── apply × routing ──
+
+    def test_a_candidate_bought_during_the_run_leaves_the_routing_pool(
+        self, wm, tmp_path
+    ):
+        """`advance(apply=True)` with a queue, which nothing drove before.
+
+        The run buys the very candidate the router would have proposed. By the
+        time `propose_routing` reads the live watchlist the company sits in
+        `probe`, which is outside `CANDIDATE_STATES` — so it must not be
+        offered as somewhere to put more capital, and it is not reported as
+        *blocked* either, since nothing about it needs unblocking.
+        """
+        self.watching(wm, "ASTRAL")
+        queue = self.queue_with_proceeds(tmp_path, wm)
+
+        result = advance(StubService(), wm, apply=True, queue=queue,
+                         pace_reading=self.spread(median=3.0))
+
+        assert wm.get("ASTRAL")["state"] == "probe"
+        routing = self.routing_of(result)
+        assert routing["ranked"] == []
+        assert [b["ticker"] for b in routing["blocked"]] == []
+
+    def test_the_snapshot_still_persists_on_an_applying_run(self, wm, tmp_path):
+        """An applying run is a full run, so its view is the canonical one."""
+        self.watching(wm, "ASTRAL")
+        queue = self.queue_with_proceeds(tmp_path, wm)
+
+        result = advance(StubService(), wm, apply=True, queue=queue,
+                         pace_reading=self.spread(median=3.0))
+
+        assert self.routing_of(result)["persisted"] is True
+        assert queue.latest_proposal() is not None
+
+    def test_an_applying_run_that_buys_the_last_candidate_says_why_it_names_none(
+        self, wm, tmp_path
+    ):
+        """Not silence: an empty pipeline and a pipeline the run just emptied
+        read identically otherwise."""
+        self.watching(wm, "ASTRAL")
+        queue = self.queue_with_proceeds(tmp_path, wm)
+
+        result = advance(StubService(), wm, apply=True, queue=queue,
+                         pace_reading=self.spread(median=3.0))
+
+        assert self.routing_of(result)["reason"]
+
+    # ── the degraded result the real service returns ──
+
+    def test_advance_ticker_survives_the_empty_result_a_failed_fetch_produces(
+        self, wm, evaluator
+    ):
+        """`service.analyze` catches its own exceptions and returns a result
+        with empty scores; every stub in this file raises instead. So the shape
+        production actually produces on a fetch failure had never reached
+        `advance_ticker` — and it is the shape most likely to break it, because
+        every downstream reader is handed `{}` rather than an exception to
+        propagate.
+        """
+        wm.add("ASTRAL")
+
+        class Degraded(StubService):
+            def analyze(self, ticker, **kwargs):
+                return AnalysisResult(ticker=ticker)
+
+        outcome = run(Degraded(), wm, evaluator)
+
+        assert outcome["composite"] is None
+        assert outcome["verdict"] == "indeterminate"
+        assert outcome["proposal"] is None
+
+    def test_the_degraded_result_blocks_routing_rather_than_passing_it(
+        self, wm, evaluator
+    ):
+        """Fail-closed on the path that matters: no eligibility reading means
+        no capital, and an empty result must not read as a clear one."""
+        wm.add("ASTRAL")
+
+        class Degraded(StubService):
+            def analyze(self, ticker, **kwargs):
+                return AnalysisResult(ticker=ticker)
+
+        outcome = run(Degraded(), wm, evaluator)
+
+        assert outcome["routing_safety"]["clear"] is False
+        assert outcome["routing_safety"]["reasons"]
+
+    def test_a_degraded_ticker_does_not_stop_the_rest_of_the_run(self, wm):
+        """It is not an error — `analyze` returned — so it must flow through
+        the loop as an ordinary outcome rather than land in `errors`."""
+        wm.add("ASTRAL")
+        wm.add("ZENSAR")
+
+        class Degraded(StubService):
+            def analyze(self, ticker, **kwargs):
+                if ticker == "ASTRAL":
+                    return AnalysisResult(ticker=ticker)
+                return super().analyze(ticker, **kwargs)
+
+        result = advance(Degraded(), wm, pace_reading=self.spread(median=3.0))
+
+        assert result["errors"] == []
+        assert {o["ticker"] for o in result["outcomes"]} == {"ASTRAL", "ZENSAR"}
+        assert wm.get("ZENSAR")["state"] == "qualify"

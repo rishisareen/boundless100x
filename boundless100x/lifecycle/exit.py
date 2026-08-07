@@ -80,7 +80,7 @@ from datetime import date
 from boundless100x.lifecycle import friction as friction_module
 from boundless100x.lifecycle import reinvestment
 from boundless100x.lifecycle import states as lifecycle_states
-from boundless100x.watchlist import APPLIED_OWNER
+from boundless100x.lifecycle.states import APPLIED_OWNER
 
 logger = logging.getLogger(__name__)
 

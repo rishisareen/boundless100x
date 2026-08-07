@@ -930,3 +930,103 @@ class TestTheCatalystIsReadable:
 
         assert row["catalyst"] == "Plant commissioned"
         assert row["catalyst_status"] == "spent"
+
+
+class TestTheStoreMechanicsAreALeaf:
+    """The dependency edge this extraction exists to remove, asserted.
+
+    `reinvestment.py` used to import `_JsonStore` and `_revision_of` from
+    `watchlist.py` — underscore-private names crossing a package boundary,
+    which is a note to the reader saying "do not depend on this" written beside
+    code that does. Five other lifecycle modules reached back for lane names,
+    `applied_by` values and catalyst statuses, so `boundless100x.watchlist` and
+    the `boundless100x.lifecycle` package were mutually dependent, latent only
+    because `lifecycle/__init__.py` happens to be a bare docstring.
+
+    Two moves fixed it, and both are checked here rather than left to hold by
+    habit. The commit mechanics went to `boundless100x/json_store.py`, a leaf
+    that imports nothing from this project. The lifecycle *vocabulary* went to
+    `lifecycle/states.py`, which is where its meaning always was — the
+    watchlist merely persists it.
+    """
+
+    def source_root(self):
+        """The installed package's own directory, not the working directory.
+
+        Read off `boundless100x.__file__` so the check works from anywhere the
+        suite is run — a relative path would quietly find nothing and pass.
+        """
+        import pathlib
+
+        import boundless100x
+
+        return pathlib.Path(boundless100x.__file__).parent
+
+    def imports_of(self, path) -> set[str]:
+        import ast
+
+        tree = ast.parse(path.read_text())
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module)
+            elif isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+        return found
+
+    def test_no_lifecycle_module_imports_the_watchlist(self):
+        """The edge itself. A single re-added import here recreates the cycle,
+        and it would stay invisible for exactly as long as
+        `lifecycle/__init__.py` stays empty."""
+        package = self.source_root() / "lifecycle"
+        assert list(package.glob("*.py")), "found no lifecycle modules to check"
+        offenders = {
+            path.name: sorted(
+                m for m in self.imports_of(path)
+                if m.startswith("boundless100x.watchlist")
+            )
+            for path in sorted(package.glob("*.py"))
+        }
+
+        assert {name: mods for name, mods in offenders.items() if mods} == {}
+
+    def test_the_store_module_depends_on_nothing_in_this_project(self):
+        """A leaf, in the `forward_growth_schema.py` sense: importable from any
+        layer without dragging one in behind it."""
+        project = [
+            m for m in self.imports_of(self.source_root() / "json_store.py")
+            if m.startswith("boundless100x")
+        ]
+
+        assert project == []
+
+    def test_both_stores_still_share_one_implementation(self):
+        """The extraction must not have become duplication — the whole reason
+        the mechanics are shared is that `snapshot_state` compares *both*
+        stores' counters, and two clamping rules could disagree."""
+        from boundless100x import json_store
+        from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
+
+        assert issubclass(WatchlistManager, json_store.JsonStore)
+        assert issubclass(ReinvestmentQueue, json_store.JsonStore)
+
+    def test_the_watchlist_still_publishes_the_names_it_published(self):
+        """Re-exported rather than moved out from under callers. `cli.py`,
+        `report_generator.py` and the tests import these from here, and a
+        caller that does is not wrong about where they mean something."""
+        from boundless100x import watchlist as module
+        from boundless100x.lifecycle import states
+
+        for name in ("CORE_LANE", "RERATING_LANE", "LANES", "APPLIED_AUTO",
+                     "APPLIED_OWNER", "CATALYST_ACTIVE", "CATALYST_SPENT",
+                     "CATALYST_STATUSES"):
+            assert getattr(module, name) is getattr(states, name), name
+
+    def test_the_conflict_error_is_one_type_not_two(self):
+        """A re-export by class statement would make a second, narrower type,
+        and every `except watchlist.StoreConflictError` would then miss the one
+        `_commit` actually raises."""
+        from boundless100x import json_store
+        from boundless100x import watchlist as module
+
+        assert module.StoreConflictError is json_store.StoreConflictError

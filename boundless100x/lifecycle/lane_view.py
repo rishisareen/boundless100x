@@ -42,7 +42,7 @@ from datetime import date, datetime
 from boundless100x.lifecycle import friction as friction_module
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.lane_gates import LaneGateEvaluator
-from boundless100x.watchlist import CATALYST_ACTIVE, RERATING_LANE
+from boundless100x.lifecycle.states import CATALYST_ACTIVE, RERATING_LANE
 
 logger = logging.getLogger(__name__)
 

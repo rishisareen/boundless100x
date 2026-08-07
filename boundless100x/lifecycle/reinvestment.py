@@ -51,8 +51,8 @@ deployment late does not inflate the window it closes. Collapsing them into one
 field would make lateness in the *recording* look like lateness in the
 *deployment*.
 
-**Every commit is copy-on-write, and the mechanics come from `watchlist.py`.**
-`ReinvestmentQueue` extends `watchlist._JsonStore` rather than restating the
+**Every commit is copy-on-write, and the mechanics are shared.**
+`ReinvestmentQueue` extends `json_store.JsonStore` rather than restating the
 staging, the atomic write and the revision counter — the durability argument is
 per-file and identical wherever it applies, and two copies would be two things
 to keep in step. The counter makes that concrete: `snapshot_state` compares
@@ -142,7 +142,8 @@ from pathlib import Path
 
 from boundless100x.lifecycle import portfolio
 from boundless100x.lifecycle import states as lifecycle_states
-from boundless100x.watchlist import APPLIED_OWNER, _JsonStore, _revision_of
+from boundless100x.json_store import JsonStore, revision_of
+from boundless100x.lifecycle.states import APPLIED_OWNER
 
 logger = logging.getLogger(__name__)
 
@@ -570,7 +571,7 @@ def _candidate_payload(outcome: dict, entry: dict, fired: dict | None) -> dict:
     }
 
 
-class ReinvestmentQueue(_JsonStore):
+class ReinvestmentQueue(JsonStore):
     """Reads and writes the exit / routing event log.
 
     A sibling store, not a second watchlist: its own file, its own schema, its
@@ -619,7 +620,7 @@ class ReinvestmentQueue(_JsonStore):
         return {
             "events": events,
             "latest_proposal": proposal,
-            "revision": _revision_of(data),
+            "revision": revision_of(data),
             "schema_version": stored_version,
         }
 
@@ -1175,7 +1176,7 @@ class ReinvestmentQueue(_JsonStore):
         """
         staged = self._stage()
         stored = copy.deepcopy(snapshot)
-        stored["queue_revision"] = _revision_of(self.data) + 1
+        stored["queue_revision"] = revision_of(self.data) + 1
         staged["latest_proposal"] = stored
         self._commit(staged)
         logger.info(

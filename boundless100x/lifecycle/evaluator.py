@@ -31,7 +31,7 @@ import yaml
 from boundless100x.compute_engine.eligibility import COMPARATORS, _format_threshold
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.lane_gates import LANE_VERDICTS
-from boundless100x.watchlist import CATALYST_STATUSES, LANES
+from boundless100x.lifecycle.states import CATALYST_STATUSES, LANES
 
 logger = logging.getLogger(__name__)
 

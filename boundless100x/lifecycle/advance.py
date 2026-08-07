@@ -84,7 +84,7 @@ from boundless100x.lifecycle.lane_gates import (
     QUALIFIES,
     LaneGateEvaluator,
 )
-from boundless100x.watchlist import (
+from boundless100x.lifecycle.states import (
     APPLIED_AUTO,
     APPLIED_OWNER,
     CORE_LANE,

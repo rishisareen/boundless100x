@@ -146,8 +146,17 @@ survived triage.
   Lane & Friction surface is cleanly banner-delimited, so it does not read as a
   regression, but the next report section has no seam to land at.
 
-- **The two stores' shared base is underscore-private across a module
-  boundary.** `reinvestment.py` imports `_JsonStore` and `_revision_of` from
+- **~~The two stores' shared base is underscore-private across a module
+  boundary.~~** **Fixed** (Tranche 4): the commit mechanics moved to
+  `boundless100x/json_store.py`, a leaf importing nothing from this project,
+  with public names. The lifecycle *vocabulary* the other five modules reached
+  back for — lanes, `applied_by`, catalyst statuses — moved to
+  `lifecycle/states.py`, where its meaning always was; `watchlist.py`
+  re-exports every name it published. No lifecycle module imports the
+  watchlist now, and a test walks the package's ASTs to keep it that way. The
+  original follows.
+
+  `reinvestment.py` imports `reinvestment.py` imports `_JsonStore` and `_revision_of` from
   `watchlist.py`. The coupling is deliberate and documented, but it also makes
   `boundless100x.watchlist` and the `boundless100x.lifecycle` package mutually
   dependent — latent only because `lifecycle/__init__.py` is a bare docstring.
@@ -221,7 +230,19 @@ survived triage.
 
 ## Testing
 
-- **Golden normalisation renders an empty chart identically to a full one.**
+- **~~Golden normalisation renders an empty chart identically to a full one.~~**
+  **Partly fixed, and the finding's conclusion was wrong** (Tranche 4). The
+  observation was right: `_CHART` did conflate the two. The conclusion — that
+  every chart silently failing would leave the golden green — is false, and
+  was checked against the real generator before the normaliser was touched.
+  The template guards each container with `{% if chart %}`, so an empty chart
+  removes the container *and its card* rather than rendering an empty one: the
+  count falls from three to one, which the comparison catches under either
+  normaliser. The conflation is closed anyway, since it is one removed `{% if
+  %}` away from mattering, and both facts now have tests. The original
+  follows.
+
+  `_CHART` replaces
   `_CHART` replaces everything from the container div to end of line, so a
   Plotly payload and `<div class="chart-container"></div>` both normalise to
   the same placeholder. Every chart builder returns `""` on failure, so a data
@@ -234,17 +255,35 @@ survived triage.
   crash window has its own class in `test_confirm_exit.py`, and the removal
   refusal is tested at the CLI where it lives.
 
-- **`advance()`'s per-run resolutions are never all live in one call.** Every
+- **~~`advance()`'s per-run resolutions are never all live in one call.~~**
+  **Fixed** (Tranche 4): `TestTheRunsResolutionsAreAllLiveAtOnce` drives pace
+  and routing together with no injected evaluator, and shows a tightened
+  spread flipping which candidate the router ranks first — against the
+  alphabetical order that decided it at a wide spread, which is what says the
+  pace caused it. The original follows.
+
+  Every Every
   routing test injects an evaluator (which short-circuits pace), and every pace
   test passes no queue. A tightened pace threshold withholds a `→ probe`
   proposal, which changes the routing ranking — that interaction is uncovered.
 
-- **No test drives `advance(apply=True)` with a queue**, so the case where a
+- **~~No test drives `advance(apply=True)` with a queue~~** — **fixed**
+  (Tranche 4): the run buys the candidate the router would have proposed, and
+  the assertions are that it leaves `CANDIDATE_STATES`, is not reported as
+  blocked, and the snapshot still persists. The original follows.
+
+  Nothing drove it, so the case where a
   candidate is bought into `probe` during the run and therefore leaves
   `CANDIDATE_STATES` before routing ranks it is uncovered.
 
-- **`advance_ticker` is never run against the degraded result the real service
-  produces on a fetch failure** — `service.analyze` catches its own exceptions
+- **~~`advance_ticker` is never run against the degraded result the real
+  service produces on a fetch failure~~** — **fixed** (Tranche 4): three tests
+  drive the empty-scores result `analyze` actually returns, asserting it does
+  not raise, that routing safety fails closed on it, and that it flows through
+  the loop as an ordinary outcome rather than landing in `errors`. The
+  original follows.
+
+  It is never run against that result — `service.analyze` catches its own exceptions
   and returns empty scores rather than raising, while the test stub raises.
 
 ## Second-pass review (2026-08-07)

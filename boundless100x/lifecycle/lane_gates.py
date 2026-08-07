@@ -34,7 +34,7 @@ from pathlib import Path
 import yaml
 
 from boundless100x.compute_engine.eligibility import COMPARATORS, _format_threshold
-from boundless100x.watchlist import CATALYST_STATUSES
+from boundless100x.lifecycle.states import CATALYST_STATUSES
 
 logger = logging.getLogger(__name__)
 

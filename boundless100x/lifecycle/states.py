@@ -61,6 +61,40 @@ AUTO_APPLICABLE = frozenset({QUALIFY, WATCH, DROPPED})
 INITIAL = SCREEN
 
 
+# ── The rest of the lifecycle's vocabulary ──
+#
+# Lanes, who applied a transition, and the status of an owner-recorded
+# catalyst. All three were defined in `watchlist.py`, which is where the store
+# is rather than where the meaning is, and six lifecycle modules reached back
+# into it for them — making `boundless100x.watchlist` and this package mutually
+# dependent, latent only because `lifecycle/__init__.py` is a bare docstring.
+#
+# They are vocabulary, not storage. A lane is how a company is judged; an
+# `applied_by` is what a transition record means; a catalyst status is a
+# condition the evaluator reads. Every one of them is a fact about the
+# lifecycle that the watchlist merely happens to persist, so they belong beside
+# the states in the module every layer can already reach. `watchlist.py`
+# re-exports them, so the name it published still resolves.
+
+# §4.4's two lanes: the same state machine, two parameter sets.
+CORE_LANE = "core"
+RERATING_LANE = "rerating"
+LANES = (CORE_LANE, RERATING_LANE)
+
+# Who applied a transition. The distinction is load-bearing wherever money is
+# involved: `reinvestment.eligible_deployments` counts only owner-applied
+# `probe`/`scale` transitions, because an auto-applied one moves no capital.
+APPLIED_AUTO = "auto"
+APPLIED_OWNER = "owner"
+
+# The owner-recorded catalyst the fast lane gates entry on. `spent` rather than
+# deleted: a position whose catalyst was spent without the re-rating following
+# is exactly the case worth being able to see.
+CATALYST_ACTIVE = "active"
+CATALYST_SPENT = "spent"
+CATALYST_STATUSES = (CATALYST_ACTIVE, CATALYST_SPENT)
+
+
 def is_state(value: object) -> bool:
     return isinstance(value, str) and value in STATES
 
