@@ -144,6 +144,15 @@ def audit(raw_data_dir, manifest: dict) -> dict:
                 "directory": name, "kind": "annual_report_year_removed",
                 "detail": f"{year} annual report is no longer on disk",
             })
+        for year in entry["mdna_found_years"]["removed"]:
+            # A year whose MD&A stopped being detected is a loss even when the
+            # PDF is still there — it is a report-year the extraction pass can
+            # no longer read. Reporting the gain direction only would have made
+            # a detection regression look like no change at all.
+            regressions.append({
+                "directory": name, "kind": "mdna_found_year_lost",
+                "detail": f"{year} MD&A no longer detected as found",
+            })
 
     # A directory that vanished carries no after-state to roll up; it is
     # already in `regressions`, which is where it belongs.

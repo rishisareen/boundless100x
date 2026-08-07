@@ -64,7 +64,18 @@ changes which entries survive belongs in this number.
 #     the corpus states figures in and the vocabulary had no word for, so five
 #     genuinely-present readings were extracted in the nearest available unit
 #     and then correctly refused by grounding.
-SCHEMA_VERSION = 7
+# 8 — three validator tightenings from the code review, all of which change
+#     which entries survive: a rupee unit may no longer ground beside a foreign
+#     currency marker (version 6's scale-word path returned before ever reading
+#     what preceded the numeral, so "USD 500 million" grounded an `inr_mn`
+#     claim); `target_period` and `commissioning_year` are length-bounded like
+#     the optional free text they resemble, a 5,000-character period having
+#     reached the sidecar; and a non-string `section` or `metric` is dropped
+#     rather than raising out of the whole pass and discarding a paid call.
+#     Every one of these only ever *rejects* more, so entries cached under 7
+#     are a superset of what 8 accepts — which is exactly why they may not be
+#     served.
+SCHEMA_VERSION = 8
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like
@@ -224,11 +235,13 @@ def partition_by_unit(kind: str, entries) -> tuple[list, list]:
 # it, so a promise whose quantity is outside this set is not a promise this
 # system can check and is discarded rather than counted.
 #
-# `unit` is the unit the *filing* must already state the figure in — never a
-# conversion target. Nothing here converts currencies: an Indian filer quoting
-# a market in USD billion yields no entry, because a converted figure could not
-# be grounded in the sentence it came from and no FX rate exists in this
-# pipeline to check it against. Coverage lost, auditability kept.
+# `unit` here is the unit each guided quantity is *settled* in — the
+# denomination the accounts are kept in, not a conversion target. Nothing
+# anywhere in this schema converts. Since version 6 an entry carries its own
+# stated `unit` (see UNITS below), so an Indian filer quoting a market in USD
+# billion now yields a stored, grounded entry that whichever metric needs INR
+# comparability sets aside with the reason. Coverage recorded, auditability
+# kept — the earlier rule discarded the reading outright and hid the gap.
 #
 # `capex` settles against the magnitude of investing cash flow, which also
 # carries acquisitions and treasury investments — a capex promise settled in

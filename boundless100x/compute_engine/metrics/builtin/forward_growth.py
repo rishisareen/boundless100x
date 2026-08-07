@@ -201,7 +201,11 @@ def _delivered(frames: dict, metric: str, year: int) -> tuple[float | None, str]
 
     if spec.get("growth"):
         prior = _column_value(frame, labels, spec["column"], year - 1)
-        if prior is None or prior == 0:
+        if prior is None or prior <= 0:
+            # A percent change off a loss is not the growth anyone guided: with
+            # `abs(prior)`, a PAT going -100 -> -50 reads as +50% and would
+            # settle a 20%-growth promise as kept. Unsettleable is the honest
+            # answer for a non-positive base.
             return None, ""
         return (
             (current - prior) / abs(prior) * 100.0,
@@ -252,18 +256,11 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
     if not by_year:
         return MetricResult(error=reason)
 
-    if len(by_year) < min_years:
-        return MetricResult(
-            error=(
-                f"guidance from {len(by_year)} report year(s), needs {min_years} — "
-                f"one year of targets is a snapshot, not a credibility record"
-            )
-        )
-
     frames = _settling_frames(data)
     settled: list[dict] = []
     pending = discarded = not_a_promise = 0
     wrong_unit: set[str] = set()
+    checkable_years: set = set()
 
     for report_year in sorted(by_year):
         company_said = []
@@ -279,6 +276,8 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
         # credibility either way.
         checkable, set_aside = schema.partition_by_unit(schema.GUIDANCE, company_said)
         wrong_unit.update(set_aside)
+        if checkable:
+            checkable_years.add(report_year)
 
         for entry in checkable:
             target = entry.get("target_value")
@@ -319,6 +318,23 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
                 f"{discarded} unresolvable, {not_a_promise} about a market "
                 f"rather than the company{units}) — zero kept out of zero due "
                 f"is silence, not a credibility record"
+            )
+        )
+
+    # **The credibility gate counts years that carried checkable guidance.**
+    # Applied to the raw report years, a year holding nothing but market
+    # forecasts — or nothing but figures in a unit the accounts cannot settle —
+    # stood in for a year of guidance, so one company promise could satisfy
+    # "needs 2" and score a perfect 100. That is exactly the snapshot-versus-
+    # record confusion A5 exists to prevent. Pending promises still count here:
+    # a target that has not come due yet is guidance the company gave, and
+    # whether it settled is the denominator's question, not this one.
+    if len(checkable_years) < min_years:
+        return MetricResult(
+            error=(
+                f"checkable guidance from {len(checkable_years)} report year(s), "
+                f"needs {min_years} — one year of targets is a snapshot, not a "
+                f"credibility record"
             )
         )
 

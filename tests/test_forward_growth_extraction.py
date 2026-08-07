@@ -31,12 +31,23 @@ def submission(years=("2025",), sections=("mdna",)) -> dict:
 
 
 def guidance_entry(**overrides) -> dict:
+    """A valid guidance entry, with its unit derived from its metric.
+
+    Hardcoding `inr_cr` here made every percent-metric test submit an INR unit,
+    so tests named for the `pct` exemption actually exercised the unrelated
+    implicit-rupee path — removing `pct` from `_UNCHECKED_UNITS` left them
+    green. `promise()` in test_forward_growth_metrics.py already derives it;
+    this mirrors that.
+    """
+    metric = overrides.get("metric", "revenue")
     entry = {
-        "metric": "revenue",
+        "metric": metric,
         "target_value": 1500,
         "target_period": "FY2026",
         "subject": schema.SUBJECT_COMPANY,
-        "unit": schema.UNIT_INR_CR,
+        # Falls back for a deliberately-invalid metric, so a test probing
+        # the metric vocabulary is not rejected for its unit first.
+        "unit": schema.settling_unit(schema.GUIDANCE, metric) or schema.UNIT_INR_CR,
         "source_sentence": GUIDANCE_SENTENCE,
         "section": "mdna",
     }

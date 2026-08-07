@@ -97,6 +97,65 @@ class TestIsolation:
         assert by_ticker["VBL"]["status"] == "ok"
 
 
+class TestDegradedSources:
+    """`fetch_all` swallows a source failure into `source_status` and returns
+    normally, so the return value alone says nothing about what was refreshed."""
+
+    def test_a_run_where_every_source_failed_is_not_reported_as_ok(
+        self, corpus, tmp_path
+    ):
+        cache = CacheManager(cache_dir=str(tmp_path / "cache"))
+        suite = StubSuite(corpus, cache)
+        suite.fetch_all = lambda t, bse_code=None: {
+            "source_status": {"financials": "failed: Screener 500",
+                              "price": "failed: no data"}
+        }
+
+        report = run(suite, tmp_path)
+
+        assert {o["status"] for o in report["outcomes"]} == {"degraded"}
+
+    def test_a_degraded_ticker_is_retried_rather_than_skipped_on_resume(
+        self, corpus, tmp_path
+    ):
+        """The dangerous half: marked complete, a resume would never revisit it."""
+        cache = CacheManager(cache_dir=str(tmp_path / "cache"))
+        broken = StubSuite(corpus, cache)
+        broken.fetch_all = lambda t, bse_code=None: {
+            "source_status": {"financials": "failed: Screener 500"}
+        }
+        run(broken, tmp_path)
+
+        recovered = StubSuite(corpus, cache)
+        run(recovered, tmp_path)
+
+        assert recovered.calls == ["ASTRAL", "CDSL", "VBL"]
+
+    def test_a_partially_degraded_ticker_still_counts_as_degraded(
+        self, corpus, tmp_path
+    ):
+        cache = CacheManager(cache_dir=str(tmp_path / "cache"))
+        suite = StubSuite(corpus, cache)
+        suite.fetch_all = lambda t, bse_code=None: {
+            "source_status": {"financials": "ok", "price": "failed: timeout"}
+        }
+
+        report = run(suite, tmp_path)
+
+        assert report["outcomes"][0]["status"] == "degraded"
+
+
+class TestUnmatchedTickers:
+    def test_a_requested_ticker_that_is_not_cached_is_reported(self, suite, tmp_path):
+        """Refetching 1 of the 2 someone asked for must not look like success."""
+        report = run(suite, tmp_path, tickers=["VBL", "NOSUCHCO"])
+
+        assert suite.calls == ["VBL"]
+        reasons = {e["name"]: e["reason"] for e in report["skipped"]}
+        assert "NOSUCHCO" in reasons
+        assert "not a cached ticker" in reasons["NOSUCHCO"]
+
+
 class TestResume:
     def test_a_resumed_run_skips_tickers_the_log_records_as_complete(
         self, suite, tmp_path
@@ -120,6 +179,32 @@ class TestResume:
         run(recovered, tmp_path)
 
         assert recovered.calls == ["CDSL"]
+
+    def test_a_completed_run_does_not_suppress_a_later_refetch(
+        self, suite, tmp_path
+    ):
+        """The log resumes an interrupted pass; it is not a permanent record.
+
+        Unbounded, running `corpus refetch` again a month later skipped all 22
+        tickers and reported them resumed — the command silently no-opping on
+        its second use, which is the use it exists for.
+        """
+        run(suite, tmp_path)
+        suite.calls.clear()
+
+        run(suite, tmp_path, resume_within_hours=0)
+
+        assert suite.calls == ["ASTRAL", "CDSL", "VBL"]
+
+    def test_an_interrupted_pass_still_resumes_inside_the_window(
+        self, suite, tmp_path
+    ):
+        run(suite, tmp_path)
+        suite.calls.clear()
+
+        run(suite, tmp_path)  # default 24h window, entries written seconds ago
+
+        assert suite.calls == []
 
     def test_resume_off_reruns_everything(self, suite, tmp_path):
         run(suite, tmp_path)

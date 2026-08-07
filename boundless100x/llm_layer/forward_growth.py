@@ -614,7 +614,15 @@ def _denominated(unit: str, before: str, after: str) -> bool:
     """
     scale = _SCALE_AFTER.get(unit)
     if scale is not None and scale.match(after):
-        return unit not in _NEEDS_USD_MARKER or bool(_USD_BEFORE_NUMBER.search(before))
+        if unit in _NEEDS_USD_MARKER:
+            return bool(_USD_BEFORE_NUMBER.search(before))
+        # A rupee unit still may not sit behind a foreign currency marker.
+        # Without this, "capex of USD 500 million" grounded an `inr_mn` claim
+        # and "USD 1500 crore" grounded an `inr_cr` one — the scale word
+        # matched and the check returned before ever reading what came before
+        # the numeral. That is the same well-typed-fabrication class the field
+        # name used to hide, moved to the `unit` field.
+        return not _WRONG_CURRENCY_BEFORE_NUMBER.search(before)
     return (
         unit in _IMPLICIT_UNITS
         and not _WRONG_SCALE_AFTER_NUMBER.match(after)
@@ -718,6 +726,10 @@ def _validate_entry(
         return drop(f"missing required field(s): {', '.join(missing)}")
 
     section = kept["section"]
+    if not isinstance(section, str):
+        # An unhashable value here raised TypeError out of the whole
+        # validation pass, discarding every entry from a call already paid for.
+        return drop(f"section is {type(section).__name__}, expected a string")
     if section not in submitted_sections:
         return drop(
             f"section {section!r} was never submitted for {year} "
@@ -746,12 +758,18 @@ def _validate_entry(
     # length is what stops a hostile or malformed response putting arbitrary
     # content into the sidecar and into MetricResult.metadata, where the
     # module's own "everything is grounded" claim would otherwise vouch for it.
-    for optional in schema.FIELDS[kind]["optional"]:
-        if optional in kept and optional != "target_value_high":
-            text = kept[optional]
+    # Required period fields are free text too — they are grounded only by the
+    # *year* inside them, so the rest of the string is unconstrained and a
+    # 5,000-character `target_period` was reaching the sidecar and metric
+    # metadata. Bound them exactly like the optional fields.
+    bounded = [f for f in schema.FIELDS[kind]["optional"] if f != "target_value_high"]
+    bounded += [f for f in ("target_period", "commissioning_year") if f in kept]
+    for field in bounded:
+        if field in kept:
+            text = kept[field]
             if not isinstance(text, str) or len(text) > _MAX_FREE_TEXT:
                 return drop(
-                    f"{optional} must be a string of at most "
+                    f"{field} must be a string of at most "
                     f"{_MAX_FREE_TEXT} characters"
                 )
 
@@ -764,6 +782,8 @@ def _validate_entry(
         )
 
     if kind == schema.GUIDANCE:
+        if not isinstance(kept["metric"], str):
+            return drop(f"metric is {type(kept['metric']).__name__}, expected a string")
         spec = schema.GUIDANCE_METRICS.get(kept["metric"])
         if spec is None:
             return drop(

@@ -34,7 +34,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from boundless100x.data_fetcher import bse_codes, corpus_snapshot
@@ -150,6 +150,32 @@ def _write_run_log(path, log: dict) -> None:
         logger.warning(f"Could not write refetch log {target}: {e}")
 
 
+# How long a completed entry may suppress a refetch. The log exists to resume
+# an *interrupted pass*, not to remember forever that a ticker was once
+# fetched: without a bound, running `corpus refetch` a month later skipped all
+# 22 tickers and reported them as resumed, so the command's own purpose
+# silently no-opped on its second use. A day matches the fetch cache's TTL —
+# beyond it, the data is stale enough that refetching is the point.
+DEFAULT_RESUME_WINDOW_HOURS = 24
+
+
+def _resumable(completed: dict, window_hours: float) -> dict:
+    """Completed entries recent enough to still count as this pass's work."""
+    if window_hours is None:
+        return dict(completed)
+
+    cutoff = datetime.now() - timedelta(hours=window_hours)
+    fresh = {}
+    for ticker, record in (completed or {}).items():
+        stamp = (record or {}).get("at")
+        try:
+            if stamp and datetime.fromisoformat(stamp) >= cutoff:
+                fresh[ticker] = record
+        except (TypeError, ValueError):
+            continue  # an unparseable stamp is not evidence of recent work
+    return fresh
+
+
 def refetch(
     suite,
     tickers: list[str] | None = None,
@@ -158,6 +184,7 @@ def refetch(
     resume: bool = True,
     require_snapshot: bool = True,
     snapshot_config: dict | None = None,
+    resume_within_hours: float | None = DEFAULT_RESUME_WINDOW_HOURS,
 ) -> dict:
     """Refetch every cached ticker, one at a time, isolated and resumable.
 
@@ -182,10 +209,20 @@ def refetch(
     if tickers is not None:
         requested = [t.upper() for t in tickers]
         candidates = [t for t in candidates if t.upper() in requested]
+        # A name that matched nothing is reported, not dropped. Silently
+        # refetching 2 of the 3 tickers someone asked for — because one was a
+        # typo, delisted, or never fetched — looks exactly like success.
+        matched = {t.upper() for t in candidates}
+        for name in requested:
+            if name not in matched:
+                skipped.append({
+                    "name": name,
+                    "reason": "requested but not a cached ticker in this corpus",
+                })
 
     log_path = Path(run_log_path) if run_log_path else DEFAULT_RUN_LOG
     log = read_run_log(log_path) if resume else {}
-    completed = log.get("completed") or {}
+    completed = _resumable(log.get("completed") or {}, resume_within_hours)
 
     already = [t for t in candidates if t in completed]
     pending = [t for t in candidates if t not in completed]
@@ -229,17 +266,41 @@ def refetch(
 
         elapsed = round(time.time() - started, 1)
         status = data.get("source_status", {}) if isinstance(data, dict) else {}
+        # **`fetch_all` does not raise when a source fails** — it catches each
+        # fetcher's exception and records it in `source_status`, so returning
+        # normally says nothing about whether anything was refreshed. Reading
+        # the return alone, a run where Screener, the price feed and Trendlyne
+        # all failed reported "22 refetched, 0 failed", marked all 22 complete,
+        # and a later resume skipped every one of them. Three green surfaces
+        # over a run that changed nothing — the same silent pass KTD3 describes
+        # for per-file writes, one layer up.
+        degraded = sorted(
+            source for source, state in status.items()
+            if not str(state).startswith("ok")
+        )
+        detail = "; ".join(f"{k}={v}" for k, v in sorted(status.items()))
         outcomes.append({
-            "ticker": ticker, "status": "ok",
-            "detail": "; ".join(f"{k}={v}" for k, v in sorted(status.items())),
+            "ticker": ticker,
+            "status": "degraded" if degraded else "ok",
+            "detail": detail,
             "seconds": elapsed,
         })
-        log["completed"][ticker] = {
+        record = {
             "at": datetime.now().isoformat(timespec="seconds"),
             "seconds": elapsed,
             "source_status": status,
         }
-        log["failed"].pop(ticker, None)
+        if degraded:
+            # Not complete, so a resumed run retries it rather than skipping it.
+            logger.warning(
+                f"{ticker}: refetched with {len(degraded)} failed source(s) "
+                f"({', '.join(degraded)}) — not marking complete"
+            )
+            log["failed"][ticker] = {**record, "degraded_sources": degraded}
+            log["completed"].pop(ticker, None)
+        else:
+            log["completed"][ticker] = record
+            log["failed"].pop(ticker, None)
         _write_run_log(log_path, log)
 
     return {

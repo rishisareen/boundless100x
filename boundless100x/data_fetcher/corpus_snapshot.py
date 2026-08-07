@@ -179,7 +179,7 @@ def snapshot(source, destination=None, config: dict | None = None) -> dict:
             f"an empty snapshot, which would restore as a deletion"
         )
 
-    base = Path(destination) if destination else snapshot_root(config)
+    base = Path(destination).expanduser() if destination else snapshot_root(config)
     _refuse_if_inside_repo(base)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -219,7 +219,7 @@ def latest_snapshot(base=None, config: dict | None = None) -> Path | None:
     candidates = sorted(
         child for child in root.iterdir()
         if child.is_dir() and child.name.startswith(SNAPSHOT_PREFIX)
-        and (child / MANIFEST_NAME).exists()
+        and (child / MANIFEST_NAME).exists() and (child / "raw_data").is_dir()
     )
     return candidates[-1] if candidates else None
 
@@ -238,6 +238,34 @@ def restore(snapshot_path, destination) -> dict:
     manifest = load_manifest(source)  # refuses anything that is not a snapshot
 
     target = Path(destination)
+
+    # **Everything that can refuse must refuse before the delete.** `rmtree`
+    # here removes the only copy of a gitignored corpus, so a snapshot that
+    # turns out to be unusable *after* it runs has cost the data it was meant
+    # to protect. Two checks, both cheap, both fatal:
+    resolved_source, resolved_target = source.resolve(), target.resolve()
+    if resolved_target == resolved_source or resolved_target in resolved_source.parents:
+        raise SnapshotError(
+            f"snapshot {resolved_source} lives inside the restore destination "
+            f"{resolved_target} — restoring would delete the snapshot along "
+            f"with the corpus and leave neither. Move the snapshot outside the "
+            f"destination first."
+        )
+
+    staged = describe_corpus(payload)
+    expected = (manifest or {}).get("totals") or {}
+    if not staged["entries"]:
+        raise SnapshotError(
+            f"snapshot payload at {payload} holds no ticker directories — "
+            f"restoring it would empty {target}"
+        )
+    if expected and expected != staged["totals"]:
+        raise SnapshotError(
+            f"snapshot payload does not match its own manifest (manifest "
+            f"{expected}, payload {staged['totals']}) — refusing to delete "
+            f"{target} for a snapshot that is already damaged"
+        )
+
     if target.exists():
         logger.info(f"Removing {target} before restore (replace, never merge)")
         shutil.rmtree(target)

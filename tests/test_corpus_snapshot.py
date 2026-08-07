@@ -129,17 +129,47 @@ def test_restore_verifies_what_landed_against_the_manifest(tmp_path, caplog):
     assert "matching its manifest" in caplog.text
 
 
-def test_a_restore_that_does_not_match_its_manifest_warns(tmp_path, caplog):
+def test_a_damaged_payload_is_refused_before_the_corpus_is_deleted(tmp_path):
+    """Everything that can refuse must refuse before the rmtree.
+
+    `restore` removes the only copy of a gitignored corpus, so a snapshot found
+    to be unusable afterwards has already cost the data it was meant to save.
+    """
     source = build_corpus(tmp_path / "raw_data")
     made = corpus_snapshot.snapshot(source, destination=tmp_path / "snaps")
-    # A payload that no longer matches the manifest written beside it.
     (made["path"] / "raw_data" / "ASTRAL" / "financials.csv").unlink()
 
-    with caplog.at_level("WARNING"):
+    with pytest.raises(corpus_snapshot.SnapshotError) as excinfo:
         corpus_snapshot.restore(made["path"], source)
 
-    assert "does not match the snapshot manifest" in caplog.text
-    assert (source / "ASTRAL").exists()  # the files are still put back
+    assert "already damaged" in str(excinfo.value)
+    assert (source / "ASTRAL" / "financials.csv").exists()  # corpus untouched
+
+
+def test_a_snapshot_inside_the_destination_is_refused(tmp_path):
+    """Restoring it would rmtree the snapshot along with the corpus."""
+    import shutil
+
+    source = build_corpus(tmp_path / "raw_data")
+    made = corpus_snapshot.snapshot(source, destination=tmp_path / "snaps")
+    nested = source / "nested_snapshot"
+    shutil.copytree(made["path"], nested)
+
+    with pytest.raises(corpus_snapshot.SnapshotError) as excinfo:
+        corpus_snapshot.restore(nested, source)
+
+    assert "leave neither" in str(excinfo.value)
+    assert (source / "ASTRAL" / "financials.csv").exists()
+
+
+def test_a_manifest_only_directory_is_not_a_restorable_snapshot(tmp_path):
+    """The refetch guard asks `latest_snapshot`; an empty shell must not pass."""
+    base = tmp_path / "snaps"
+    shell = base / f"{corpus_snapshot.SNAPSHOT_PREFIX}20260807-090000"
+    shell.mkdir(parents=True)
+    (shell / corpus_snapshot.MANIFEST_NAME).write_text("{}")
+
+    assert corpus_snapshot.latest_snapshot(base) is None
 
 
 def test_ticker_marker_has_one_definition(tmp_path):
