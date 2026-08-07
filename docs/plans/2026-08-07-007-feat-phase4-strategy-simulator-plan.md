@@ -321,6 +321,33 @@ thresholds, and scoring the owner actually runs.
   that day. That is a divergence in the replay's favour, and it is still a
   divergence.
 
+  **It goes into the `Stock P/E` key regardless, and the honesty travels
+  beside it rather than in the key name.** An earlier draft of this KTD said
+  the rebuilt multiple would carry a *different* key so nobody could mistake
+  it for the fetched TTM figure. Measured, that choice is self-defeating:
+  `trailing_peg`, `peg_ratio` and `pe_vs_historical` all read
+  `meta.get("Stock P/E")` directly, so a renamed key leaves all three
+  erroring, the `price` eligibility gate indeterminate, and the core lane
+  frozen exactly as it was before this decision — the phase dies of its own
+  naming convention. Changing those three metrics to read a new key is a
+  production scoring change, which Scope Boundaries forbid.
+
+  So the key is populated and the basis rides alongside as provenance
+  (`_stock_pe_basis: "annual_eps_reconstructed"`), which is the pattern this
+  repo already uses for exactly this problem — `price_basis` in valuation
+  metadata, `adj_close_is_estimated` on a price series. Provenance beside the
+  value travels where a key name cannot: into the limitations block, the
+  exclusions, and any artifact a Phase 5 sweep reads. Zero production metrics
+  change, and no consumer can mistake a reconstruction for a fetch.
+
+  Spiked on 2026-08-08 with both fields populated, across all 15 scorable
+  tickers at their split-half cutoffs: the 100x verdict goes from **0
+  `eligible`** to **3**, so `qualification_passed` fires and the core path is
+  live. One of those three is RAIN, whose two share counts disagree by 221%
+  and whose multiple was the +1169% outlier — a reconstruction artifact that
+  the guard above excludes. Without the guard one eligible verdict in three
+  would have been garbage, which is the clearest argument for it available.
+
   Both reconstructions are marked as reconstructed wherever they surface, so
   no consumer can mistake one for a fetched figure.
 
@@ -472,12 +499,18 @@ thresholds, and scoring the owner actually runs.
   replay evaluates transitions on quarter boundaries derived from the
   corpus's own fiscal calendar, while mark-to-market, bar selection, and
   holding-period measurement use daily bars. The quarterly-depth
-  constraint (§10 rev 2026-08-06b) is inherited: Screener's quarterly
-  table covers only recent quarters, so quarterly-grain *metrics* (the TTM
-  gate, the accumulation streak) read indeterminate deep in truncated
-  history — the gates say so rather than passing silently, and the count
-  is reported; this is the indeterminate rule working as designed, not a
-  simulator defect.
+  constraint (§10 rev 2026-08-06b) is inherited, and measurement made it
+  sharper than the roadmap states it: Screener renders ~11–13 quarters, so
+  `quarterly.csv` begins Mar/Jun 2023 and `shareholding.csv` Sep 2023, and
+  **no refetch can deepen either** — this is a property of the source, not
+  of when the corpus was last pulled. The two quarterly-grain gates (the
+  TTM gap, the accumulation streak) are therefore indeterminate before
+  ~Q2 2024 whatever the replay start is. The gates say so rather than
+  passing silently and the count is reported — the indeterminate rule
+  working as designed — but the consequence for §10's per-lane comparison
+  is a real limit rather than a rounding error, and it is what moved the
+  replay start to 2023 (see U2) and what the per-lane battery-complete
+  dates exist to expose.
 - **KTD8 — The universe enters at `screen` on first sufficient history.**
   There is no point-in-time universe and no simulated "owner adds a name"
   input, so the candidacy rule is: every `raw_data/` ticker joins the
@@ -603,7 +636,8 @@ recommendation it was settled *against* stays visible beside the choice.
 
 | Parameter | Value | Status |
 |---|---|---|
-| Replay start | earliest date with ≥ engine minimum years of truncated financials for ≥ 2 tickers | derived |
+| Replay start | **2023-01-01** — both lanes on comparable data, not the earliest scorable date | settled (owner, 2026-08-08) |
+| Reporting lag | per frame: annual 6mo, quarterly results 2mo, shareholding 1mo — **not** one lag for all three | settled (see U1) |
 | Replay cadence | quarterly, on the corpus fiscal calendar | starting point (A4) |
 | Starting pool | 100 capital units | settled (decision 1) |
 | Confirmation lag: entry / exit / route | 5 / 2 / 5 trading days | settled (decision 2) |
@@ -746,10 +780,12 @@ same skeleton:
        `raw_close` off the **`close`** column (never `adj_close` — a split
        moves equity capital and the adjusted price in the same direction and
        would be counted twice), `face_value` off metadata, which is static.
-     - **`Stock P/E` is *not* rebuilt.** Consumers that read it get the
-       `_current_multiple` figure instead, and the key is named so nobody can
-       mistake the two. Non-positive EPS refuses, as `_current_multiple`
-       already does.
+     - **`Stock P/E` = `_current_multiple`'s raw close ÷ latest annual EPS**,
+       written to that exact key so `trailing_peg`, `peg_ratio` and
+       `pe_vs_historical` read it unchanged and no production metric moves.
+       Non-positive EPS refuses, as `_current_multiple` already does. The
+       basis rides beside it as `_stock_pe_basis`, never in the key name —
+       see KTD0 for why the honest-rename version kills the core lane.
      - **The reconciliation guard, at two levels.** *Against stored truth*,
        at the corpus's latest date, where the fetched `Market Cap` exists —
        measured baseline 20 of 22 within 2% (worst: EDELWEISS −2.4%,
@@ -769,9 +805,20 @@ same skeleton:
      metric erroring with "No P/E" cannot say whether the field was withheld
      to prevent a leak, was never fetched, or failed reconciliation, and
      those are three different exclusions.
-  4. **The `quarterly` frame is cut by its own period labels** under the same
-     reporting-lag rule, extending the backtest's `ANNUAL_FRAMES` handling to
-     a frame Phase 0 added and the `growth_intact` gate reads.
+  4. **The `quarterly` frame is cut by its own period labels**, extending the
+     backtest's `ANNUAL_FRAMES` handling to a frame Phase 0 added and the
+     `growth_intact` gate reads.
+
+     **The reporting lag becomes per frame, and with a 2023 start that is not
+     a nicety.** `REPORTING_LAG_MONTHS = 6` is calibrated for annual accounts
+     and is right there. Applied unchanged to the quarterly frames it is
+     simply wrong: SEBI LODR gives 45 days for quarterly results and 21 for
+     the shareholding pattern, so a six-month lag withholds figures that were
+     public four to five months earlier. On the old ~24-date window that cost
+     precision; on a 12-quarter series inside a 2023-start window it deletes
+     two of the fast lane's few evaluable dates outright. So: annual 6
+     months, quarterly results 2, shareholding 1 — each a named constant with
+     the filing rule beside it, and each still a *lag*, never zero.
 
      **`shareholding` is a separate question and this plan previously
      contradicted itself on it** — step 1 lifts a `NON_TRUNCATABLE_INPUTS`
@@ -835,9 +882,34 @@ same skeleton:
   `tests/test_simulator_universe.py` (new)
 - **Approach:**
   1. `calendar.py`: replay dates quarterly from the corpus's fiscal
-     calendar (dominant period-end month + reporting lag), first date
-     where ≥ 2 tickers have sufficient truncated history, last date the
-     price corpus supports.
+     calendar (dominant period-end month + the per-frame reporting lags of
+     U1.4), from the configured start to the last date the price corpus
+     supports.
+
+     **The start is 2023-01-01 by owner decision, not the earliest scorable
+     date.** The earliest would be ~2020-09, and the five quarters it buys
+     are ones in which the fast lane is *structurally* unable to qualify —
+     `growth_intact` and `institutional_accumulation` have no data before
+     Mar and Sep 2023 respectively, and no refetch can change that because
+     Screener renders only ~11–13 quarters. A window whose first fifth
+     admits only core-lane entries would have made the per-lane comparison
+     an artifact of the corpus rather than a finding about the rules.
+
+     Measured at three cutoffs (2026-08-08): the scorable universe is a
+     stable **15 tickers** whether the cut is 2023-01, 2024-06 or 2025-06,
+     so the later start costs no companies. The eligible population does
+     thin over the window — 3 → 1 → 0 — which means core-lane entries
+     cluster early and the outputs must say so rather than let a quiet
+     second half read as a strategy declining to buy.
+
+     **State the residual honestly: 2023 narrows the gap, it does not close
+     it.** The fast lane's full battery needs three adjacent shareholding
+     quarters (Sep 2023 + two) and a four-quarter TTM, so it completes
+     around Q2 2024 — roughly the last 9 of ~14 replay dates. `calendar.py`
+     therefore computes and records a **per-lane battery-complete date**,
+     and U6's comparison is reported both over the whole window and over
+     the sub-window where both lanes are fully evaluable. One of those two
+     answers §10's question; the other shows what it cost to ask it.
   2. `universe.py`: `raw_data/` discovery (the backtest's
      `discover_candidates` idiom), per-ticker first-eligible date under
      KTD8, exclusion reasons for never-eligible tickers.
@@ -855,8 +927,12 @@ same skeleton:
      lane is recorded per ticker per assignment, so the per-lane outputs
      can attribute every transition to the lane that produced it.
 - **Test scenarios:**
-  - Replay dates never fall before the earliest sufficient-history date
-    or after the last priced date.
+  - Replay dates never fall before the configured start (2023-01-01) or
+    after the last priced date, and never before a ticker's own
+    sufficient-history date.
+  - The per-lane battery-complete date is computed and recorded, and the
+    fast lane's lands after the core lane's — the asymmetry the 2023 start
+    narrows but does not remove.
   - A ticker with too few years is excluded with its reason and never
     enters the simulated watchlist.
   - Stores are temp-dir: running the skeleton against a fixture leaves
@@ -998,10 +1074,10 @@ same skeleton:
      place, two of the fast lane's six are depth-bound rather than
      metadata-bound: `growth_intact` needs `quarterly` (from Mar/Jun 2023)
      and `institutional_accumulation` needs three adjacent shareholding
-     quarters (from Sep 2023). Across a replay window starting ~2020-09 that
-     leaves the fast lane **effectively measured on four of six gates for
-     roughly the first two-thirds of it — and one of those four is the
-     fabricated catalyst (KTD6), so three are genuinely evaluated.**
+     quarters (from Sep 2023). Even with the start moved to 2023-01 that
+     leaves the fast lane's battery incomplete until ~Q2 2024 — **four of
+     six gates over the first third of the window, and one of those four is
+     the fabricated catalyst (KTD6), so three are genuinely evaluated.**
 
      §9.2's battery is conjunctive and *is* the claim under test, so a
      fast-lane entry taken on three real gates is not the entry the shipped
