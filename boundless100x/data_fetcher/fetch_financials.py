@@ -78,6 +78,21 @@ RATIOS_LABEL_MAP = {
     "ROCE %": "roce",
 }
 
+# Screener's shareholding table. Module-level beside its siblings so the one
+# definition serves both the parser and the fixture builders that must mirror
+# it — a builder omitting a column here exercises an absent-data path no real
+# ticker takes. Real files are *subsets*: Screener renders only the rows a
+# company actually has, so a government-owned name may carry no `promoter_pct`
+# and most carry no `govt_pct`.
+SH_LABEL_MAP = {
+    "Promoters": "promoter_pct",
+    "FIIs": "fii_pct",
+    "DIIs": "dii_pct",
+    "Government": "govt_pct",
+    "Public": "public_pct",
+    "No. of Shareholders": "num_shareholders",
+}
+
 
 def _clean_label(td: Tag) -> str:
     """Extract clean label text from a table cell, stripping expand buttons."""
@@ -343,15 +358,6 @@ class FinancialsFetcher(BaseFetcher):
         headers = [th.get_text(strip=True) for th in thead.find_all("th")]
         quarter_headers = headers[1:]
 
-        sh_label_map = {
-            "Promoters": "promoter_pct",
-            "FIIs": "fii_pct",
-            "DIIs": "dii_pct",
-            "Government": "govt_pct",
-            "Public": "public_pct",
-            "No. of Shareholders": "num_shareholders",
-        }
-
         row_data: dict[str, list[float | None]] = {}
         tbody = table.find("tbody")
         if tbody is None:
@@ -362,7 +368,7 @@ class FinancialsFetcher(BaseFetcher):
             if not cells:
                 continue
             raw_label = _clean_label(cells[0])
-            col_name = sh_label_map.get(raw_label)
+            col_name = SH_LABEL_MAP.get(raw_label)
             if col_name is None:
                 continue
             values = []

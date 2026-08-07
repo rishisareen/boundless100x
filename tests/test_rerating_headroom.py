@@ -159,7 +159,16 @@ class TestContractsWithTheRestOfTheEngine:
         assert headroom().raw_series == []
 
     def test_the_price_basis_is_recorded(self):
-        assert headroom().metadata["price_basis"] == "legacy_close_unknown_adjustment"
+        """The real corpus basis, now that every cached file carries adj_close."""
+        assert headroom().metadata["price_basis"] == "raw_close"
+
+    def test_a_legacy_price_file_still_records_its_own_basis(self):
+        data = headroom_data()
+        data["price"] = data["price"].drop(columns=["adj_close"])
+
+        result = compute_rerating_headroom(data, {})
+
+        assert result.metadata["price_basis"] == "legacy_close_unknown_adjustment"
 
         data = headroom_data()
         data["price"] = data["price"].assign(adj_close=data["price"]["close"])

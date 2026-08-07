@@ -522,6 +522,67 @@ class TestUnitComparability:
 # ── tam_runway ─────────────────────────────────────────────────────────────
 
 
+class TestRupeeScalesSettleByArithmetic:
+    """A lakh crore is exactly 100,000 crore — no exchange rate, nothing stale.
+
+    The distinction KTD5 turns on: a fixed rupee scale cannot decay, so it does
+    not need the `as_of` handling or the momentum-resetting macro-block entry
+    an FX rate would. USD stays stored-only.
+    """
+
+    @pytest.mark.parametrize("unit,stated,expected_crore", [
+        ("inr_cr", 50000.0, 50000.0),
+        ("inr_lakh_cr", 0.5, 50000.0),      # 0.5 lakh crore
+        ("inr_mn", 500000.0, 50000.0),      # 5 lakh million rupees
+        ("inr_lakh", 5000000.0, 50000.0),
+    ])
+    def test_a_rupee_scale_settles_after_exact_conversion(
+        self, unit, stated, expected_crore
+    ):
+        data = fg_data({"2025": year_payload(
+            tam_entries=[tam(size=stated, unit=unit)]
+        )})
+
+        result = fgm.compute_tam_runway(data, {})
+
+        assert result.ok
+        assert result.metadata["tam_inr_cr"] == pytest.approx(expected_crore)
+        assert result.metadata["set_aside_for_unit"] == []
+
+    def test_a_foreign_currency_is_still_only_stored(self):
+        data = fg_data({"2025": year_payload(
+            tam_entries=[tam(size=2250.0, unit="usd_bn")]
+        )})
+
+        result = fgm.compute_tam_runway(data, {})
+
+        assert not result.ok
+        assert "usd_bn" in result.error
+
+    def test_a_scaled_promise_settles_against_the_accounts(self):
+        """Guidance of 0.003 lakh crore is 300 crore, and the accounts show 300."""
+        data = fg_data({
+            "2024": year_payload(guidance=[promise(
+                target_value=0.002, target_period="FY2024", unit="inr_lakh_cr"
+            )]),
+            "2025": year_payload(guidance=[promise(
+                target_value=0.003, target_period="FY2025", unit="inr_lakh_cr"
+            )]),
+        })
+
+        result = fgm.compute_promises_kept(data, {})
+
+        assert result.value == 100.0
+        settled = result.metadata["settled"]
+        assert [s["guided"] for s in settled] == [200.0, 300.0]
+
+    def test_an_eps_quoted_in_crore_is_refused_not_rescued(self):
+        """Converting it would turn a misreading into a confident number."""
+        assert schema.settled_figure(
+            schema.GUIDANCE, {"unit": "inr_cr", "target_value": 5}, "eps"
+        ) is None
+
+
 class TestTamSupersededDisclosure:
     """Answering from the newest *usable* report is right; hiding it is not.
 

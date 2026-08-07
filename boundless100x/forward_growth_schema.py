@@ -85,7 +85,11 @@ changes which entries survive belongs in this number.
 #     sharing any digit run with a real one passed the check written to catch
 #     fabrication and then settled against real financials. This is the
 #     load-bearing half of KTD3 and it was not enforcing.
-SCHEMA_VERSION = 10
+# 11 — rupee scales settle by exact arithmetic. `inr_lakh_cr`, `inr_mn`,
+#     `inr_lakh` and `inr` now convert into `inr_cr` by fixed factors that
+#     cannot go stale — a settling-rule change, so it belongs in this number.
+#     No exchange rate is involved and USD figures are still only stored.
+SCHEMA_VERSION = 11
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like
@@ -216,9 +220,57 @@ def settling_unit(kind: str, metric: str | None = None) -> str | None:
 
 
 def is_settleable(kind: str, entry: dict, metric: str | None = None) -> bool:
-    """Whether an entry's stated unit is one the reading metric can use."""
+    """Whether an entry's figure can be expressed in its metric's settling unit."""
+    return settled_figure(kind, entry, metric) is not None
+
+
+# **Rupee scales are arithmetic, not conversion** — and that distinction is the
+# whole reason KTD5 refused an exchange rate. A lakh crore is exactly 100,000
+# crore, today and in 1994: the factor cannot go stale, needs no `as_of` date,
+# has nothing to keep current, and does not belong in the macro block whose
+# every revision would reset each ticker's momentum baseline. An FX rate has
+# none of those properties, which is why USD figures are still only stored.
+#
+# Conversion runs **into `inr_cr` only**. A figure settling in plain `inr` is
+# an EPS, and an EPS quoted in crore is not a unit mismatch to rescue — it is a
+# misreading, and rescuing it arithmetically would turn nonsense into a
+# confident number. `pct` carries its unit in the numeral and converts from
+# nothing.
+_TO_INR_CR = {
+    UNIT_INR_CR: 1.0,
+    "inr_lakh_cr": 100_000.0,   # 1 lakh crore = 10^5 crore
+    "inr_mn": 0.1,              # 1 million rupees = 10^-1 crore
+    "inr_lakh": 0.01,           # 1 lakh rupees   = 10^-2 crore
+    UNIT_INR: 1e-7,             # 1 rupee         = 10^-7 crore
+}
+
+# The figure each kind carries. `amount_inr_cr` and `market_size_inr_cr` name a
+# unit their `unit` field makes variable — reading them without consulting it
+# is how a USD commitment was once summed into a rupee total.
+FIGURE_FIELD = {
+    GUIDANCE: "target_value",
+    CAPEX: "amount_inr_cr",
+    TAM: "market_size_inr_cr",
+}
+
+
+def settled_figure(kind: str, entry: dict, metric: str | None = None):
+    """The entry's figure in its metric's settling unit, or None.
+
+    None means this system cannot express the figure the way the metric needs
+    it — a USD amount with no exchange rate, an unknown unit, a non-numeric
+    value. The caller sets it aside with the reason rather than guessing.
+    """
     expected = settling_unit(kind, metric)
-    return expected is not None and (entry or {}).get("unit") == expected
+    stated = (entry or {}).get("unit")
+    value = (entry or {}).get(FIGURE_FIELD.get(kind))
+    if expected is None or not is_number(value):
+        return None
+    if stated == expected:
+        return float(value)
+    if expected == UNIT_INR_CR and stated in _TO_INR_CR:
+        return float(value) * _TO_INR_CR[stated]
+    return None
 
 
 def partition_by_unit(kind: str, entries) -> tuple[list, list]:
@@ -230,15 +282,18 @@ def partition_by_unit(kind: str, entries) -> tuple[list, list]:
     unit was", and three hand-rolled copies is how `capex_pipeline` came to sum
     `amount_inr_cr` into a rupee total on the strength of the field name alone.
 
-    Returns `(usable, set_aside_units)` with the units sorted and deduplicated,
-    so a caller can name them in an error without repeating that bookkeeping.
+    Returns `([(entry, figure_in_settling_unit)], sorted_set_aside_units)`. The
+    figure travels with its entry because a converted one is not the number
+    stored on it — a caller reading the raw field back would undo the scaling
+    silently.
     """
     usable, set_aside = [], set()
     for entry in entries or []:
-        if is_settleable(kind, entry, (entry or {}).get("metric")):
-            usable.append(entry)
-        else:
+        figure = settled_figure(kind, entry, (entry or {}).get("metric"))
+        if figure is None:
             set_aside.add(str((entry or {}).get("unit")))
+        else:
+            usable.append((entry, figure))
     return usable, sorted(set_aside)
 
 # Closed set of guided quantities. Each names the fetched column that settles
@@ -323,5 +378,6 @@ def schema_fingerprint() -> dict:
         "guidance_metrics": GUIDANCE_METRICS,
         "guidance_subjects": GUIDANCE_SUBJECTS,
         "units": UNITS,
+        "inr_scales": _TO_INR_CR,
         "required_sections": REQUIRED_SECTIONS,
     }

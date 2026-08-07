@@ -124,18 +124,21 @@ def make_ratios(n: int = 10, roce: float = 22.0, **overrides) -> pd.DataFrame:
 
 
 def make_shareholding(quarters: int = 20, promoter: float = 60.0) -> pd.DataFrame:
-    """BSE quarterly shareholding, labelled the way the fetcher writes it.
+    """Screener's shareholding table, column-for-column as the parser writes it.
 
-    Labels were `Q1 2021`-style, which no period parser reads — so anything
-    matching shareholding readings by period silently fell back to position.
-    Real files carry `Sep 2023`, `Dec 2023`, ... like every other quarterly
-    series.
+    Two fidelity bugs lived here. Labels were `Q1 2021`-style, which no period
+    parser reads, so anything matching shareholding by period silently fell
+    back to position. And `govt_pct` was missing although `SH_LABEL_MAP`
+    declares it and `report_generator` reads it — so report tests exercised an
+    absent-column path no real ticker takes, and one test file had already
+    added the column by hand to work around it.
     """
     return pd.DataFrame({
         "quarter": quarter_labels(quarters),
         "promoter_pct": [promoter] * quarters,
         "fii_pct": [8.0] * quarters,
         "dii_pct": [5.0] * quarters,
+        "govt_pct": [0.0] * quarters,
         "public_pct": [promoter and 100.0 - promoter - 13.0] * quarters,
         "num_shareholders": [50000] * quarters,
     })
@@ -143,18 +146,22 @@ def make_shareholding(quarters: int = 20, promoter: float = 60.0) -> pd.DataFram
 
 def make_price(days: int = 2500, start_close: float = 100.0,
                end_close: float | None = None,
-               adj_close: bool = False,
+               adj_close: bool = True,
                adj_factor: float = 1.0,
                adj_close_is_estimated: bool | None = None) -> pd.DataFrame:
     """Daily bars. When `end_close` is given, close compounds geometrically to it.
 
-    `adj_close` is opt-in and off by default on purpose. Fetches predating the
-    adjusted-series schema carry a single `close`, and `compute_pe_percentile`
-    reads the column's presence to decide its `price_basis` — emitting
-    `adj_close` unconditionally would silently move every existing caller onto
-    the `raw_close` basis and drop the legacy-basis flag they assert on.
-    `adj_factor` scales the adjusted series away from the raw close so a test
-    can tell the two apart.
+    `adj_close` is **on by default, because every cached ticker now has one.**
+    It was opt-in while 13 of 22 files predated the adjusted-series schema; the
+    2026-08-07 refetch moved all 22, so the old default described no real
+    ticker and quietly aimed most tests at a schema that no longer exists. That
+    drift is what let a NaN in the newest `adj_close` bar go unnoticed until the
+    refetch exposed it in the backtest.
+
+    A test exercising the genuine legacy path passes `adj_close=False` and says
+    so — an opt-out for a shape the corpus no longer holds, rather than a
+    default. `adj_factor` scales the adjusted series away from the raw close so
+    a test can tell the two apart.
     """
     dates = pd.bdate_range("2015-01-01", periods=days)
     if end_close is None:

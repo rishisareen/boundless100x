@@ -15,10 +15,15 @@ from boundless100x import score_history
 from tests.conftest import (
     QUARTERLY_COLUMNS,
     make_ar_sections,
+    make_balance_sheet,
+    make_cashflow,
     make_data,
+    make_financials,
     make_history_rows,
     make_price,
     make_quarterly,
+    make_ratios,
+    make_shareholding,
     quarter_labels,
     write_history,
 )
@@ -146,11 +151,23 @@ class TestHistoryRows:
 
 
 class TestPrice:
-    def test_close_is_unchanged_for_existing_callers(self):
-        """No `adj_close` unless asked — `compute_pe_percentile` reads its presence."""
+    def test_the_default_carries_the_schema_every_cached_ticker_has(self):
+        """22 of 22 real files carry `adj_close`; the default must too.
+
+        It was opt-in while 13 files predated the adjusted-series schema. After
+        the refetch the old default described no real ticker, which is the kind
+        of drift that let a NaN in the newest adjusted bar hide until the
+        backtest surfaced it.
+        """
         df = make_price(days=10)
-        assert "adj_close" not in df.columns
         assert "close" in df.columns
+        assert "adj_close" in df.columns
+
+    def test_the_legacy_shape_is_an_explicit_opt_out(self):
+        """Files predating the split still exist in the wild, just not here."""
+        df = make_price(days=10, adj_close=False)
+        assert "close" in df.columns
+        assert "adj_close" not in df.columns
 
     def test_adj_close_appears_on_request(self):
         df = make_price(days=10, adj_close=True, adj_factor=0.5)
@@ -175,3 +192,59 @@ class TestMakeData:
         )
         assert len(data["quarterly"]) == 6
         assert data["annual_report_sections"]["2025"]["mdna"]["provenance"] == "fallback"
+
+
+class TestBuildersMatchTheFetchedSchemas:
+    """conftest promises the builders "mirror the real fetched schemas". This
+    is that promise, enforced.
+
+    Four defects in this codebase were masked by a builder that did not: a
+    `Q0..Q7` quarter label no parser reads (checkpoints fell back to positional
+    matching in every test), a `Q1 2021` shareholding label with the same
+    effect, a missing `govt_pct` the report generator reads, and a `close`-only
+    price frame after all 22 cached tickers had gained `adj_close`. In each
+    case the fixture agreed with the code and both disagreed with reality, so
+    the tests passed and the pipeline was wrong.
+
+    Pinned against the fetchers' own label maps rather than against files in
+    `raw_data/`, which is gitignored and absent on a clean checkout.
+    """
+
+    def test_quarterly_matches_the_parser_label_map(self):
+        from boundless100x.data_fetcher.fetch_financials import QTR_LABEL_MAP
+
+        expected = {"quarter"} | set(QTR_LABEL_MAP.values())
+        assert set(make_quarterly().columns) == expected
+
+    def test_shareholding_matches_the_parser_label_map(self):
+        from boundless100x.data_fetcher.fetch_financials import SH_LABEL_MAP
+
+        expected = {"quarter"} | set(SH_LABEL_MAP.values())
+        assert set(make_shareholding().columns) == expected
+
+    @pytest.mark.parametrize("builder,label_map_name", [
+        (make_financials, "PL_LABEL_MAP"),
+        (make_balance_sheet, "BS_LABEL_MAP"),
+        (make_cashflow, "CF_LABEL_MAP"),
+        (make_ratios, "RATIOS_LABEL_MAP"),
+    ])
+    def test_annual_frames_match_their_parser_label_maps(self, builder, label_map_name):
+        from boundless100x.data_fetcher import fetch_financials
+
+        expected = {"year"} | set(getattr(fetch_financials, label_map_name).values())
+        assert set(builder().columns) == expected
+
+    @pytest.mark.parametrize("builder", [make_quarterly, make_shareholding])
+    def test_period_labels_are_parseable(self, builder):
+        """A label no parser reads silently downgrades period matching."""
+        from boundless100x.compute_engine.metrics.builtin._helpers import quarter_index
+
+        labels = list(builder()["quarter"])
+        assert all(quarter_index(label) is not None for label in labels)
+
+    def test_period_labels_are_consecutive(self):
+        """Gaps must come from a test that wants one, never from the builder."""
+        from boundless100x.compute_engine.metrics.builtin._helpers import quarter_index
+
+        indices = [quarter_index(q) for q in make_quarterly(periods=12)["quarter"]]
+        assert indices == list(range(indices[0], indices[0] + 12))

@@ -296,11 +296,10 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
         if checkable:
             checkable_years.add(report_year)
 
-        for entry in checkable:
-            target = entry.get("target_value")
-            if not schema.is_number(target):
-                discarded += 1
-                continue
+        # `target` is the figure in the unit the accounts settle in — a lakh
+        # crore guidance figure arrives here already expressed in crore, so
+        # the comparison below never mixes scales.
+        for entry, target in checkable:
 
             target_year = _year_of(entry.get("target_period"))
             if target_year is None:
@@ -416,11 +415,7 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
         year for year in (u.split(" ")[0] for u in unusable) if year > newest
     )
     usable, wrong_unit = schema.partition_by_unit(schema.TAM, by_year[newest])
-    sizes = [
-        float(entry["market_size_inr_cr"])
-        for entry in usable
-        if schema.is_number(entry.get("market_size_inr_cr"))
-    ]
+    sizes = [figure for _, figure in usable]
     if not sizes:
         if wrong_unit:
             return MetricResult(
