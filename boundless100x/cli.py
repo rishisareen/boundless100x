@@ -860,9 +860,14 @@ def watchlist_advance(
             arrow += " [yellow](confirm with --apply)[/yellow]"
         elif proposal["applied"]:
             arrow += " [green]applied[/green]"
-        table.add_row(o["ticker"], state, composite, arrow, proposal["evidence"])
+        table.add_row(
+            o["ticker"], state, composite, arrow,
+            _evidence_cell(proposal["evidence"]),
+        )
 
     console.print(table)
+
+    _print_exit_friction(outcomes)
 
     for ticker, message in errors:
         console.print(f"[red]{ticker}: {message}[/red]")
@@ -876,6 +881,64 @@ def watchlist_advance(
 
 
 # ── Display Helpers ──
+
+def _evidence_cell(evidence: str) -> str:
+    """A trigger's evidence rendered as literal text rather than as markup.
+
+    Evidence is assembled in `lifecycle/advance.py` and appends bracketed
+    clauses — `[deployment pace: ...]`, `[gross ... / net ...]`. Rich reads a
+    leading `[` as the start of a style tag, so an unescaped cell drops the
+    whole clause from the table and shows a sentence that simply stops. The
+    figures R5 requires beside every proposed exit vanish silently, in exactly
+    the column an owner reads before confirming one.
+
+    Escaping only at the render boundary keeps the stored evidence
+    byte-identical — the append-only history holds the sentence that was
+    actually reasoned with, not a display-encoded version of it.
+    """
+    from rich.markup import escape
+
+    return escape(evidence or "")
+
+
+def _print_exit_friction(outcomes) -> None:
+    """Net of tax and slippage, beside gross, for every proposed exit (§8.2).
+
+    Printed as its own block rather than squeezed into the table's evidence
+    column, because the assumptions have to travel with the figures: a return
+    shown without them invites being read as money that was made, and every
+    input here is a proxy — a `probe` confirmation date rather than a fill,
+    market bars rather than trade prices, no cost basis anywhere.
+
+    A reading that could not be computed is shown *with its reason* rather than
+    omitted, for the reason the whole codebase treats gaps this way: a missing
+    line and a silent zero look identical, and only one of them is honest.
+    """
+    from boundless100x.lifecycle import friction
+
+    exits = [
+        o for o in outcomes
+        if o.get("proposal") and o["proposal"].get("friction") is not None
+    ]
+    if not exits:
+        return
+
+    console.print(
+        "\n[bold]Exit friction[/bold] [dim](modeled estimates — no fills, no "
+        "cost basis)[/dim]"
+    )
+    for o in exits:
+        reading = o["proposal"]["friction"]
+        colour = "yellow" if reading.get("available") else "dim"
+        console.print(
+            f"  [cyan]{o['ticker']}[/cyan] "
+            f"[{colour}]{friction.describe(reading)}[/{colour}]"
+        )
+    console.print(
+        "[dim]Holding period is measured from the `probe` confirmation date, "
+        "not a broker fill.[/dim]"
+    )
+
 
 def _print_scores(result, svc):
     summary = svc.get_element_summary(result)

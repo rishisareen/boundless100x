@@ -122,6 +122,25 @@ deployment_pace:
   min_contributors: 8     # A median over fewer names is not a regime signal, and
                           # an unknown reading must not tighten entry at all
 
+# ── Friction (v05 §8.2) ──
+# What a modeled position keeps after tax and slippage. Every figure derived
+# from these is an ESTIMATE: the holding period runs from a `probe`
+# confirmation date rather than a fill, market bars stand in for trade prices,
+# and no cost basis is recorded anywhere in this system.
+#
+# India's equity regime as of 2026, held here as settings rather than literals
+# per §8.2's own instruction — a statute change is a config edit, never a code
+# change. Starting points. Deliberately outside the hashed `macro:` block, for
+# the same reason `deployment_pace:` is: policy, not an assumption a metric
+# computes with.
+friction:
+  stcg_pct: 20.0          # Short-term capital gains on equity
+  ltcg_pct: 12.5          # Long-term capital gains on equity
+  ltcg_holding_days: 365  # At or beyond this many days, the long-term rate applies
+  slippage_bps: 100       # ROUND TRIP — entry and exit together, deducted from
+                          # the gross return before tax, which is the order the
+                          # costs are actually borne in
+
 # ── Output ──
 output:
   formats: ["html", "md", "json"]

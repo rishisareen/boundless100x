@@ -26,6 +26,13 @@ fail-closed answer to "may capital be deployed into this?", whose eligibility
 question follows the lane. A later unit's reinvestment router is its only
 consumer.
 
+A proposal to review an exit additionally carries a `friction` reading: what
+the position is *modeled* to keep after capital-gains tax and round-trip
+slippage, stated beside its gross figure so neither is ever read alone. It is
+an estimate in the strict sense — the holding period runs from a `probe`
+confirmation date rather than a fill, and market bars stand in for trade
+prices — and `lifecycle/friction.py` is where that language is enforced.
+
 One run-level input reaches this loop: the deployment-pace modulator reads the
 cached corpus's median earnings-yield spread once, ahead of the evaluator's
 construction, and hands in a trigger set whose *entry* thresholds are tighter
@@ -34,11 +41,13 @@ why macro is allowed to slow buying and nothing else.
 """
 
 import logging
+from datetime import date
 
 from boundless100x.action_policy import (
     _coverage_constraints,
     _eligibility_constraints,
 )
+from boundless100x.lifecycle import friction as friction_module
 from boundless100x.lifecycle import pace as pace_module
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.checkpoints import (
@@ -200,6 +209,63 @@ def routing_safety(
     return {"lane": lane, "clear": not reasons, "reasons": reasons}
 
 
+def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict | None:
+    """What a proposed exit is modeled to keep after tax and slippage.
+
+    Attached to an `exit_review` proposal because that is the one transition
+    whose headline number is a *return*, and a gross return overstates what a
+    position keeps by enough to change the decision — §8.2's whole point. Gross
+    and net travel together from here on (R5).
+
+    **The entry date is the most recent transition into `probe`**, which is a
+    confirmation date rather than a fill; the exit date is the run's `as_of`,
+    which is still moving while the exit is only proposed. Hence
+    `basis: "estimate"` — every figure downstream of those two proxies is a
+    model, and `lifecycle/friction.py` says so in every string it renders.
+
+    A company with no recorded `probe` transition returns **None**, and the
+    proposal carries no `friction` key at all: there is no modeled position to
+    price, which is a different fact from a position that could not be priced,
+    and the two must not render alike. `exited` is deliberately not handled
+    here — it is never an `advance()` proposal target, and its `recorded`
+    reading is written where an exit is actually confirmed.
+
+    A failure computing the reading costs the reading, never the exit proposal.
+    A kill-switch that fired must reach the owner whether or not a price series
+    could be read beside it.
+    """
+    probes = [
+        record
+        for record in entry.get("state_history") or []
+        if isinstance(record, dict) and record.get("to") == lifecycle_states.PROBE
+    ]
+    if not probes:
+        return None
+
+    try:
+        return friction_module.model_exit(
+            (result.data or {}).get("price"),
+            # The last matching record, for `_evaluate_since_state_entry`'s
+            # reason: history is append-only and in order, so re-entering a
+            # position restarts the clock. Dating a holding period from a stint
+            # that already ended would put it in the wrong tax bracket.
+            probes[-1].get("at"),
+            # The same clock the rest of the run reads, so a replay of an old
+            # decision reproduces the figure it was decided on.
+            as_of or date.today(),
+            config=getattr(service, "config", {}),
+            basis=friction_module.BASIS_ESTIMATE,
+        )
+    except Exception as e:
+        logger.warning(f"{ticker}: friction reading could not be computed: {e}")
+        return {
+            **friction_module.unavailable(
+                f"the friction model could not be computed ({e})"
+            ),
+            "basis": friction_module.BASIS_ESTIMATE,
+        }
+
+
 def record_checkpoints(watchlist, ticker: str, result) -> dict:
     """Store the checkpoints Pass 2 proposed, if it produced any.
 
@@ -331,6 +397,24 @@ def advance_ticker(
             proposal["evidence"] = (
                 f"{proposal['evidence']} [deployment pace: {pace['evidence']}]"
             )
+
+        # Appended to the evidence *before* the transition below writes it, so
+        # the append-only history records the net figure beside the gross one
+        # rather than only the reason the exit was proposed. An unavailable
+        # reading is still attached — the CLI says why it could not be
+        # computed — but nothing goes into the evidence, because a recorded
+        # line claiming a friction estimate that does not exist is worse than
+        # a line that never mentioned one.
+        if proposal["to"] == lifecycle_states.EXIT_REVIEW:
+            reading = _friction_for_exit(service, ticker, entry, result, as_of)
+            if reading is not None:
+                proposal["friction"] = reading
+                if reading.get("available"):
+                    proposal["evidence"] = (
+                        f"{proposal['evidence']} "
+                        f"[{friction_module.describe(reading)}]"
+                    )
+
         should_apply = apply if moves_money else True
 
         if should_apply:
