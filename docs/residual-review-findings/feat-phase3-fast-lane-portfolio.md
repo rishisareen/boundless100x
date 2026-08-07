@@ -78,6 +78,13 @@ survived triage.
   because `check_concentration` only reports groups of 2+. Harmless at the
   shipped cap of 3.
 
+  **The stakes rose in Tranche 1b.** `portfolio.would_breach` now gates the
+  money-moving path as well as the advisory one, so a sectorless name is a
+  silent pass on a transition rather than on a recommendation. The lane axis
+  fails closed on every gap it meets; the sector axis still fails *open* on
+  this one, which is the inconsistency to close in Tranche 3. Refetching the
+  corpus is the operational mitigation until then.
+
 ## Reliability
 
 - **A snapshot is written before evaluation.** `record_snapshot` commits
