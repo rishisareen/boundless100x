@@ -385,6 +385,15 @@ def _concentration_reasons(lane: str, sector, reading: dict | None) -> list[str]
     failure mode `portfolio.unavailable` exists to make visible: absence reads
     as headroom.
 
+    **A lane with no configured cap blocks for the same reason.**
+    `portfolio._lane_counts` reports it honestly — `max: None`, "counted, not
+    checked" — and that honesty is precisely what the router must not read as
+    room. Treated as a pass, the one lane nobody had got round to configuring
+    became the one lane capital could always flow into, which inverts the
+    guardrail. Zero is a cap, not a gap: `portfolio._cap` allows it because
+    "hold nothing in this lane" is a real instruction, and it blocks on the cap
+    it breaches rather than on missing configuration.
+
     The sector half is deliberately partial and says so. `check_concentration`
     reports groups of two or more, so a candidate joining a sector that
     currently holds one positioned name is invisible here. That is the group
@@ -409,7 +418,14 @@ def _concentration_reasons(lane: str, sector, reading: dict | None) -> list[str]
     else:
         cap = lane_row.get("max")
         held = lane_row.get("positioned", 0)
-        if cap is not None and held + 1 > cap:
+        if cap is None:
+            reasons.append(
+                f"the {lane} lane holds {held} positioned name(s) and has no cap "
+                f"configured (portfolio.max_positioned_per_lane[{lane}]) — there "
+                f"is no limit to check one more against, so routing is refused "
+                f"rather than assumed"
+            )
+        elif held + 1 > cap:
             reasons.append(
                 f"the {lane} lane already holds {held} of a maximum {cap} "
                 f"positioned name(s) — one more would breach the cap "

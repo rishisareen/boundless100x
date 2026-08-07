@@ -565,6 +565,91 @@ class TestRanking:
         assert view["proposal"]["ticker"] == "READY"
 
 
+class TestALaneWithNoConfiguredCapFailsClosed:
+    """Absence must not read as headroom — the failure `_concentration_reasons`
+    exists to prevent, in its own words.
+
+    `portfolio._lane_counts` already handles a missing cap honestly: it reports
+    `max: None` and a note saying "counted, not checked". The router read the
+    same None as a lane with room, so a lane nobody configured a cap for was the
+    *only* lane capital could always flow into. Every neighbouring rule here
+    fails closed — an unbuildable reading blocks, a lane the reading does not
+    describe blocks, an unrecognised lane verdict blocks — and this was the one
+    gap in that posture.
+    """
+
+    def config(self) -> dict:
+        """Caps for the core lane only. The re-rating lane is declared in
+        `LANES`, tracked on entries, and simply has no cap configured — which is
+        exactly the shape a half-finished `portfolio:` block takes."""
+        return {"portfolio": {
+            "max_positioned_per_lane": {"core": 2},
+            "max_positioned_per_sector": 3,
+        }}
+
+    def setup_uncapped_lane(self, wm, queue):
+        completed_exit(wm, queue)
+        # A positioned name puts the lane in the reading with `max: None`, which
+        # is the case that reaches the router's cap branch at all.
+        positioned(wm, "FASTHELD", lane="rerating")
+        return [candidate(wm, "FASTONE", state="watch", lane="rerating",
+                          buy_zone=True)]
+
+    def test_a_candidate_in_an_uncapped_lane_is_blocked(self, wm, queue):
+        outcomes = self.setup_uncapped_lane(wm, queue)
+
+        view = queue.propose_routing(
+            wm, outcomes, concentration_for(wm, self.config()), as_of=AS_OF
+        )
+
+        assert view["proposal"] is None
+        assert [b["ticker"] for b in view["blocked"]] == ["FASTONE"]
+
+    def test_the_reason_names_the_missing_configuration(self, wm, queue):
+        """A blocked candidate whose reason does not say what to configure is a
+        dead end the owner cannot clear."""
+        outcomes = self.setup_uncapped_lane(wm, queue)
+
+        view = queue.propose_routing(
+            wm, outcomes, concentration_for(wm, self.config()), as_of=AS_OF
+        )
+        reasons = " | ".join(view["blocked"][0]["reasons"])
+
+        assert "rerating" in reasons
+        assert "max_positioned_per_lane" in reasons
+
+    def test_a_configured_lane_with_room_still_routes(self, wm, queue):
+        """The control: failing closed on a missing cap must not fail closed on
+        a cap that exists and has headroom."""
+        completed_exit(wm, queue)
+        outcomes = [candidate(wm, "COREONE", state="watch", buy_zone=True)]
+
+        view = queue.propose_routing(
+            wm, outcomes, concentration_for(wm, self.config()), as_of=AS_OF
+        )
+
+        assert view["proposal"]["ticker"] == "COREONE"
+        assert view["blocked"] == []
+
+    def test_a_zero_cap_still_reads_as_a_cap_not_as_a_gap(self, wm, queue):
+        """"Hold nothing in this lane" is a real instruction, and `portfolio._cap`
+        allows it — so a configured zero must block on the cap it breaches
+        rather than on a configuration nobody wrote."""
+        completed_exit(wm, queue)
+        config = {"portfolio": {"max_positioned_per_lane": {"core": 0, "rerating": 0},
+                                "max_positioned_per_sector": 3}}
+        outcomes = [candidate(wm, "COREONE", state="watch", buy_zone=True)]
+
+        view = queue.propose_routing(
+            wm, outcomes, concentration_for(wm, config), as_of=AS_OF
+        )
+        reasons = " | ".join(view["blocked"][0]["reasons"])
+
+        assert view["proposal"] is None
+        assert "maximum 0" in reasons
+        assert "max_positioned_per_lane" not in reasons
+
+
 class TestRoutingSafetyIsConsulted:
     """KTD11's posture, and the lane asymmetry it exists for.
 

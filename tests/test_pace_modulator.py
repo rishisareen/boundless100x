@@ -25,7 +25,13 @@ from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
 from boundless100x.service import AnalysisResult
 from boundless100x.watchlist import WatchlistManager
 from tests.conftest import make_financials
-from tests.test_lifecycle_advance import StubService, healthy_metrics, metric
+from tests.test_lifecycle_advance import (
+    StubService,
+    fast_lane_entry,
+    fast_lane_metrics,
+    healthy_metrics,
+    metric,
+)
 
 
 def reading(median=3.0, contributors=12):
@@ -463,6 +469,101 @@ class TestThroughAdvance:
         after = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
 
         assert before == after
+
+
+class TestThePaceClauseIsAttachedByTrigger:
+    """The note may only appear on a proposal a threshold actually moved.
+
+    `modulate` renders its own evidence from the values it wrote, because that
+    line "must never be able to claim a tightening that did not happen". The
+    same rule has to hold one layer up, where the line is *recorded*:
+    `watchlist.transition` writes a proposal's evidence into an append-only
+    history, so a clause attached to the wrong proposal is permanent.
+
+    Two triggers now propose `probe`, and only one of them is tightenable.
+    `valuation_buy_zone` carries `metric` conditions with thresholds a factor
+    can move; `fast_lane_buy_zone`'s single condition is
+    `lane_verdict: qualifies` and holds no threshold anywhere. Keyed by
+    destination state — which is how this was written when exactly one trigger
+    targeted `probe` — the clause reached both. `decision["adjusted"]` is keyed
+    by trigger id, which is the granularity the question actually has.
+    """
+
+    def both_lanes(self, wm):
+        """A core entry and a fast-lane entry, both one run from `probe`."""
+        watched(wm, "ASTRAL")
+        fast_lane_entry(wm, ticker="ZENSAR", state="watch")
+
+    def run(self, wm, apply=False):
+        # `fast_lane_metrics` clears all six lane gates *and* stays inside the
+        # tightened core buy zone, so both lanes propose an entry in one run —
+        # which is the only arrangement that can tell the two apart.
+        service = TestThroughAdvance().service(
+            metrics=fast_lane_metrics(), composite=6.5
+        )
+        out = advance(service, wm, apply=apply, pace_reading=reading(median=-4.0))
+        assert out["pace"]["applied"] is True
+        return {o["ticker"]: o["proposal"] for o in out["outcomes"]}
+
+    def test_the_core_proposal_carries_the_clause(self, wm):
+        self.both_lanes(wm)
+        core = self.run(wm)["ASTRAL"]
+
+        assert core["trigger_id"] == "valuation_buy_zone"
+        assert core["to"] == "probe"
+        assert "deployment pace" in core["evidence"].lower()
+        assert core["pace"]["applied"] is True
+
+    def test_the_fast_lane_proposal_does_not(self, wm):
+        """Nothing about `fast_lane_buy_zone` was tightened, so nothing may say
+        it was."""
+        self.both_lanes(wm)
+        fast = self.run(wm)["ZENSAR"]
+
+        assert fast["trigger_id"] == "fast_lane_buy_zone"
+        assert fast["to"] == "probe"
+        assert "pace" not in fast["evidence"].lower()
+        assert "pace" not in fast
+
+    def test_the_recorded_history_line_carries_no_pace_claim_either(self, wm):
+        """The damage this does: the evidence is written, once, forever."""
+        self.both_lanes(wm)
+        self.run(wm, apply=True)
+
+        record = wm.get("ZENSAR")["state_history"][-1]
+        assert record["to"] == "probe"
+        assert "pace" not in record["evidence"].lower()
+
+        # The core lane's record is the control: the same run, the same
+        # destination, and there the claim is true.
+        assert "pace" in wm.get("ASTRAL")["state_history"][-1]["evidence"].lower()
+
+    def test_the_attached_record_lists_only_that_triggers_own_changes(self, wm):
+        """And the string recorded is the one the attached payload states —
+        two renderings of a tightening are two things that can disagree."""
+        self.both_lanes(wm)
+        core = self.run(wm)["ASTRAL"]
+
+        assert set(core["pace"]["adjusted"]) == {"valuation_buy_zone"}
+
+        clause = core["evidence"].split("[deployment pace: ", 1)[1].rstrip("]")
+        assert clause == core["pace"]["evidence"]
+        assert "pe_vs_historical" in clause and "trailing_peg" in clause
+
+    def test_a_fast_lane_entry_alone_still_reports_the_run_level_reading(self, wm):
+        """`adjusted_states` remains the run's display aggregate — the CLI line
+        that says the corpus is expensive is unchanged, only the per-proposal
+        attachment moved."""
+        fast_lane_entry(wm, ticker="ZENSAR", state="watch")
+        service = TestThroughAdvance().service(
+            metrics=fast_lane_metrics(), composite=6.5
+        )
+
+        out = advance(service, wm, pace_reading=reading(median=-4.0))
+
+        assert out["pace"]["applied"] is True
+        assert out["pace"]["adjusted_states"] == ("probe",)
+        assert out["outcomes"][0]["proposal"]["trigger_id"] == "fast_lane_buy_zone"
 
 
 class TestNonFiniteReadingsFailClosed:

@@ -309,14 +309,42 @@ def modulate(
     # evidence line is what justifies a buy, and it must never be able to claim
     # a tightening that did not happen.
     rendered = "; ".join(
-        f"{c['metric']} {c['from']}->{c['to']} "
-        f"({'stricter' if c['to'] != c['from'] else 'unchanged'})"
-        for changes in decision["adjusted"].values()
-        for c in changes
+        _render_changes(changes) for changes in decision["adjusted"].values()
     )
     decision["evidence"] = f"{decision['reason']} ({rendered})"
     logger.info(f"Deployment pace: {decision['evidence']}")
     return modulated, decision
+
+
+def _render_changes(changes: list[dict]) -> str:
+    """The thresholds that moved, as a person reads them."""
+    return "; ".join(
+        f"{c['metric']} {c['from']}->{c['to']} "
+        f"({'stricter' if c['to'] != c['from'] else 'unchanged'})"
+        for c in changes
+    )
+
+
+def evidence_for(decision: dict | None, trigger_id: str) -> str:
+    """The pace line for **one** trigger, or "" when nothing tightened it.
+
+    The run-level `evidence` above spans every trigger the modulation touched,
+    which is the right line for the run-level report and the wrong line to
+    attach to a single proposal. Two triggers now propose `probe` and only one
+    of them has thresholds a factor can move, so a proposal that was never
+    modulated must be able to ask this and be told, in as many words, nothing.
+
+    Keyed on `adjusted`, which is keyed by trigger id — the granularity the
+    question actually has. `adjusted_states` answers a coarser one ("did entry
+    tighten at all this run?") and is a display aggregate; used as an
+    attachment key it says yes for every `→ probe` trigger alike.
+    """
+    if not decision or not decision.get("applied"):
+        return ""
+    changes = (decision.get("adjusted") or {}).get(trigger_id)
+    if not changes:
+        return ""
+    return f"{decision['reason']} ({_render_changes(changes)})"
 
 
 def config_from(config: dict) -> dict:

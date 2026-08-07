@@ -33,6 +33,7 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
+from boundless100x import score_history
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.advance import advance
 from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
@@ -311,6 +312,98 @@ class TestCrashRecovery:
         assert len(exits) == 1
         assert exits[0]["details"] == queue.exits()[0]["friction"]
         assert wm.get("ASTRAL")["state"] == "exited"
+
+
+class TestPricingReadsOneSource:
+    """Confirming a sale is not a scoring run, and must not look like one.
+
+    The friction reading needs exactly one thing — the price series — and used
+    to obtain it by calling `service.analyze()`: the whole fetch suite (six
+    sources, each a network hit past its TTL at a 2s rate limit), all 51
+    metrics, scoring, eligibility, and, at Stage 4.6, **an append to the
+    git-tracked, append-only score history**. That last one is the real damage.
+    `score_history.jsonl` is a record of scoring runs somebody asked for; a row
+    written because a position was sold is a run nobody performed, and it lands
+    on the one code path whose entire design goal is that exactly two stores are
+    touched.
+    """
+
+    def scoring_service(self, entered: date) -> StubService:
+        """A stub whose `analyze` logs a history row, exactly as Stage 4.6 does.
+
+        The point of logging from the stub is that the assertion then has teeth
+        from the store's side rather than only from a call counter: an empty
+        history file is proof the pipeline was never entered, whatever route a
+        future refactor takes to the price series.
+        """
+
+        class ScoringService(StubService):
+            def analyze(self, ticker, use_llm=True, **kw):
+                result = super().analyze(ticker, use_llm=use_llm, **kw)
+                score_history.append_run(result, "abc123")
+                return result
+
+        return ScoringService(data={"price": stepped_price(entered)})
+
+    def test_confirming_an_exit_appends_nothing_to_the_score_history(self, wm, queue):
+        entered = reviewed_position(wm)
+        service = self.scoring_service(entered)
+
+        confirm_exit(wm, queue, "ASTRAL", service, entered + timedelta(days=400))
+
+        # Redirected to a tmp path by the autouse `isolate_score_history`
+        # fixture, so this asserts on the log the run would actually have
+        # written rather than on the repo's own.
+        assert not score_history.DEFAULT_HISTORY_PATH.exists()
+
+    def test_the_pipeline_is_never_run(self, wm, queue):
+        entered = reviewed_position(wm)
+        service = self.scoring_service(entered)
+
+        confirm_exit(wm, queue, "ASTRAL", service, entered + timedelta(days=400))
+
+        assert service.calls == []
+
+    def test_the_price_series_is_fetched_once_and_from_one_source(self, wm, queue):
+        entered = reviewed_position(wm)
+        service = priced_service(entered)
+
+        confirm_exit(wm, queue, "ASTRAL", service, entered + timedelta(days=400))
+
+        assert [call[0] for call in service.suite.price_volume.calls] == ["ASTRAL"]
+
+    def test_the_reading_is_the_same_one_the_pipeline_would_have_produced(
+        self, wm, queue
+    ):
+        """The fetch is the same TTL-cached DataFrame `fetch_all` would have
+        put in `data["price"]`, so the figure must not move."""
+        entered = reviewed_position(wm)
+
+        outcome = confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                               entered + timedelta(days=400))
+
+        assert outcome["friction"]["gross_return_pct"] == pytest.approx(50.0)
+        assert outcome["friction"]["net_return_pct"] == pytest.approx(42.875)
+        assert outcome["friction"]["basis"] == "recorded"
+
+    def test_a_fetch_that_raises_costs_the_reading_and_not_the_exit(self, wm, queue):
+        """The unavailable-with-reason behaviour is unchanged: the sale is a
+        fact, and a broken source must not stop it being recorded."""
+        entered = reviewed_position(wm)
+        service = priced_service(entered)
+
+        def refuses(*args, **kwargs):
+            raise RuntimeError("the price source is down")
+
+        service.suite.price_volume.fetch = refuses
+
+        outcome = confirm_exit(wm, queue, "ASTRAL", service,
+                               entered + timedelta(days=400))
+
+        assert outcome["ok"] is True
+        assert wm.get("ASTRAL")["state"] == "exited"
+        assert outcome["friction"]["available"] is False
+        assert "price source is down" in outcome["friction"]["reason"]
 
 
 class TestUnpriceableExits:

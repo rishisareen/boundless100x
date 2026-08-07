@@ -40,10 +40,12 @@ from pathlib import Path
 import pytest
 
 from boundless100x.lifecycle import friction as friction_module
+from boundless100x.output import report_generator
 from boundless100x.output.report_generator import (
     FRICTION_UNAVAILABLE_LABEL,
     ReportGenerator,
 )
+from boundless100x.watchlist import RERATING_LANE
 from tests.conftest import make_result
 
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
@@ -301,6 +303,19 @@ class TestBreakEven:
         assert generator._build_lane_status(
             lane_context(lane="core", state="probe")
         )["breakeven"] is None
+
+    def test_the_lane_it_gates_on_is_the_shared_constant(self, generator):
+        """One statement of what the fast lane is called.
+
+        `advance.py` and `lane_view.py` both import `RERATING_LANE` from
+        `watchlist`; a bare `"rerating"` literal here is a third spelling of the
+        same word with nothing keeping it in step, and this gate decides whether
+        a whole section renders.
+        """
+        assert report_generator.RERATING_LANE is RERATING_LANE
+        assert generator._build_lane_status(
+            lane_context(lane=RERATING_LANE, state="probe")
+        )["breakeven"] is not None
 
 
 class TestRendering:

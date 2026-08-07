@@ -46,6 +46,12 @@ against, would leave the books wrong — which is worse than a reading that says
 in the house style used everywhere else, unknown *with its reason*. So an
 unpriceable exit records `{available: false, reason}` on both stores.
 
+**Two stores are written and exactly one source is read.** The friction reading
+needs the price series and nothing else, so it fetches the price series and
+nothing else. Running the pipeline for it — which is how this was first written
+— also meant appending to the append-only score history at Stage 4.6, logging a
+scoring run that never happened every time a sale was confirmed.
+
 That draws the line for what *is* a refusal. A failure in the **pricing** half
 costs the reading and nothing else. A failure in the **identifying** half —
 the entry cannot be read, the history holds no `exit_review` transition to key
@@ -88,9 +94,22 @@ def _friction_for_confirmed_exit(service, ticker: str, entry: dict, exit_date) -
     than trade prices, no cost basis anywhere. `lifecycle/friction.py` carries
     that language, and this function only chooses the two dates.
 
+    **One source, and no compute engine.** The reading needs exactly one thing
+    — the price series — and reaching it through `service.analyze()` bought
+    that column at the price of the whole pipeline: six fetchers, each a
+    network hit past its TTL at a two-second rate limit, then 51 metrics,
+    scoring and eligibility. Worse, `analyze` appends a row to the git-tracked,
+    append-only score history at Stage 4.6, so confirming a sale logged a
+    scoring run nobody performed — on the one path whose entire design is that
+    exactly two stores are written. `suite.price_volume.fetch` returns the same
+    TTL-cached DataFrame `fetch_all` would have put in `data["price"]`, so the
+    figure is unchanged and only the cost is.
+
     Never raises. Every gap it can meet comes back as unavailable-with-reason,
     because the exit records either way and the alternative — an exception here
     aborting a sale that already happened — is the failure this design refuses.
+    An empty frame from a source that returned nothing is one of those gaps:
+    `friction.model_exit` answers it with its own reason rather than a figure.
     """
     probe = lifecycle_states.last_transition_into(entry, lifecycle_states.PROBE)
     if probe is None:
@@ -103,9 +122,12 @@ def _friction_for_confirmed_exit(service, ticker: str, entry: dict, exit_date) -
         }
 
     try:
-        result = service.analyze(ticker, use_llm=False, include_momentum=False)
+        suite = service.suite
+        price = suite.price_volume.fetch(
+            ticker, years=suite.price_years, output_dir=suite.raw_data_dir
+        )
         return friction_module.model_exit(
-            (result.data or {}).get("price"),
+            price,
             probe.get("at"),
             exit_date,
             config=getattr(service, "config", {}),

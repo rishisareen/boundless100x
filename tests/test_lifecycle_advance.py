@@ -14,10 +14,13 @@ what the owner reads to decide; and every outcome carries a fail-closed
 """
 
 from datetime import date, timedelta
+from functools import lru_cache
 
+import pandas as pd
 import pytest
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.lifecycle import lane_gates as lane_gates_module
 from boundless100x.lifecycle.advance import (
     advance,
     advance_ticker,
@@ -30,6 +33,22 @@ from boundless100x.watchlist import WatchlistManager
 
 # A fixed run date, so a time stop reads the same on any day the suite runs.
 AS_OF = date(2026, 8, 7)
+
+
+@lru_cache(maxsize=1)
+def engine_metric_ids() -> frozenset:
+    """The real registry's metric ids, built once for the whole session.
+
+    `advance()` validates both the trigger registry and the lane-gate registry
+    against `service.engine.metrics` at startup, and a stub carrying an empty
+    mapping would make every declared metric id read as unknown — so the stub
+    has to answer that question the way production does. Cached because the
+    answer is a property of the shipped registry, and every StubService in the
+    suite would otherwise re-parse it.
+    """
+    from boundless100x.compute_engine.engine import ComputeEngine
+
+    return frozenset(ComputeEngine().metrics)
 
 
 def metric(value=None, *, flags=None, series=None, error=None) -> MetricResult:
@@ -72,6 +91,32 @@ def fast_lane_metrics(**overrides) -> dict:
     return metrics
 
 
+class StubPriceFetcher:
+    """`suite.price_volume` — the one source a confirmed exit consults.
+
+    Records its calls, because "how many sources did this touch?" is the whole
+    question on the exit path: `confirm_exit` needs one column and used to run
+    the entire pipeline to read it.
+    """
+
+    def __init__(self, price):
+        self._price = price
+        self.calls: list[tuple] = []
+
+    def fetch(self, ticker, years=10, output_dir=None):
+        self.calls.append((ticker, years, output_dir))
+        return pd.DataFrame() if self._price is None else self._price
+
+
+class StubSuite:
+    """The fetcher suite, in the shape `DataFetcherSuite` exposes it."""
+
+    def __init__(self, price):
+        self.price_volume = StubPriceFetcher(price)
+        self.price_years = 10
+        self.raw_data_dir = "/nonexistent"
+
+
 class StubService:
     """Stands in for the pipeline; `advance` only needs analyze() and engine."""
 
@@ -82,7 +127,13 @@ class StubService:
         self._verdict = verdict
         self._data = data or {}
         self._flags = list(flags or [])
-        self.engine = type("E", (), {"registry_hash": "abc123", "metrics": {}})()
+        self.engine = type(
+            "E", (),
+            {"registry_hash": "abc123", "metrics": engine_metric_ids()},
+        )()
+        # The same series `data["price"]` carries, reachable the way a caller
+        # that wants only a price series reaches it — without running analyze().
+        self.suite = StubSuite(self._data.get("price"))
         self.calls: list[str] = []
         # `advance` builds no report, so it must not pay for a momentum read.
         self.momentum_requested: bool | None = None
@@ -362,6 +413,93 @@ class TestBatch:
         # modulator records that it did not evaluate rather than claiming a
         # modulation that never happened.
         assert result["pace"]["applied"] is False
+
+
+class TestTheLaneGateRegistryIsValidatedAtStartup:
+    """A lane no company can enter looks exactly like a lane with no candidates.
+
+    That sentence is `lane_gates.py`'s own statement of why its startup check
+    exists, and on the production path the check never ran: `advance_ticker`
+    built a `LaneGateEvaluator()` per re-rating ticker with no
+    `known_metric_ids`, and `validate_lane_gates` guards the unknown-metric-id
+    check behind `is not None`. Renaming a metric in `size.yaml` would have sent
+    the fast lane permanently indeterminate with a green suite and no error.
+
+    `TriggerEvaluator` is handed `set(service.engine.metrics)` at both of its
+    production call sites; the sibling evaluator must be too.
+    """
+
+    def registry(self, tmp_path, metric_id: str):
+        path = tmp_path / "lane_gates.yaml"
+        path.write_text(
+            "lane_gates:\n"
+            "  institutional_accumulation:\n"
+            "    label: Institutional accumulation\n"
+            "    conditions:\n"
+            f"      - metric: {metric_id}\n"
+            "        comparator: gte\n"
+            "        threshold: 2\n"
+        )
+        return path
+
+    def test_a_gate_naming_an_unknown_metric_raises(
+        self, wm, evaluator, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            lane_gates_module, "DEFAULT_LANE_GATES_PATH",
+            self.registry(tmp_path, "institutional_accumulation_streek"),
+        )
+        fast_lane_entry(wm, state="watch")
+
+        with pytest.raises(ValueError, match="institutional_accumulation_streek"):
+            advance(StubService(fast_lane_metrics()), wm, evaluator=evaluator)
+
+    def test_it_raises_before_a_single_company_is_advanced(
+        self, wm, evaluator, tmp_path, monkeypatch
+    ):
+        """Startup, not lazily on the first re-rating ticker.
+
+        An empty watchlist is the sharpest form of the claim: with nothing to
+        advance there is no per-ticker path to reach the registry from at all,
+        so a run that still raises can only have validated it up front.
+        """
+        monkeypatch.setattr(
+            lane_gates_module, "DEFAULT_LANE_GATES_PATH",
+            self.registry(tmp_path, "no_such_metric"),
+        )
+
+        with pytest.raises(ValueError, match="no_such_metric"):
+            advance(StubService(), wm, evaluator=evaluator)
+
+    def test_the_shipped_registry_advances_cleanly(self, wm, evaluator):
+        """The other half: validation that fires on everything is not validation."""
+        fast_lane_entry(wm, state="watch")
+        out = advance(
+            StubService(fast_lane_metrics(), composite=6.5), wm, evaluator=evaluator
+        )
+
+        assert out["errors"] == []
+        assert out["outcomes"][0]["lane_gates"]["verdict"] == "qualifies"
+
+    def test_the_registry_is_read_once_a_run_not_once_a_ticker(
+        self, wm, evaluator, monkeypatch
+    ):
+        """One run, one reading — which is also what keeps an edited
+        `lane_gates.yaml` taking effect at a run boundary rather than partway
+        through a loop."""
+        reads = []
+        real = lane_gates_module.load_lane_gates
+        monkeypatch.setattr(
+            lane_gates_module, "load_lane_gates",
+            lambda path=None: (reads.append(path), real(path))[1],
+        )
+        for ticker in ("ZENSAR", "COFORGE"):
+            fast_lane_entry(wm, ticker=ticker, state="watch")
+
+        advance(StubService(fast_lane_metrics(), composite=6.5), wm,
+                evaluator=evaluator)
+
+        assert len(reads) == 1
 
 
 class TestFastLanePath:
@@ -686,3 +824,18 @@ class TestRoutingSafety:
         safety = routing_safety("momentum", {"verdict": "eligible"}, {}, None)
 
         assert safety["clear"] is False
+
+    def test_the_fail_closed_reason_points_at_what_has_to_change(self):
+        """The branch catches two different situations and must not assert one
+        of them.
+
+        A lane can reach it by not being in `LANES` at all, or by being a
+        perfectly declared lane that this function has no safety question for
+        yet — a third lane added to `watchlist.LANES` lands here on the day it
+        is declared. "Not a declared lane" is false in that case, and it sends
+        whoever reads it to the wrong file.
+        """
+        reason = routing_safety("momentum", {"verdict": "eligible"}, {}, None)["reasons"][0]
+
+        assert "lifecycle/advance.py" in reason
+        assert "not a declared lane" not in reason

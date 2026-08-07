@@ -18,8 +18,12 @@ buying opportunity.
 Both lanes run through this one loop. A re-rating entry additionally has its
 six lane gates evaluated, and its catalyst, state history and lane are handed
 to the evaluator so the fast lane's own conditions can be read at all; a
-core-lane advance never builds a lane-gate evaluator and reaches the same
-decision, on the same evidence, as it did before the second lane existed.
+core-lane advance never consults the lane gates and reaches the same decision,
+on the same evidence, as it did before the second lane existed. The lane-gate
+evaluator is built **once per run and validated against the engine's metric
+ids**, beside the trigger evaluator and for the same reason: a gate naming a
+metric nobody computes reads indeterminate forever, and from inside the loop
+that is indistinguishable from a lane with no qualifying candidates.
 
 Every outcome also carries a `routing_safety` reading — a deterministic,
 fail-closed answer to "may capital be deployed into this?", whose eligibility
@@ -206,9 +210,13 @@ def routing_safety(
     replace, and would leave the fast lane unable to receive capital even from
     its own exits.
 
-    A lane nobody declared blocks outright. There is no default question to
-    fall back on, and answering an unrecognised lane with the core lane's test
-    would be a guess presented as a clearance.
+    A lane with no question here blocks outright. There is no default to fall
+    back on, and answering with the core lane's test would be a guess presented
+    as a clearance. Two different situations land there — a lane nobody
+    declared, and a lane declared in `watchlist.LANES` that this function has
+    no branch for yet — so the reason names the file that has to change rather
+    than asserting the first, which would send whoever reads it to the wrong
+    place on the day a third lane is added.
 
     A later unit's reinvestment router is the only consumer.
     """
@@ -220,8 +228,9 @@ def routing_safety(
         reasons += _eligibility_constraints(eligibility)
     else:
         reasons.append(
-            f"lane {lane!r} is not a declared lane — no safety question applies "
-            f"to it, so routing is blocked"
+            f"lane {lane!r} has no routing-safety question declared for it in "
+            f"lifecycle/advance.py — routing is blocked rather than cleared by "
+            f"a test that was never written for this lane"
         )
 
     return {"lane": lane, "clear": not reasons, "reasons": reasons}
@@ -353,8 +362,16 @@ def advance_ticker(
     apply: bool = False,
     as_of=None,
     pace: dict | None = None,
+    lane_gates: LaneGateEvaluator | None = None,
 ) -> dict:
-    """Re-score one company and decide what its state should be next."""
+    """Re-score one company and decide what its state should be next.
+
+    `lane_gates` is the run's validated lane-gate evaluator, injected the way
+    `evaluator` already is — `advance()` builds one per run against the
+    engine's metric ids. It is optional so a direct caller (a test, a future
+    single-ticker surface) still works; that caller gets an unvalidated
+    evaluator built here, which is the seam `lane_view` has always used.
+    """
     state = watchlist.get(ticker)["state"]
 
     # No report is built on this path, and momentum is only ever rendered into
@@ -375,13 +392,15 @@ def advance_ticker(
     outcomes = evaluate_all(entry.get("checkpoints"), result.data, as_of)
     checkpoint_summary = summarise(outcomes)
 
-    # Only the fast lane asks this question, so only the fast lane pays for it:
-    # a core-lane advance never constructs the evaluator at all. Built per
-    # re-rating entry rather than once per run because the cost is one small
-    # YAML parse and the alternative — a module-level cache — would make an
-    # edited `lane_gates.yaml` take effect at an unpredictable moment.
+    # Only the fast lane asks this question, so only the fast lane is evaluated
+    # — a core-lane advance produces None and reaches the same decision it did
+    # before the second lane existed. The evaluator itself now comes from the
+    # run rather than being built here: see `advance()` for why the validation
+    # that requires has to happen once, at startup, against the engine's metric
+    # ids. A caller that supplied none gets the old unvalidated construction, so
+    # the direct-call seam keeps working.
     lane_gate_result = (
-        LaneGateEvaluator().evaluate(
+        (lane_gates or LaneGateEvaluator()).evaluate(
             result.metrics, result.scores, entry.get("catalyst", {})
         )
         if lane == RERATING_LANE
@@ -448,14 +467,35 @@ def advance_ticker(
         moves_money = lifecycle_states.moves_money(proposal["to"])
 
         # A tightened entry threshold must never be invisible in the record
-        # that justified the buy. Attached only to the transitions it could
-        # have affected — saying "pace applied" beside an exit review would
-        # imply macro reached a kill-switch, which is exactly what it may not do.
-        if pace and pace.get("applied") and proposal["to"] in pace.get("adjusted_states", ()):
-            proposal["pace"] = pace
-            proposal["evidence"] = (
-                f"{proposal['evidence']} [deployment pace: {pace['evidence']}]"
-            )
+        # that justified the buy — and, just as strictly, must never appear in
+        # a record it did not tighten. Attached **by trigger id**, which is how
+        # `pace["adjusted"]` is keyed.
+        #
+        # Keyed by destination state, as this was while exactly one trigger
+        # targeted `probe`, the clause reached both lanes' entries. Only one of
+        # them is tightenable: `valuation_buy_zone` carries `metric` conditions
+        # with thresholds a factor can move, while `fast_lane_buy_zone`'s single
+        # condition is `lane_verdict: qualifies` and holds no threshold
+        # anywhere. So a fast-lane buy was recorded — permanently, since
+        # `transition` writes evidence into an append-only history — claiming a
+        # discipline never applied to it. `pace.py` renders its own line from
+        # the values it actually wrote for exactly this reason; the rule has to
+        # survive the layer that records the line.
+        #
+        # `adjusted_states` stays what it is: the run-level display aggregate
+        # the CLI prints before the table, and no longer an attachment key.
+        changes = ((pace or {}).get("adjusted") or {}).get(proposal["trigger_id"])
+        if pace and pace.get("applied") and changes:
+            clause = pace_module.evidence_for(pace, proposal["trigger_id"])
+            # The record carried on the proposal states only this trigger's own
+            # changes, so whatever reads it back agrees with the string that
+            # went into the history rather than with the whole-run line.
+            proposal["pace"] = {
+                **pace,
+                "adjusted": {proposal["trigger_id"]: changes},
+                "evidence": clause,
+            }
+            proposal["evidence"] = f"{proposal['evidence']} [deployment pace: {clause}]"
 
         # Appended to the evidence *before* the transition below writes it, so
         # the append-only history records the net figure beside the gross one
@@ -718,6 +758,14 @@ def advance(
     `pace_reading` lets a caller supply the corpus reading directly (tests, a
     future simulator) without touching `raw_data/`.
 
+    The lane-gate evaluator is resolved once here for the same shape of reason
+    and one further one: constructing it per ticker meant it was never handed
+    the engine's metric ids, so its startup validation — the check that turns a
+    gate naming a nonexistent metric into an error rather than into a lane
+    nobody can enter — never ran outside the tests. It raises rather than
+    degrading, because unreadable entry rules are not a reading to carry on
+    without.
+
     `queue` is the reinvestment store the routing view is derived from and
     written to. It is optional and defaults to None — see `_routing` for why
     that reads as *unavailable* rather than as an empty queue.
@@ -741,6 +789,26 @@ def advance(
             "adjusted": {}, "adjusted_states": (), "evidence": "",
         }
 
+    # Once per run, and **validated**, which is the whole point of building it
+    # here rather than inside the loop. `validate_lane_gates` guards its
+    # unknown-metric-id check behind `known_metric_ids is not None`, so a
+    # per-ticker `LaneGateEvaluator()` with no ids meant that check never ran on
+    # the production path: rename `institutional_accumulation_streak` in
+    # `size.yaml` and the fast lane goes permanently indeterminate with a green
+    # suite and no startup error — and, as `lane_gates.py` puts it, a lane no
+    # company can ever enter looks exactly like a lane with no qualifying
+    # candidates. `TriggerEvaluator` is handed the same set at both of its
+    # production call sites; the sibling has to be too.
+    #
+    # Deliberately **outside** the pace block's try/except. An unresolvable
+    # macro reading is a degraded reading to carry on without; an unreadable
+    # gate registry is the fast lane's entry rules being unreadable, and
+    # carrying on would mean admitting nobody while saying nothing. Building it
+    # per run rather than caching at module level also keeps the existing
+    # semantics: an edited `lane_gates.yaml` takes effect at the next run
+    # boundary, never partway through a loop.
+    lane_gates = LaneGateEvaluator(known_metric_ids=set(service.engine.metrics))
+
     tickers = watchlist.get_stale(90) if quarterly else watchlist.tickers()
 
     outcomes: list[dict] = []
@@ -750,7 +818,8 @@ def advance(
         try:
             outcomes.append(
                 advance_ticker(
-                    service, watchlist, ticker, evaluator, apply, as_of, pace
+                    service, watchlist, ticker, evaluator, apply, as_of, pace,
+                    lane_gates,
                 )
             )
         except Exception as e:

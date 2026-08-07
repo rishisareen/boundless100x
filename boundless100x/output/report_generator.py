@@ -21,6 +21,11 @@ from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_de
 # blank. `lifecycle/friction.py` imports nothing from this layer, so the
 # direction is one-way.
 from boundless100x.lifecycle.friction import config_from as friction_config_from
+# One statement of what the fast lane is called. `lifecycle/advance.py` and
+# `lifecycle/lane_view.py` both gate on this constant; a literal here would be a
+# third spelling with nothing keeping it in step, and it decides whether a whole
+# report section renders.
+from boundless100x.watchlist import RERATING_LANE
 
 logger = logging.getLogger(__name__)
 
@@ -1221,7 +1226,7 @@ class ReportGenerator:
         here would be reading a different model than the one that produced the
         figures beside it.
         """
-        if lane != "rerating":
+        if lane != RERATING_LANE:
             return None
 
         settings = assumptions or friction_config_from(None)
