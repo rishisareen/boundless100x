@@ -56,7 +56,7 @@ def stores(tmp_path, monkeypatch):
     """
     from rich.console import Console
 
-    from boundless100x import cli
+    from boundless100x import cli, cli_common, cli_lifecycle
     from boundless100x.lifecycle import reinvestment as reinvestment_module
     from boundless100x import watchlist as watchlist_module
 
@@ -64,7 +64,13 @@ def stores(tmp_path, monkeypatch):
     queue_path = tmp_path / "reinvestment_queue.json"
     monkeypatch.setattr(watchlist_module, "DEFAULT_WATCHLIST_PATH", watchlist_path)
     monkeypatch.setattr(reinvestment_module, "DEFAULT_QUEUE_PATH", queue_path)
-    monkeypatch.setattr(cli, "console", Console(width=200))
+    # Every module that imported the console by name holds its own binding, so
+    # widening it for one leaves the others writing to the original — and a
+    # capture taken on the wide one would then see nothing. The lifecycle
+    # surface lives in `cli_lifecycle`; `cli` re-exports its helpers.
+    wide = Console(width=200)
+    for module in (cli, cli_common, cli_lifecycle):
+        monkeypatch.setattr(module, "console", wide)
 
     class Stores:
         watchlist = watchlist_path

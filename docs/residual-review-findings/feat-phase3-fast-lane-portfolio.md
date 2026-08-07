@@ -134,7 +134,18 @@ survived triage.
 
 ## Structure
 
-- **`cli.py` crossed 1,000 lines** (953 → ~1,700). Four new command groups and
+- **~~`cli.py` crossed 1,000 lines~~** — **fixed** (Tranche 4). It had
+  reached 2,030 by the end of Tranche 3. The lifecycle surface moved to
+  `cli_lifecycle.py` (785 / 1,287 / 30 across `cli.py`,
+  `cli_lifecycle.py` and a new `cli_common.py` holding the shared console
+  and `setup_logging` — two modules cannot each own a `Console` without
+  owning two wrapping widths and two capture buffers). Registered with
+  `add_typer` the way `corpus` already was, with the helpers re-exported
+  from `cli.py` so no caller moved. The `_print_routing_result` drift the
+  finding named is fixed by a banner every `_print_*` now sits under. The
+  original follows.
+
+  It crossed 1,000 lines (953 → ~1,700). Four new command groups and
   six display helpers now sit interleaved with corpus, screen, sweep and
   backtest commands in one flat file, and the drift has already started —
   `_print_routing_result` is defined above the `# ── Display Helpers ──` banner

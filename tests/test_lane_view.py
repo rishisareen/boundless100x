@@ -408,10 +408,12 @@ class TestTheCliGate:
         """Gross and net travel together in the terminal too, and say `modeled`."""
         from rich.console import Console
 
-        from boundless100x import cli
+        from boundless100x import cli, cli_common, cli_lifecycle
         from boundless100x.cli import _print_lane_status
 
-        monkeypatch.setattr(cli, "console", Console(width=200))
+        wide = Console(width=200)
+        for module in (cli, cli_common, cli_lifecycle):
+            monkeypatch.setattr(module, "console", wide)
 
         _print_lane_status({
             "lane": "rerating", "state": "probe",
