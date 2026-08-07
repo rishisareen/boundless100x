@@ -87,13 +87,24 @@ boundless100x/
 │           ├── compounders.yaml
 │           └── hidden_gems_100x.yaml
 ├── lifecycle/                    # Phase 1 — the layer after the verdict
-│   ├── states.py                 # screen → qualify → watch → probe → scale
-│   ├── triggers.yaml             # Declared transitions + kill-switches
+│   ├── states.py                 # screen → qualify → watch → probe → scale;
+│   │                             # also owns `as_date` and `last_record_into`,
+│   │                             # the history rules that must agree with
+│   │                             # themselves across the layer
+│   ├── triggers.yaml             # Declared transitions + kill-switches, lane-scoped
 │   ├── evaluator.py              # TriggerEvaluator (mirrors EligibilityEvaluator)
 │   ├── checkpoints.py            # Machine-checkable half of Pass 2 monitorables
 │   ├── checkpoint_vocabulary.yaml
 │   ├── advance.py                # Re-score, evaluate, propose
-│   └── pace.py                   # Phase 2 — corpus-median entry-pace modulator
+│   ├── pace.py                   # Phase 2 — corpus-median entry-pace modulator
+│   ├── lane_gates.py             # Phase 3 — LaneGateEvaluator, the third gate
+│   ├── lane_gates.yaml           # evaluator beside eligibility + triggers
+│   ├── friction.py               # Phase 3 — modelled net-of-tax-and-slippage return
+│   ├── portfolio.py              # Phase 3 — count-based concentration guardrails
+│   ├── exit.py                   # Phase 3 — confirm_exit, the ONLY path to `exited`
+│   ├── reinvestment.py           # Phase 3 — append-only queue + routing proposal
+│   ├── reinvestment_queue.json   # Persisted queue (tracked, sibling to watchlist.json)
+│   └── lane_view.py              # Phase 3 — pure lane context both surfaces share
 ├── llm_layer/
 │   ├── orchestrator.py           # LLM pipeline (2 passes + extraction call)
 │   ├── checklist.py              # Pre-flight data quality checks
@@ -116,7 +127,7 @@ boundless100x/
 - **Two outputs per company**: the additive SQGLP composite answers "is this a quality compounder?"; the conjunctive eligibility gates in `registry.yaml` answer "could this plausibly 100x?". A company can score well and still fail a gate — that is the point, not a bug. Gates declare `veto_sources`: if the metric that would emit a veto flag (e.g. `reverse_dcf_growth`) is unavailable, the gate reads `indeterminate` rather than passing on ratios alone.
 - **Action guard** (`action_policy.py`): Pass 2 returns a `suggested_action`, but the action any surface *displays* is resolved in deterministic code. When the 100x verdict is `not_eligible`/`indeterminate`/missing, or the score carries `low_data_coverage`, a `buy`/`strong_buy` is capped to `watchlist` and the reason travels with it. Capping is not overriding — failing a gate makes a company an unlikely hundred-bagger, not a bad investment, so the action is lowered rather than flipped to `avoid`, and the model's original is always preserved as `llm_action`. The verdict is also given to Pass 2 as context, but prompt compliance is never the guard.
   - **`resolve_for_result(result)` is the single derivation**, called fresh by the service (Stage 4.5), `ReportGenerator._resolve_action`, and the CLI. It reads only `llm_analysis`, `eligibility` and `scores`. `AnalysisResult.final_action` is an **output** of that function and must never become an input to it — it is mutable and gets serialised into reports, so anything that rescores or re-evaluates eligibility afterwards leaves it stale, and a stale decision is as dangerous as an absent one. The render boundary logs a warning when a stored decision disagrees with the recomputed one.
-- **Macro assumptions** (inflation, G-Sec yield, discount rate, terminal growth) live in `config.yaml` under `macro:` and reach metrics as parameter defaults; a metric's own YAML params override them.
+- **Macro assumptions** (inflation, G-Sec yield, discount rate, terminal growth) live in `config.yaml` under `macro:` and reach metrics as parameter defaults; a metric's own YAML params override them. **Owner *policy* blocks sit deliberately outside the hashed `macro:` block** — `deployment_pace:`, `friction:` (STCG/LTCG rates, holding-period boundary, slippage) and `portfolio:` (sleeve split, tranche sizing, per-lane and per-sector name caps) are preferences, not assumptions a metric computes with, so tuning them must not move a scoring hash. Every threshold in them is a starting point awaiting Phase 4/5 simulator evidence.
 - **Lifecycle** (`lifecycle/`, Phase 1 of the v05 roadmap): the layer *after* the verdict. States are `screen → qualify → watch → probe → scale`, with `exit_review → exited` and `dropped`; `states.py` is the definition. Transitions are declared in `lifecycle/triggers.yaml` and evaluated by `TriggerEvaluator`, which **mirrors `EligibilityEvaluator`** — same imported `COMPARATORS`, same three-valued outcome, same per-condition `detail` strings, same "indeterminate, never a silent pass" rule. Registry validation runs at construction: unknown states, comparators, and metric ids are startup errors, because a trigger naming a nonexistent metric would read indeterminate forever and a kill-switch that never fires looks exactly like a thesis that never broke.
   - **`persist_years` is allowlisted** (`SERIES_SAFE_METRICS`). `raw_series` has no declared contract — `roiic` returns *capital employed* beside a percentage value, `pe_vs_historical` returns P/E multiples beside a percentile — so a consecutive-year rule on either would compare incompatible units and silently never fire. Adding a metric to the allowlist means reading its implementation first.
   - **Checkpoints** (`lifecycle/checkpoints.py`, vocabulary in `checkpoint_vocabulary.yaml`) are the machine-checkable half of Pass 2's monitorables; the prose half is unchanged. The vocabulary is closed to quarterly-readable series (Phase 0's `quarterly.csv` columns plus quarterly shareholding) so a checkpoint can always come due; an id outside it is demoted to prose at recording time. A data gap is `indeterminate`, never `missed` — and zero misses out of zero *due* checkpoints is indeterminate too, so an unmonitored position never reads like a verified one.
@@ -134,8 +145,17 @@ boundless100x/
   - **A figure is stored in the unit the filing stated, never converted** (KTD5). `unit` is a closed set: `inr_cr`/`inr`/`pct` settle against the accounts, `usd_mn`/`usd_bn`/`usd_tn`/`inr_lakh`/`inr_mn`/`inr_lakh_cr` are kept and skipped. Grounding asks whether the numeral is denominated the way the entry claims, so a USD figure grounds *as* a USD figure and the reading metrics refuse it with the reason. **Every INR-comparable metric must check** — the trap being a field name like `amount_inr_cr` that asserts a unit `unit` makes variable, which is how the now-retired `capex_pipeline` came to sum a USD figure into a rupee total. Discarding instead of storing (the pre-2026-08-07 rule) lost the reading *and* hid the gap, which then surfaced as an absent signal indistinguishable from a filing that said nothing. `usd_tn` and `inr_lakh_cr` were added only after a live sweep met them; a unit vocabulary is built from filings, not from first principles.
   - **Momentum refuses to diff across regimes** (`trajectory.py`, KTD5). Rows partition by `config_hash`, and separately by `synthetic`; a backfilled row never supplies the headline. Every figure states the actual day gap it spans. **Insufficient history is a distinct outcome, never a zero** — a zero delta means flat, no delta means unknown, and they look identical in a table. Kept out of `score_history.py`, whose contract is append and read.
   - **Pace modulation is entry-only** (`lifecycle/pace.py`, KTD7). §11's named input `earnings_yield_vs_gsec` is per-*company*, so wiring it in would tighten entry when the company is expensive — the inverse of the purpose. The input is the **median across the cached corpus**, computed once per run before the ticker loop, needing no new source and no number anyone must refresh. It derives a threshold-tightened *copy* of the `→ probe` triggers and passes it through the existing evaluator-injection seam; a spread *condition* would make macro a gate. Kill-switches, drops, and eligibility gates are untouched by construction. Too few contributors leaves thresholds alone: an unknown macro reading must not tighten entry any more than it may loosen it.
-  - **Every Phase 2 flag is registered** against `FORWARD_SIGNALS_ELEMENT` in `report_generator.FLAG_ELEMENT_MAP` (KTD6). That map falls back to `"composite"`, so an unregistered flag would render as an SQGLP signal on a ticker whose score did not move. No Phase 2 metric joins `SERIES_SAFE_METRICS`.
+  - **Every zero-weight metric's flag is registered** against `FORWARD_SIGNALS_ELEMENT` in `report_generator.FLAG_ELEMENT_MAP` (KTD6). That map falls back to `"composite"`, so an unregistered flag would render as an SQGLP signal on a ticker whose score did not move. Phase 3 shipped one unregistered and proved the point; the rule is now **mechanical rather than remembered** — the test derives the flag set from the registry (every metric at `weight: 0`, every flag literal its implementation can emit) instead of matching hardcoded id prefixes, which is what let the gap through. No zero-weight metric joins `SERIES_SAFE_METRICS`.
   - **R8 makes presentation load-bearing.** Zero weight means these metrics never receive a score, so the number is all a reader gets — and a bare number is not signal. The Forward Signals report section renders each with its direction of goodness and an interpretation band, states that nothing in it touched the composite, and shows an indeterminate signal as unknown *with its reason*.
+- **Two lanes** (Phase 3, `v05 §4.4`, `§8`, `§9`): the same state machine, two parameter sets. `LANES` is `core` (the compounder path) and `rerating` (the fast lane, 6–18 months, monetizing re-rating rather than duration).
+  - **A lane with its own gate set must not also be gated by the other's.** Four core triggers carry `lane: [core]` — without that, `qualification_failed` would drop any re-rating candidate the *100x* gates reject before its own gates were ever consulted, and `awaiting_entry_price` would strand it. The fast lane has a complete path of its own, including its own drop rule. The **six fundamentals kill-switches and `fundamentals_deteriorated` stay universal**, deliberately: §6.2 is explicit that the fast lane never trades through a fundamentals break. A trigger's absent `lane` key means "every lane"; `evaluate()` must forward `lane` to `applicable()` or the filter is dead code.
+  - **`lane_gates.yaml` is the third gate registry**, beside `registry.yaml`'s eligibility gates and `triggers.yaml`'s transitions. `LaneGateEvaluator` is `EligibilityEvaluator`'s second sibling — same comparators, same three-valued outcome, same indeterminate-never-a-silent-pass rule — asking the lifecycle's question ("does this qualify for the fast lane now?") rather than the compute engine's ("could this plausibly 100x?"). Construct it with `known_metric_ids` or its unknown-metric check silently never runs.
+  - **`exited` is reachable only through `watchlist exit`** (KTD10), never a trigger: no metric can observe that the owner sold, and a trigger firing on price would record a sale that may not have happened. `validate_triggers` rejects `to: exited` structurally. Two JSON files cannot be written atomically, so the window is made *recoverable*: validate everything first, write the queue event first keyed by an `exit_id` derived from the entry's own `exit_review` timestamp (so a retry computes the same one and the append is idempotent), write the transition second. **A retry adopts the stored date and payload rather than re-pricing** — it must complete the original sale, not a different one. The reverse order is unrecoverable by construction: an exited position with no event, and a state check that then refuses the very retry that could repair it.
+  - **Both stores commit copy-on-write** through a shared `_JsonStore` base in `watchlist.py`: stage on a deep copy, write via `atomic_write_json` (temp file + `os.replace` + directory fsync), adopt only on success. A failed save leaves `self.data` equal to disk, so no phantom state survives for a same-process retry. Each commit bumps a monotonic `revision`, and `_commit` re-reads the on-disk counter first — a lost update is a loud refusal rather than a silent clobber. `get()` returns a detached object after any commit; re-read rather than holding one across a mutator.
+  - **Friction is a modelled estimate, never a realized return** (KTD7). Every input is a proxy — a `probe` confirmation date rather than a fill, a market bar rather than a trade price, no cost basis — so `basis` distinguishes an in-flight `estimate` from a `recorded` reading, where "recorded" means the dates stopped moving, not that the figure stopped being a model. Slippage is a flat round-trip deduction applied before tax; STCG/LTCG is chosen by holding period against a configured boundary. §8.2's break-even is stated as the roadmap's rough 6–10pp with the assumptions listed, and **no hurdle is computed**: a tax-rate spread is a rate applied to gains, not a number of return points.
+  - **Concentration counts names, because nothing counts rupees** (KTD8). The watchlist tracks no invested capital, so §8.1's percentage caps have no denominator; the config says plainly that the counts are proxies. Counts seed from the **live watchlist**, not from successful outcomes — a positioned ticker whose analysis errored must still count toward its lane.
+  - **Routing safety is fail-closed per lane** (KTD11) and cannot reuse `action_policy.resolve_for_result`, which returns `None` on the `use_llm=False` path `advance` takes and would pass every candidate silently. Core candidates need an `eligible` 100x verdict; re-rating candidates need a `qualifies` **lane-gate** verdict — applying the 100x question there would reimpose the gate set §9.2 exists to replace. Anything other than the exact positive verdict blocks with its reason.
+  - **Only a `Current` routing snapshot may render a proposal.** Freshness is tracked by **revision counters, not clocks** (`as_of` may be a historical business date, and a clock comparison misses every non-scoring mutation). A `--quarterly` run advances a subset and never overwrites the canonical snapshot. Routing records **deployment, not intent**: a route is refused unless the candidate holds an owner-applied position transition dated after the exit, and the idle reading closes at `deployed_at` rather than when someone typed the command.
 - **MetricResult**: Every compute function returns `MetricResult(value, raw_series, flags, metadata, error)`. Flags communicate data quality issues (e.g., `insufficient_history`, `possible_bonus_split`, `cfi_dominated_by_acquisitions`).
 - **Scoring**: Threshold-based (higher/lower_is_better), range_optimal, categorical, sector_relative_percentile, trend_direction modes. All defined in YAML. Scorer receives full MetricResult for trend analysis.
 - **Data contract**: Fetchers write to `raw_data/{TICKER}/` in standardized CSV/JSON. Compute engine reads from there. BSE codes auto-detected from Screener.in metadata. `quarterly.csv` (Screener's quarterly results, `quarter` period column) is parsed from the same cached company page as the annual tables and shares `_parse_table` with them; it feeds Phase 1's checkpoints and Phase 2's `quarterly_momentum`. Screener renders only ~11–13 recent quarters, which is enough for consecutive-quarter checks but not for deep historical replay. The corpus was refetched on **2026-08-07** (`corpus refetch`), so all 22 cached tickers now carry a quarterly series — `quarterly_momentum` computes on 21 of 22, the exception being SPLPETRO, whose Screener page renders only 5 quarters against the 6 a second difference needs. `max_reports: 3` likewise applies from its landing forward: the corpus now holds 54 annual-report years across 20 BSE codes, up from 29. **A ticker fetched before either landed still has neither** — refetch to upgrade.
@@ -186,6 +206,11 @@ python -m boundless100x compute ASTRAL          # Metrics only (no fetch, no LLM
 python -m boundless100x screen --preset compounders       # Screen universe against preset
 python -m boundless100x watchlist show          # View watchlist (lane, state, checkpoints)
 python -m boundless100x watchlist add ASTRAL    # Track a company — starts at `screen`
+python -m boundless100x watchlist add X --lane rerating   # Track in the fast lane
+python -m boundless100x watchlist catalyst X \  # Record the one input no metric
+    --description "Capacity commissioning" \    # can derive; §9.2 gates entry on it
+    --expected-by 2027-06-30
+python -m boundless100x watchlist catalyst X --spent   # Flip it; fires the exit rule
 python -m boundless100x watchlist advance       # Re-score, evaluate triggers,
                                                 # propose transitions with evidence.
                                                 # Money-moving ones are proposals only.
@@ -194,6 +219,31 @@ python -m boundless100x watchlist advance --apply   # Confirm and record them
                                                 # reading first: when the corpus
                                                 # is expensive, entry thresholds
                                                 # are tightened and say so.
+
+# ── The exit door and the reinvestment queue (Phase 3) ──
+# `exited` has exactly one producer, and it is this command. No trigger can
+# reach it: no metric can observe that the owner sold.
+python -m boundless100x watchlist exit ASTRAL   # Refuses unless the entry is in
+                                                # `exit_review`. Records the
+                                                # transition, the modelled
+                                                # friction reading, and exactly
+                                                # one queue event. Interrupted?
+                                                # Re-run it — same exit id,
+                                                # adopts the stored figures,
+                                                # completes the transition.
+python -m boundless100x watchlist queue         # Pure read: routing snapshot with
+                                                # its state (Unavailable/Partial/
+                                                # Stale/Current — only Current
+                                                # names a candidate), blocked
+                                                # candidates with reasons, and
+                                                # each unrouted exit's idle days.
+python -m boundless100x watchlist queue route <exit_id> <ticker>
+                                                # Records where the proceeds
+                                                # actually went. Refuses unless
+                                                # the candidate holds an
+                                                # owner-applied position dated
+                                                # after the exit — deployment
+                                                # closes the timer, intent does not.
 
 python -m boundless100x backtest                # Walk-forward self-check: score on
                                                 # the first half of each cached ticker's
