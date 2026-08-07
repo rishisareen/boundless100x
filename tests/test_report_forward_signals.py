@@ -40,7 +40,6 @@ def signal_metrics(**overrides) -> dict:
         "promises_kept_ratio": MetricResult(
             value=75.0, metadata={"kept": 3, "due": 4}
         ),
-        "capex_pipeline": MetricResult(value=32.0, metadata={"announced_inr_cr": 900.0}),
         "tam_runway": MetricResult(value=12.0, metadata={"tam_inr_cr": 40000.0}),
         "quarterly_momentum": MetricResult(
             value=-5.4, flags=["quarterly_growth_decelerating"],

@@ -1,7 +1,7 @@
-"""The four forward-growth sub-metrics.
+"""The forward-growth sub-metrics.
 
-Three read the extraction pass's output; the fourth is fully offline from the
-quarterly series. All four carry zero weight in an element deliberately absent
+Two read the extraction pass's output; the third is fully offline from the
+quarterly series. All three carry zero weight in an element deliberately absent
 from `element_weights`, so most of what follows is about the two ways they can
 lie: reading a value where the source section was never usable (R5), and
 moving a composite they must not touch (R7).
@@ -24,14 +24,14 @@ from boundless100x.compute_engine.metrics.builtin import forward_growth as fgm
 from boundless100x.compute_engine.scorer import SQGLPScorer
 from tests.conftest import make_data, make_financials, make_quarterly
 
-SUB_METRICS = (
-    "promises_kept_ratio", "capex_pipeline", "tam_runway", "quarterly_momentum",
-)
-TEXT_DERIVED = ("promises_kept_ratio", "capex_pipeline", "tam_runway")
+# `capex_pipeline` was retired on 2026-08-07 — zero extracted entries across 54
+# report-years and 15 swept tickers. The `capex` entry *kind* survives in the
+# schema, so `capex()` below still builds one; nothing reads it today.
+SUB_METRICS = ("promises_kept_ratio", "tam_runway", "quarterly_momentum")
+TEXT_DERIVED = ("promises_kept_ratio", "tam_runway")
 
 FUNCTIONS = {
     "promises_kept_ratio": fgm.compute_promises_kept,
-    "capex_pipeline": fgm.compute_capex_pipeline,
     "tam_runway": fgm.compute_tam_runway,
 }
 
@@ -483,29 +483,6 @@ class TestUnitComparability:
         assert not result.ok
         assert "usd_mn" in result.error
 
-    def test_a_usd_capex_amount_is_excluded_from_the_pipeline_sum(self):
-        data = fg_data({"2025": year_payload(capex_entries=[
-            capex(amount=150.0),
-            capex(amount=900.0, year="FY2028", unit="usd_mn"),
-        ])})
-
-        result = fgm.compute_capex_pipeline(data, {})
-
-        assert result.value == pytest.approx(50.0)   # 150 of 300, the USD ignored
-        assert result.metadata["announced_inr_cr"] == 150.0
-        assert result.metadata["set_aside_for_unit"] == ["usd_mn"]
-
-    def test_capex_pipeline_is_indeterminate_when_every_amount_is_foreign(self):
-        data = fg_data({"2025": year_payload(capex_entries=[
-            capex(amount=900.0, unit="usd_mn"),
-        ])})
-
-        result = fgm.compute_capex_pipeline(data, {})
-
-        assert not result.ok
-        assert "usd_mn" in result.error
-        assert "exchange rate" in result.error
-
     def test_tam_runway_is_indeterminate_when_the_market_is_only_stated_in_usd(self):
         data = fg_data({"2025": year_payload(tam_entries=[
             tam(size=2250.0, unit="usd_bn"),
@@ -540,45 +517,6 @@ class TestUnitComparability:
 
 
 # ── capex_pipeline ─────────────────────────────────────────────────────────
-
-
-class TestCapexPipeline:
-    def test_announced_forward_capex_is_expressed_against_revenue(self):
-        data = fg_data({"2025": year_payload(capex_entries=[capex(amount=150.0)])})
-        result = fgm.compute_capex_pipeline(data, {})
-
-        assert result.ok
-        assert result.value == pytest.approx(50.0)  # 150 against 300 of revenue
-
-    def test_already_commissioned_capex_is_not_forward_runway(self):
-        data = fg_data({"2025": year_payload(
-            capex_entries=[capex(amount=150.0, year="FY2020")]
-        )})
-        assert not fgm.compute_capex_pipeline(data, {}).ok
-
-    def test_the_same_project_announced_twice_is_not_counted_twice(self):
-        """Consecutive reports repeat a live project; double-counting it would
-        make a company look like it was building twice as much."""
-        data = fg_data({
-            "2024": year_payload(capex_entries=[capex(amount=150.0, year="FY2027")]),
-            "2025": year_payload(capex_entries=[capex(amount=150.0, year="FY2027")]),
-        })
-        result = fgm.compute_capex_pipeline(data, {})
-
-        assert result.metadata["announced_inr_cr"] == 150.0
-
-    def test_distinct_projects_are_summed(self):
-        data = fg_data({"2025": year_payload(capex_entries=[
-            capex(amount=150.0, year="FY2027"), capex(amount=90.0, year="FY2028"),
-        ])})
-        assert fgm.compute_capex_pipeline(data, {}).metadata["announced_inr_cr"] == 240.0
-
-    def test_the_projects_travel_with_the_number(self):
-        data = fg_data({"2025": year_payload(capex_entries=[capex(amount=150.0)])})
-        projects = fgm.compute_capex_pipeline(data, {}).metadata["projects"]
-
-        assert len(projects) == 1
-        assert projects[0]["source_sentence"]
 
 
 # ── tam_runway ─────────────────────────────────────────────────────────────

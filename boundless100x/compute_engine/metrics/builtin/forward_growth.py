@@ -2,11 +2,13 @@
 
 The engine measures backward and at a point in time. Growth carries 25% of the
 composite and is entirely CAGRs and streaks, so a company whose growth is
-decelerating *right now* scores identically to one accelerating. These four
-metrics are the forward half — three read the extraction pass's output, one is
-fully offline from the quarterly series.
+decelerating *right now* scores identically to one accelerating. These
+metrics are the forward half — two read the extraction pass's output, one is
+fully offline from the quarterly series. (`capex_pipeline` was a third reader
+until 2026-08-07, retired against a stated threshold after extracting zero
+entries across 54 report-years and 15 swept tickers.)
 
-All four carry **zero weight in an element deliberately absent from
+All three carry **zero weight in an element deliberately absent from
 `element_weights`** (KTD1). §12 asks for forward signal; §13 forbids changing
 SQGLP scoring; those reconcile only at zero weight. The unweighted element is
 belt and braces on top: zero weight makes them non-scoring, and an element the
@@ -352,101 +354,6 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
             "tolerance": tolerance,
             "settled": settled,
             "unit": "pct",
-            "direction": "higher_is_better",
-        },
-    )
-
-
-# ── capex_pipeline ─────────────────────────────────────────────────────────
-
-
-def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
-    """Announced, not-yet-commissioned capacity as a share of a year's revenue.
-
-    Expressed against revenue rather than in rupees so it reads the same for a
-    small company and a large one — "a pipeline worth 40% of a year's sales"
-    is a runway statement, "Rs 500 crore" is not.
-
-    Only projects commissioning *after* the latest reported year count: capacity
-    already built is in the financials, not in front of them.
-
-    Deduplicated across report years by (amount, commissioning year). A live
-    project is restated in every report until it lands, and summing the
-    restatements would make a company look like it was building twice over.
-    """
-    by_year, reason = _entries_by_year(data, "capex_pipeline", schema.CAPEX)
-    if not by_year:
-        return MetricResult(error=reason)
-
-    fin = _get_annual_rows(data.get("financials", pd.DataFrame()), 1)
-    if fin.empty or "revenue" not in fin.columns:
-        return MetricResult(error="No annual revenue to size the capex pipeline against")
-
-    revenue = pd.to_numeric(fin["revenue"], errors="coerce").dropna()
-    if revenue.empty or float(revenue.iloc[-1]) <= 0:
-        return MetricResult(error="Non-positive revenue — pipeline share is undefined")
-    latest_revenue = float(revenue.iloc[-1])
-
-    latest_year = _year_of(fin["year"].iloc[-1]) if "year" in fin.columns else None
-    if latest_year is None:
-        return MetricResult(error="Could not read the latest fiscal year label")
-
-    projects: dict[tuple, dict] = {}
-    wrong_unit: set[str] = set()
-    for report_year in sorted(by_year):
-        # `amount_inr_cr` asserts a unit in its own name that `unit` makes
-        # variable. Without this partition a USD-stated commitment would be
-        # summed straight into a rupee total and silently corrupt the pipeline
-        # percentage — the easiest of the three to miss, because nothing about
-        # the field name suggests a check is needed.
-        usable, set_aside = schema.partition_by_unit(
-            schema.CAPEX, by_year[report_year]
-        )
-        wrong_unit.update(set_aside)
-        for entry in usable:
-            amount = entry.get("amount_inr_cr")
-            if not schema.is_number(amount):
-                continue
-            commissioning = _year_of(entry.get("commissioning_year"))
-            if commissioning is None or commissioning <= latest_year:
-                continue
-            # Later restatements win, so the metadata quotes the most recent
-            # sentence describing a project rather than the oldest.
-            projects[(round(float(amount), 2), commissioning)] = {
-                "amount_inr_cr": float(amount),
-                "commissioning_year": commissioning,
-                "report_year": report_year,
-                "description": entry.get("description"),
-                "source_sentence": entry.get("source_sentence"),
-            }
-
-    if not projects:
-        if wrong_unit:
-            return MetricResult(
-                error=_set_aside_reason(
-                    "every announced capex figure", sorted(wrong_unit)
-                )
-            )
-        return MetricResult(
-            error=(
-                f"no announced capacity commissioning after FY{latest_year} — "
-                f"anything earlier is already in the accounts"
-            )
-        )
-
-    announced = sum(p["amount_inr_cr"] for p in projects.values())
-    ordered = sorted(projects.values(), key=lambda p: p["commissioning_year"])
-
-    return MetricResult(
-        value=round(announced / latest_revenue * 100, 1),
-        metadata={
-            "announced_inr_cr": round(announced, 2),
-            "latest_revenue_inr_cr": latest_revenue,
-            "from_fiscal_year": latest_year,
-            "through_fiscal_year": ordered[-1]["commissioning_year"],
-            "projects": ordered,
-            "set_aside_for_unit": sorted(wrong_unit),
-            "unit": "pct_of_revenue",
             "direction": "higher_is_better",
         },
     )

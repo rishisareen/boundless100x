@@ -287,7 +287,6 @@ GUIDANCE_METRICS: dict[str, dict] = {
 # aspiration, not targets a financials row can settle.
 REQUIRED_SECTIONS: dict[str, tuple[str, ...]] = {
     "promises_kept_ratio": ("mdna",),
-    "capex_pipeline": ("mdna",),
     "tam_runway": ("mdna", "chairman"),
 }
 

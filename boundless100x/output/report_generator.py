@@ -293,17 +293,6 @@ FORWARD_SIGNALS: dict[str, dict] = {
         "bands": [(80.0, "credible"), (50.0, "mixed")],
         "low_label": "unreliable",
     },
-    "capex_pipeline": {
-        "name": "Capex Pipeline",
-        "format": "{:.0f}% of revenue",
-        "direction": "higher is better",
-        "meaning": (
-            "Announced capacity not yet commissioned, against one year's "
-            "revenue — forward runway for volume growth."
-        ),
-        "bands": [(25.0, "substantial"), (5.0, "modest")],
-        "low_label": "minimal",
-    },
     "tam_runway": {
         "name": "TAM Runway",
         "format": "{:.0f} yrs",

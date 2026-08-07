@@ -989,3 +989,60 @@ code.
 Phase 2's R7 re-proof was re-run after every change and still holds:
 byte-identical across 22 tickers, `registry_hash` unmoved at `1d9f30d09df3`,
 `forward_signal_hash` moving to `7e4415c78c48`.
+
+### Final state (2026-08-07, after the full sweep)
+
+The four credit-blocked tickers were swept, then the remaining eleven were
+re-swept under schema 8. **All 15 extractable tickers are now covered**, for
+$0.44 (against a $0.52 estimate — under). Corpus-wide: **60 grounded entries**,
+34 guidance (31 market-subject, 3 company-subject) and 26 TAM.
+
+**The full sweep produced the first `inr_cr` entry this project has ever seen,
+and it was a chart.** IXIGO's FY2024 `tam` entry quoted
+`"3,808 5,904 8% 6% 7% 12% CAGR (FY23-28) 1,365 2,900 1,660"` — axis labels
+flattened by PDF text extraction. It passed every guard honestly: the numeral
+is in the submitted text, denominated as claimed, beside a plausible period.
+Grounding cannot separate a claim from a scraped axis because on those tests it
+*is* one. It then fed `tam_runway` a Rs 3,808 crore addressable market and
+produced **the only value that metric returned across the whole corpus** — so
+"tam_runway now computes" would have been a chart. A prose requirement now
+refuses it (five alphabetic words; the fragment has two, the lowest genuine
+quotation has nine, so the threshold sits in an empty gap and rejects exactly
+that one entry of 60). `SCHEMA_VERSION` 8 → 9.
+
+This is KTD9's failure — well-formed, well-grounded, about the wrong thing —
+one level below the section gate it was written for. Worth recording as the
+phase's sharpest lesson: **every guard this plan added was necessary and none
+was sufficient, because each one answers a different question, and the corpus
+kept finding the question nobody had asked yet.**
+
+**Final per-sub-metric yield, on a fully refetched and fully swept corpus:**
+
+| Signal | Yield | Disposition |
+|---|---|---|
+| `quarterly_momentum` | **21/22** (was 5/22) | clears the bar |
+| `rerating_headroom` | **17/22** (was 16/22) | clears the bar |
+| `promises_kept_ratio` | 0/22 | keep — 3 real company promises on SPLPETRO, blocked by one filer's unusable P&L shape |
+| `tam_runway` | 0/22 | keep — 26 real market sizes, every one in USD or lakh crore; blocked only by the deferred FX decision |
+| `capex_pipeline` | 0/22 | **RETIRED** |
+
+**`capex_pipeline` is retired**, against the threshold this plan stated before
+the result was read. Zero capex entries across 54 report-years and 15 swept
+tickers — not a unit problem, not a section problem, not a subject problem: the
+corpus's MD&A does not state capital commitments with a commissioning year in
+any form the extractor recognises. It was the one text-derived sub-metric with
+no visible path to a value, and a permanently blank column teaches a reader
+nothing. The `capex` extraction *kind* is kept — storing a grounded reading
+nothing yet consumes is this schema's standing rule, and the metric is twenty
+lines to restore if such statements ever appear.
+
+Phase 2's R7 re-proof after the retirement: scores, coverage, flags, verdicts
+and gates byte-identical across 22 tickers; `registry_hash` unmoved at
+`1d9f30d09df3`; the only `details` change is `capex_pipeline` disappearing,
+which is what retiring a zero-weight metric should look like and nothing more.
+
+**Owner decision, recorded:** the sidecars are left invalidated by the schema-9
+bump rather than re-swept a third time. Nothing is lost in live signal — all
+remaining text-derived sub-metrics read 0/22 either way — and the yield figures
+above stand as measured. One `sweep --all` (~$0.67) repopulates them whenever
+the evidence is wanted back on disk.

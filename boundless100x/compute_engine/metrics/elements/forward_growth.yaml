@@ -17,6 +17,17 @@
 # Every threshold here is a STARTING POINT awaiting Phase 5 simulator
 # evidence. Tuning them moves `forward_signal_hash` only, leaving the scoring
 # regime — and every ticker's momentum baseline — intact (KTD8).
+# `capex_pipeline` was retired on 2026-08-07 against the threshold this plan
+# stated in advance: a text-derived sub-metric producing no value on any ticker
+# after the refetch, the sweep and the schema work is a candidate for removal.
+# It extracted **zero** capex entries across 54 report-years and 15 swept
+# tickers — not a unit problem, not a section problem, not a subject problem;
+# the corpus's MD&A simply does not state capital commitments with a
+# commissioning year in any form the extractor recognises. A permanently blank
+# column teaches a reader nothing. The `capex` extraction *kind* is kept (see
+# forward_growth_schema.ENTRY_KINDS): storing a grounded reading nothing yet
+# consumes is this schema's standing rule, and if such statements ever appear
+# the metric is twenty lines to restore.
 element: forward_growth
 
 metrics:
@@ -34,14 +45,6 @@ metrics:
                              # range, so exact matching reads rounding as
                              # broken credibility.
       min_report_years: 2    # One year of targets is a snapshot, not a record.
-    scoring: { weight: 0.0 }
-    display: { format: "{:.0f}%", section: "forward_signals" }
-
-  capex_pipeline:
-    name: "Capex Pipeline (announced, % of revenue)"
-    module: "builtin.forward_growth"
-    function: "compute_capex_pipeline"
-    inputs: ["forward_growth", "financials"]
     scoring: { weight: 0.0 }
     display: { format: "{:.0f}%", section: "forward_signals" }
 
