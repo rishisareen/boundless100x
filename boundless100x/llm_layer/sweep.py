@@ -33,12 +33,10 @@ import logging
 import re
 from pathlib import Path
 
+from boundless100x.data_fetcher import refetch
+from boundless100x.data_fetcher.download_annual_reports import load_cached_sections
 from boundless100x.llm_layer import forward_growth
-from boundless100x.llm_layer.orchestrator import (
-    estimate_cost,
-    forward_growth_char_budget,
-    forward_growth_model,
-)
+from boundless100x.llm_layer.orchestrator import MODEL_PRICING, estimate_cost
 
 logger = logging.getLogger(__name__)
 
@@ -117,22 +115,12 @@ def load_context(raw_data_dir, ticker: str) -> dict | None:
     except (json.JSONDecodeError, OSError):
         return None
 
-    code = str(metadata.get("bse_code") or "")
-    reports = Path(raw_data_dir) / code / "annual_reports" if code else None
-    sections: dict[str, dict] = {}
-    if reports and reports.is_dir():
-        for sidecar in sorted(reports.glob("*_annual_report.sections.json")):
-            try:
-                sections[sidecar.name.split("_")[0]] = json.loads(
-                    sidecar.read_text(encoding="utf-8")
-                )
-            except (json.JSONDecodeError, OSError):
-                logger.warning(f"{ticker}: unreadable sections sidecar {sidecar.name}")
-
+    code = metadata.get("bse_code")
     return {
         "metadata": metadata,
-        "annual_report_sections": sections,
-        "source_status": {"financials": "ok", "price": "ok"},
+        "annual_report_sections": (
+            load_cached_sections(raw_data_dir, code) if code else {}
+        ),
     }
 
 
@@ -146,15 +134,11 @@ def plan_ticker(service, ticker: str) -> dict:
     if not sections:
         return {"ticker": ticker, "skipped": "no annual-report sections on disk"}
 
-    gate_config = service.config.get("annual_reports", {}).get("content_gate", {})
-    gated, reasons = forward_growth.gate_sections_with_reasons(
-        sections,
-        scan_chars=gate_config.get("scan_chars", forward_growth.DEFAULT_SCAN_CHARS),
-        min_markers=gate_config.get("min_markers"),
-        enabled=gate_config.get("enabled", True),
+    # The same planner Stage 1.5 uses, so the estimate prices what is sent.
+    plan = forward_growth.plan_submission(
+        service.config, sections, llm=service._llm
     )
-    budget = forward_growth_char_budget(service.config)
-    submission = forward_growth.build_submission(sections, gated, char_budget=budget)
+    gated, reasons, submission = plan["gated"], plan["reasons"], plan["submission"]
 
     provenance = {
         year: dict(sections_gated) for year, sections_gated in sorted(gated.items())
@@ -170,13 +154,9 @@ def plan_ticker(service, ticker: str) -> dict:
             "gate_reasons": {y: r for y, r in reasons.items() if r},
         }
 
-    model = forward_growth_model(service.config)
+    model = plan["model"]
     company = context["metadata"].get("name", ticker)
-    prompt = (
-        service._llm.build_forward_growth_prompt(ticker, company, submission)
-        if service._llm
-        else _offline_prompt(ticker, company, submission)
-    )
+    prompt = forward_growth.build_prompt(ticker, company, submission)
     input_tokens = len(prompt) // CHARS_PER_TOKEN
     max_output = int(service.config.get("llm", {}).get("max_tokens", 4096))
 
@@ -202,32 +182,21 @@ def plan_ticker(service, ticker: str) -> dict:
     }
 
 
-def _offline_prompt(ticker: str, company: str, submission: dict) -> str:
-    """The same prompt assembly, when no API key makes an orchestrator.
+def corpus_plans(service) -> list[dict]:
+    """A plan for every cached ticker — the extractable ones and the skipped.
 
-    A dry run has to work without credentials — pricing a spend is exactly the
-    thing one does before deciding to configure and make it.
+    Returns the plans rather than a filtered ticker list, because the skip
+    *reasons* are the expensive half and were previously computed and thrown
+    away: under `--all` the report named 15 tickers to sweep and 0 skipped,
+    while 7 had been excluded moments earlier with reasons in hand. A sweep
+    that silently drops what it did not look at is the one thing this command
+    must not do.
+
+    Ticker enumeration is `refetch.enumerate_tickers` rather than a second
+    copy of the rule — one definition of "which directory is a real ticker".
     """
-    template = forward_growth.prompt_template()
-    return template.format(
-        ticker=ticker,
-        company_name=company,
-        vocabulary=forward_growth.vocabulary_prompt_block(),
-        report_text=forward_growth.render_report_text(submission),
-    )
-
-
-def extractable_tickers(service) -> list[str]:
-    """Every corpus ticker with at least one gated-`found` extractable section."""
-    root = Path(service.suite.raw_data_dir)
-    if not root.is_dir():
-        return []
-    candidates = sorted(
-        child.name for child in root.iterdir()
-        if child.is_dir() and not child.name.isdigit()
-        and (child / "metadata.json").exists()
-    )
-    return [t for t in candidates if plan_ticker(service, t).get("skipped") is None]
+    tickers, _ = refetch.enumerate_tickers(service.suite.raw_data_dir)
+    return [plan_ticker(service, ticker) for ticker in tickers]
 
 
 def sweep(
@@ -246,10 +215,10 @@ def sweep(
             "sweep that guessed at its scope would spend real money on a typo."
         )
 
-    chosen = (
-        [t.upper() for t in tickers] if tickers else extractable_tickers(service)
+    plans = (
+        [plan_ticker(service, t.upper()) for t in tickers] if tickers
+        else corpus_plans(service)
     )
-    plans = [plan_ticker(service, ticker) for ticker in chosen]
     runnable = [p for p in plans if p.get("skipped") is None]
     if limit is not None:
         deferred = [p["ticker"] for p in runnable[limit:]]
@@ -283,6 +252,20 @@ def sweep(
         raise RuntimeError(
             "no LLM is configured — set ANTHROPIC_API_KEY, or use dry_run to "
             "price the sweep without one"
+        )
+
+    # `estimate_cost` returns 0.0 for a model id it does not recognise, which is
+    # right for *reporting* — a made-up price would read as a real one. But the
+    # ceiling meters on that same number, so an unrecognised model would print a
+    # ceiling and enforce nothing. Say so rather than run unbounded in silence.
+    model = runnable[0]["model"] if runnable else None
+    if cost_ceiling_usd is not None and model and not any(
+        family in model for family in MODEL_PRICING
+    ):
+        logger.warning(
+            f"No price is known for {model!r}, so every call meters as $0 and "
+            f"the ${cost_ceiling_usd} ceiling cannot bind. Add it to "
+            f"MODEL_PRICING, or watch the token counts instead."
         )
 
     spent_before = service._llm.usage_summary()

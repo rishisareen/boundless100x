@@ -118,6 +118,37 @@ def test_restore_replaces_rather_than_merges(tmp_path):
     assert (source / "ASTRAL" / "financials.csv").read_text().startswith("year,revenue")
 
 
+def test_restore_verifies_what_landed_against_the_manifest(tmp_path, caplog):
+    """The walk that describes the restore also checks it — it was free anyway."""
+    source = build_corpus(tmp_path / "raw_data")
+    made = corpus_snapshot.snapshot(source, destination=tmp_path / "snaps")
+
+    with caplog.at_level("INFO"):
+        corpus_snapshot.restore(made["path"], source)
+
+    assert "matching its manifest" in caplog.text
+
+
+def test_a_restore_that_does_not_match_its_manifest_warns(tmp_path, caplog):
+    source = build_corpus(tmp_path / "raw_data")
+    made = corpus_snapshot.snapshot(source, destination=tmp_path / "snaps")
+    # A payload that no longer matches the manifest written beside it.
+    (made["path"] / "raw_data" / "ASTRAL" / "financials.csv").unlink()
+
+    with caplog.at_level("WARNING"):
+        corpus_snapshot.restore(made["path"], source)
+
+    assert "does not match the snapshot manifest" in caplog.text
+    assert (source / "ASTRAL").exists()  # the files are still put back
+
+
+def test_ticker_marker_has_one_definition(tmp_path):
+    """`pace.py` carries the note saying two copies could drift; this is it."""
+    from boundless100x.compute_engine import backtest
+
+    assert backtest.TICKER_MARKER is corpus_snapshot.TICKER_MARKER
+
+
 def test_snapshot_of_an_absent_corpus_fails_clearly(tmp_path):
     with pytest.raises(corpus_snapshot.SnapshotError) as excinfo:
         corpus_snapshot.snapshot(tmp_path / "nothing_here",

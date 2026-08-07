@@ -32,6 +32,7 @@ against is the failure this whole plan is arranged around.
 
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Operational state, outside the repository and outside `raw_data/` — a restore
 # replaces the corpus wholesale, and a run log living inside it would vanish
 # with the run it describes.
-DEFAULT_RUN_LOG = corpus_snapshot.DEFAULT_SNAPSHOT_DIR.parent / "refetch_log.json"
+DEFAULT_RUN_LOG = corpus_snapshot.STATE_DIR / "refetch_log.json"
 
 # A completed fetch always writes this. Its absence is what separates a real
 # ticker directory from the wreckage of a fetch that failed under a wrong
@@ -97,8 +98,12 @@ def bypass_fetch_cache(suite) -> int:
     all tickers rather than any ticker's data, so clearing it would only cost
     the run a re-download before it could resolve a single code.
     """
+    # Keyed by directory, not by object identity: `BaseFetcher.__init__` builds
+    # a fresh `CacheManager` per fetcher, so all six are distinct objects
+    # pointing at one shared directory. Deduping on `id()` deduped nothing and
+    # cleared the same directory six times over.
     caches = {
-        id(fetcher.cache): fetcher.cache
+        str(fetcher.cache.cache_dir.resolve()): fetcher.cache
         for fetcher in (
             suite.financials, suite.price_volume, suite.shareholding_bse,
             suite.corporate_actions, suite.analyst_coverage, suite.annual_reports,
@@ -124,10 +129,22 @@ def read_run_log(path) -> dict:
 
 
 def _write_run_log(path, log: dict) -> None:
+    """Replace the run log atomically.
+
+    Written whole after every ticker, which is the right trade — the file is a
+    few KB against 15-35 minutes of rate-limited scraping, and batching it
+    would trade a negligible saving for the entire resume guarantee. But a
+    plain `write_text` truncates first, so an interrupt landing inside the
+    write leaves unparseable JSON, which `read_run_log` reads as "nothing
+    completed" — losing the resume in exactly the scenario the log exists for.
+    Write a sibling and rename; `os.replace` is atomic on POSIX.
+    """
     target = Path(path)
+    temp = target.with_suffix(target.suffix + ".tmp")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(log, indent=2, default=str), encoding="utf-8")
+        temp.write_text(json.dumps(log, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
     except OSError as e:
         # Losing the log costs a resume, never the fetches already on disk.
         logger.warning(f"Could not write refetch log {target}: {e}")
@@ -169,8 +186,6 @@ def refetch(
     log_path = Path(run_log_path) if run_log_path else DEFAULT_RUN_LOG
     log = read_run_log(log_path) if resume else {}
     completed = log.get("completed") or {}
-    if not resume:
-        completed = {}
 
     already = [t for t in candidates if t in completed]
     pending = [t for t in candidates if t not in completed]
@@ -186,8 +201,8 @@ def refetch(
     log = {
         "started_at": log.get("started_at") or datetime.now().isoformat(timespec="seconds"),
         "raw_data": str(suite.raw_data_dir),
-        "completed": dict(completed),
-        "failed": dict(log.get("failed") or {}),
+        "completed": completed,
+        "failed": log.get("failed") or {},
     }
 
     outcomes: list[dict] = []
@@ -232,5 +247,4 @@ def refetch(
         "skipped": skipped,
         "resumed": already,
         "run_log": str(log_path),
-        "tickers": candidates,
     }

@@ -161,7 +161,6 @@ def audit(raw_data_dir, manifest: dict) -> dict:
     ]
 
     headline = {
-        "tickers_total": len(tickers),
         "gained_quarterly": sorted(
             n for n, e in tickers.items() if e["quarterly"] == GAINED
         ),

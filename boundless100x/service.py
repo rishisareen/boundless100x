@@ -21,11 +21,7 @@ from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.checklist import build_sector_context
-from boundless100x.llm_layer.orchestrator import (
-    LLMOrchestrator,
-    forward_growth_char_budget,
-    forward_growth_model,
-)
+from boundless100x.llm_layer.orchestrator import LLMOrchestrator
 from boundless100x import score_history, trajectory
 
 logger = logging.getLogger(__name__)
@@ -34,6 +30,17 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 # One per ticker, beside the annual report PDFs the extraction read.
 FORWARD_GROWTH_SIDECAR = "forward_growth.extraction.json"
+
+
+def load_config(config_path: str | None = None) -> dict:
+    """The pipeline config, from one place.
+
+    The CLI needs it before it builds a service (to resolve the snapshot root),
+    and the service needs it to build anything at all. Two loaders would be two
+    answers to "what is configured".
+    """
+    with open(Path(config_path) if config_path else DEFAULT_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
 
 
 @dataclass
@@ -69,12 +76,7 @@ class Boundless100xService:
     """
 
     def __init__(self, config_path: str | None = None, config: dict | None = None):
-        if config is not None:
-            self.config = config
-        else:
-            path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
-            with open(path) as f:
-                self.config = yaml.safe_load(f)
+        self.config = config if config is not None else load_config(config_path)
 
         self.suite = DataFetcherSuite(self.config)
         self.engine = ComputeEngine(macro=self.config.get("macro", {}))
@@ -332,19 +334,9 @@ class Boundless100xService:
         if not sections:
             return
 
-        gate_config = self.config.get("annual_reports", {}).get("content_gate", {})
-        gated = forward_growth.gate_sections(
-            sections,
-            scan_chars=gate_config.get("scan_chars", forward_growth.DEFAULT_SCAN_CHARS),
-            min_markers=gate_config.get("min_markers"),
-            enabled=gate_config.get("enabled", True),
-        )
-        budget = (
-            self._llm.forward_growth_char_budget
-            if self._llm
-            else forward_growth_char_budget(self.config)
-        )
-        submission = forward_growth.build_submission(sections, gated, char_budget=budget)
+        # Shared with the sweep's dry run, so what is priced is what is sent.
+        plan = forward_growth.plan_submission(self.config, sections, llm=self._llm)
+        gated, submission = plan["gated"], plan["submission"]
 
         if not submission:
             # Nothing survived provenance and the content gate. That is a
@@ -357,11 +349,7 @@ class Boundless100xService:
             )
             return
 
-        model = (
-            self._llm.forward_growth_model
-            if self._llm
-            else forward_growth_model(self.config)
-        )
+        model = plan["model"]
         sidecar = self._forward_growth_sidecar(ticker, data)
 
         cached = forward_growth.read_sidecar(sidecar, submission, model)

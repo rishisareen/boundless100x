@@ -173,16 +173,10 @@ FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-# The figure field each kind carries, and the unit that field's *name* asserts.
 # `amount_inr_cr` and `market_size_inr_cr` say "INR crore" in their own names,
 # so a USD-stated figure in them is only safe because `unit` records the truth
 # and every consumer checks it — which `capex_pipeline` did not, summing
 # `amount_inr_cr` straight into a rupee total.
-FIGURE_FIELDS = {
-    GUIDANCE: "target_value",
-    CAPEX: "amount_inr_cr",
-    TAM: "market_size_inr_cr",
-}
 _KIND_UNITS = {CAPEX: UNIT_INR_CR, TAM: UNIT_INR_CR}
 
 
@@ -204,6 +198,27 @@ def is_settleable(kind: str, entry: dict, metric: str | None = None) -> bool:
     """Whether an entry's stated unit is one the reading metric can use."""
     expected = settling_unit(kind, metric)
     return expected is not None and (entry or {}).get("unit") == expected
+
+
+def partition_by_unit(kind: str, entries) -> tuple[list, list]:
+    """Split entries into the ones a metric can settle and the units it cannot.
+
+    Lives here for the same reason `_entries_by_year` factors the structurally
+    identical provenance rule in the metric module: all three INR-comparable
+    sub-metrics need "drop what this unit cannot express, and remember what the
+    unit was", and three hand-rolled copies is how `capex_pipeline` came to sum
+    `amount_inr_cr` into a rupee total on the strength of the field name alone.
+
+    Returns `(usable, set_aside_units)` with the units sorted and deduplicated,
+    so a caller can name them in an error without repeating that bookkeeping.
+    """
+    usable, set_aside = [], set()
+    for entry in entries or []:
+        if is_settleable(kind, entry, (entry or {}).get("metric")):
+            usable.append(entry)
+        else:
+            set_aside.add(str((entry or {}).get("unit")))
+    return usable, sorted(set_aside)
 
 # Closed set of guided quantities. Each names the fetched column that settles
 # it, so a promise whose quantity is outside this set is not a promise this

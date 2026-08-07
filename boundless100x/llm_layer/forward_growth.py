@@ -378,6 +378,62 @@ def prompt_template() -> str:
     return (PROMPTS_DIR / PROMPT_NAME).read_text()
 
 
+def build_prompt(ticker: str, company_name: str, submission: dict) -> str:
+    """The exact prompt an extraction call sends.
+
+    **One assembly, because the sweep prices what the live call sends.** This
+    needs no orchestrator state — it is template plus vocabulary plus report
+    text — so it lives here rather than as a method, and the dry run can price
+    a real prompt with no API key at all. Two copies would be wrong in the way
+    that matters: a new placeholder breaks the unkeyed path with a `KeyError`,
+    and a new *block* diverges the estimate silently, which is worse.
+    """
+    return prompt_template().format(
+        ticker=ticker,
+        company_name=company_name,
+        vocabulary=vocabulary_prompt_block(),
+        report_text=render_report_text(submission),
+    )
+
+
+def plan_submission(config: dict, sections_by_year: dict, llm=None) -> dict:
+    """Everything that decides *what* an extraction call would be given.
+
+    Shared by Stage 1.5 and the sweep's dry run, which is the whole point: the
+    sweep exists to price the call the pipeline would make, and a second copy
+    of the gate, the char budget and the model resolution is a copy that can
+    drift. It already had: the stage preferred the live orchestrator's model
+    and budget while the sweep always read config, so a deep-mode run would
+    have priced Sonnet and billed Opus.
+
+    `llm` is optional because pricing a spend is what one does *before*
+    configuring the credentials to make it.
+    """
+    from boundless100x.llm_layer.orchestrator import (
+        forward_growth_char_budget,
+        forward_growth_model,
+    )
+
+    gate_config = (config or {}).get("annual_reports", {}).get("content_gate", {})
+    gated, reasons = gate_sections_with_reasons(
+        sections_by_year,
+        scan_chars=gate_config.get("scan_chars", DEFAULT_SCAN_CHARS),
+        min_markers=gate_config.get("min_markers"),
+        enabled=gate_config.get("enabled", True),
+    )
+    budget = (
+        llm.forward_growth_char_budget if llm
+        else forward_growth_char_budget(config)
+    )
+    return {
+        "gated": gated,
+        "reasons": reasons,
+        "submission": build_submission(sections_by_year, gated, char_budget=budget),
+        "model": llm.forward_growth_model if llm else forward_growth_model(config),
+        "char_budget": budget,
+    }
+
+
 @lru_cache(maxsize=1)
 def prompt_digest() -> str:
     """Fingerprint of the prompt file.
@@ -537,24 +593,33 @@ def _number_positions(sentence: str, value, unit: str | None = None) -> list[tup
     if unit in _UNCHECKED_UNITS:
         return positions
 
-    kept = []
-    for start, end in positions:
-        after = haystack[end:end + _UNIT_WINDOW_AFTER]
-        before = haystack[max(0, start - _UNIT_WINDOW_BEFORE):start]
+    return [
+        (start, end)
+        for start, end in positions
+        if _denominated(
+            unit,
+            haystack[max(0, start - _UNIT_WINDOW_BEFORE):start],
+            haystack[end:end + _UNIT_WINDOW_AFTER],
+        )
+    ]
 
-        scale = _SCALE_AFTER.get(unit)
-        stated = scale is not None and scale.match(after)
-        if unit in _NEEDS_USD_MARKER:
-            stated = bool(stated) and bool(_USD_BEFORE_NUMBER.search(before))
-        if stated:
-            kept.append((start, end))
-            continue
 
-        # An implicit rupee figure: nothing beside the numeral contradicts it.
-        if unit in _IMPLICIT_UNITS and not _WRONG_SCALE_AFTER_NUMBER.match(after) \
-                and not _WRONG_CURRENCY_BEFORE_NUMBER.search(before):
-            kept.append((start, end))
-    return kept
+def _denominated(unit: str, before: str, after: str) -> bool:
+    """Whether the text around one numeral denominates it as `unit` claims.
+
+    Two ways to qualify, and they cannot both apply: the unit is *written out*
+    beside the numeral, or — for the rupee units an Indian filing routinely
+    leaves implicit — nothing beside the numeral contradicts it. No `usd_*`
+    unit is implicit, because nothing in an Indian filing defaults to dollars.
+    """
+    scale = _SCALE_AFTER.get(unit)
+    if scale is not None and scale.match(after):
+        return unit not in _NEEDS_USD_MARKER or bool(_USD_BEFORE_NUMBER.search(before))
+    return (
+        unit in _IMPLICIT_UNITS
+        and not _WRONG_SCALE_AFTER_NUMBER.match(after)
+        and not _WRONG_CURRENCY_BEFORE_NUMBER.search(before)
+    )
 
 
 # How far apart a value and the period it is guided for may sit and still be
@@ -615,7 +680,8 @@ def _value_and_period_cohere(sentence: str, value, unit, period) -> bool:
 
 
 def _validate_entry(
-    kind: str, entry, year: str, submitted_sections: dict, discarded: list
+    kind: str, entry, year: str, submitted_sections: dict, discarded: list,
+    grounded_sections: dict | None = None,
 ) -> dict | None:
     """One entry, or None with the reason recorded."""
     where = f"{year}.{kind}"
@@ -658,10 +724,17 @@ def _validate_entry(
             f"(sent: {', '.join(sorted(submitted_sections)) or 'none'})"
         )
 
+    # The submitted section is normalised once per section by the caller, not
+    # once per entry: `ground_text` walks the whole 12,000-char slice and
+    # always returns the same string for it, while a year's entries can number
+    # a dozen. The quoted sentence is normalised once here for the same reason.
+    grounded = (grounded_sections or {}).get(section)
+    if grounded is None:
+        grounded = ground_text(submitted_sections[section])
+
     sentence = kept["source_sentence"]
-    if not isinstance(sentence, str) or not ground_text(sentence) or (
-        ground_text(sentence) not in ground_text(submitted_sections[section])
-    ):
+    grounded_sentence = ground_text(sentence) if isinstance(sentence, str) else ""
+    if not grounded_sentence or grounded_sentence not in grounded:
         return drop(
             f"source_sentence does not appear in the submitted {section} text "
             f"for {year} — the claim is not in the document"
@@ -804,6 +877,11 @@ def validate_extraction(raw, submission: dict, gated: dict) -> dict:
             )
         return {"years": years, "discarded": discarded, "call_failed": False}
 
+    grounded = {
+        year: {name: ground_text(text) for name, text in sections.items()}
+        for year, sections in submission.items()
+    }
+
     for year, kinds in payload.items():
         year = str(year)
         if year not in years:
@@ -838,7 +916,8 @@ def validate_extraction(raw, submission: dict, gated: dict) -> dict:
 
             for entry in entries:
                 validated = _validate_entry(
-                    kind, entry, year, submission[year], discarded
+                    kind, entry, year, submission[year], discarded,
+                    grounded_sections=grounded[year],
                 )
                 if validated is not None:
                     years[year][kind].append(validated)

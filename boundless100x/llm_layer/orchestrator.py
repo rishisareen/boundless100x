@@ -157,25 +157,6 @@ class LLMOrchestrator:
 
     # ── Forward-growth extraction (Stage 1.5) ──
 
-    def build_forward_growth_prompt(
-        self, ticker: str, company_name: str, submission: dict
-    ) -> str:
-        """The exact prompt an extraction call would send.
-
-        Separated so the sweep's dry run can price a real prompt rather than a
-        reconstruction of one (KTD6). An estimate built from a second copy of
-        this assembly would be wrong in exactly the way that matters — it would
-        miss whatever the template and vocabulary block add on top of the
-        report text, which is the fixed cost of every ticker in the list.
-        """
-        template = self._load_template(forward_growth.PROMPT_NAME)
-        return template.format(
-            ticker=ticker,
-            company_name=company_name,
-            vocabulary=forward_growth.vocabulary_prompt_block(),
-            report_text=forward_growth.render_report_text(submission),
-        )
-
     def usage_summary(self) -> dict:
         """Cumulative tokens and cost across this orchestrator's calls.
 
@@ -198,7 +179,7 @@ class LLMOrchestrator:
         if not self.enabled:
             return {}
 
-        prompt = self.build_forward_growth_prompt(ticker, company_name, submission)
+        prompt = forward_growth.build_prompt(ticker, company_name, submission)
         return self._call_api(self.forward_growth_model, prompt, "forward_growth")
 
     def run_analysis(

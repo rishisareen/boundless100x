@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.builtin._helpers import period_end_date
+from boundless100x.data_fetcher.corpus_snapshot import TICKER_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,6 @@ ANNUAL_FRAMES = ("financials", "balance_sheet", "cashflow", "ratios")
 
 # A directory with financials is a real ticker. BSE-code directories hold only
 # annual report PDFs and are not tickers at all.
-TICKER_MARKER = "financials.csv"
 REQUIRED_FILES = ("financials.csv", "price_volume.csv")
 
 MIN_TOTAL_YEARS = 8

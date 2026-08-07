@@ -132,6 +132,20 @@ def _entries_by_year(data: dict, metric_id: str, kind: str) -> tuple[dict, str]:
     )
 
 
+def _set_aside_reason(subject: str, units: list) -> str:
+    """Why a figure this system holds cannot be compared with rupee figures.
+
+    One sentence for all three sub-metrics. They differ only in the noun, and
+    three hand-written variants had already drifted in wording while saying
+    the same thing.
+    """
+    return (
+        f"{subject} is stated in {'/'.join(units)} rather than INR crore — this "
+        f"pipeline holds no exchange rate, so the figure is stored but cannot "
+        f"be compared with rupee figures"
+    )
+
+
 # ── promises_kept_ratio ────────────────────────────────────────────────────
 
 
@@ -249,22 +263,24 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
     frames = _settling_frames(data)
     settled: list[dict] = []
     pending = discarded = not_a_promise = 0
-    wrong_unit: list[str] = []
+    wrong_unit: set[str] = set()
 
     for report_year in sorted(by_year):
+        company_said = []
         for entry in by_year[report_year]:
             if entry.get("subject") != schema.SUBJECT_COMPANY:
                 # Stored, auditable, and not management's promise to keep.
                 not_a_promise += 1
-                continue
+            else:
+                company_said.append(entry)
 
-            if not schema.is_settleable(schema.GUIDANCE, entry, entry.get("metric")):
-                # A promise this system cannot check is not a promise it may
-                # count as missed — an uncheckable target says nothing about
-                # management's credibility either way.
-                wrong_unit.append(str(entry.get("unit")))
-                continue
+        # A promise this system cannot check is not a promise it may count as
+        # missed — an uncheckable target says nothing about management's
+        # credibility either way.
+        checkable, set_aside = schema.partition_by_unit(schema.GUIDANCE, company_said)
+        wrong_unit.update(set_aside)
 
+        for entry in checkable:
             target = entry.get("target_value")
             if not schema.is_number(target):
                 discarded += 1
@@ -294,8 +310,8 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
 
     if not settled:
         units = (
-            f", {len(wrong_unit)} stated in {'/'.join(sorted(set(wrong_unit)))} "
-            f"rather than a unit the accounts can settle" if wrong_unit else ""
+            f", stated in {'/'.join(sorted(wrong_unit))} rather than a unit the "
+            f"accounts can settle" if wrong_unit else ""
         )
         return MetricResult(
             error=(
@@ -315,7 +331,7 @@ def compute_promises_kept(data: dict, params: dict) -> MetricResult:
             "pending": pending,
             "discarded": discarded,
             "not_a_promise": not_a_promise,
-            "set_aside_for_unit": sorted(set(wrong_unit)),
+            "set_aside_for_unit": sorted(wrong_unit),
             "report_years": sorted(by_year),
             "tolerance": tolerance,
             "settled": settled,
@@ -360,18 +376,18 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
         return MetricResult(error="Could not read the latest fiscal year label")
 
     projects: dict[tuple, dict] = {}
-    wrong_unit: list[str] = []
+    wrong_unit: set[str] = set()
     for report_year in sorted(by_year):
-        for entry in by_year[report_year]:
-            if not schema.is_settleable(schema.CAPEX, entry):
-                # `amount_inr_cr` asserts a unit in its own name that `unit`
-                # makes variable. Without this check a USD-stated commitment
-                # would be summed straight into a rupee total and silently
-                # corrupt the pipeline percentage — the easiest of the three
-                # to miss, because nothing about the field name suggests a
-                # check is needed.
-                wrong_unit.append(str(entry.get("unit")))
-                continue
+        # `amount_inr_cr` asserts a unit in its own name that `unit` makes
+        # variable. Without this partition a USD-stated commitment would be
+        # summed straight into a rupee total and silently corrupt the pipeline
+        # percentage — the easiest of the three to miss, because nothing about
+        # the field name suggests a check is needed.
+        usable, set_aside = schema.partition_by_unit(
+            schema.CAPEX, by_year[report_year]
+        )
+        wrong_unit.update(set_aside)
+        for entry in usable:
             amount = entry.get("amount_inr_cr")
             if not schema.is_number(amount):
                 continue
@@ -391,11 +407,8 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
     if not projects:
         if wrong_unit:
             return MetricResult(
-                error=(
-                    f"every announced capex figure is stated in "
-                    f"{'/'.join(sorted(set(wrong_unit)))} rather than INR crore — "
-                    f"this pipeline holds no exchange rate, so the amounts are "
-                    f"stored but cannot be sized against rupee revenue"
+                error=_set_aside_reason(
+                    "every announced capex figure", sorted(wrong_unit)
                 )
             )
         return MetricResult(
@@ -416,7 +429,7 @@ def compute_capex_pipeline(data: dict, params: dict) -> MetricResult:
             "from_fiscal_year": latest_year,
             "through_fiscal_year": ordered[-1]["commissioning_year"],
             "projects": ordered,
-            "set_aside_for_unit": sorted(set(wrong_unit)),
+            "set_aside_for_unit": sorted(wrong_unit),
             "unit": "pct_of_revenue",
             "direction": "higher_is_better",
         },
@@ -455,24 +468,17 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
     # The newest report's largest stated market: management restates and
     # revises TAM, and the current view is the one a thesis rests on.
     newest = max(by_year)
-    wrong_unit = sorted({
-        str(entry.get("unit")) for entry in by_year[newest]
-        if not schema.is_settleable(schema.TAM, entry)
-    })
+    usable, wrong_unit = schema.partition_by_unit(schema.TAM, by_year[newest])
     sizes = [
         float(entry["market_size_inr_cr"])
-        for entry in by_year[newest]
-        if schema.is_settleable(schema.TAM, entry)
-        and schema.is_number(entry.get("market_size_inr_cr"))
+        for entry in usable
+        if schema.is_number(entry.get("market_size_inr_cr"))
     ]
     if not sizes:
         if wrong_unit:
             return MetricResult(
-                error=(
-                    f"the stated addressable market is given in "
-                    f"{'/'.join(wrong_unit)} rather than INR crore — this "
-                    f"pipeline holds no exchange rate, so the figure is stored "
-                    f"but cannot be compared with rupee revenue"
+                error=_set_aside_reason(
+                    "the stated addressable market", wrong_unit
                 )
             )
         return MetricResult(error="No numeric addressable-market figure extracted")

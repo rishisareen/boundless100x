@@ -123,6 +123,62 @@ def _is_contents_page(lines: list[str], hits: dict) -> bool:
     return len(hits) >= 2
 
 
+def annual_reports_dir(raw_data_dir, bse_code) -> Path:
+    """Where a scrip code's annual reports live.
+
+    The one statement of the layout `download()` writes. It had been restated
+    at five call sites across three layers, none of which imports the fetcher
+    that owns it, so renaming the directory would have broken `llm_layer` last
+    and silently — every reader swallows a missing directory as "no reports".
+    """
+    return Path(raw_data_dir) / str(bse_code) / "annual_reports"
+
+
+def report_year(path) -> str:
+    """The report year in a `{year}_annual_report.*` filename."""
+    return Path(path).name.split("_")[0]
+
+
+def load_cached_sections(raw_data_dir, bse_code) -> dict[str, dict]:
+    """`{year: {section: {...}}}` from the sidecars already on disk.
+
+    The offline counterpart to `download_and_extract`, which always reaches
+    BSE. Anything wanting to read what has already been fetched — the sweep's
+    dry run, the corpus audit — needs this and had been open-coding it, so the
+    filename convention above leaked into three modules.
+
+    An unreadable sidecar is skipped with a warning rather than raising: this
+    is a read of a cache, and one corrupt file must not make a whole corpus
+    look empty.
+    """
+    reports = annual_reports_dir(raw_data_dir, bse_code)
+    if not reports.is_dir():
+        return {}
+
+    by_year: dict[str, dict] = {}
+    for sidecar in sorted(reports.glob("*_annual_report.sections.json")):
+        try:
+            by_year[report_year(sidecar)] = json.loads(
+                sidecar.read_text(encoding="utf-8")
+            )
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Ignoring unreadable sections sidecar {sidecar}: {e}")
+    return by_year
+
+
+def cached_report_years(raw_data_dir, bse_code) -> list[str]:
+    """Report years held as PDFs, which is what "held" means.
+
+    Deliberately the PDFs rather than the `.sections.json` sidecars: a year
+    downloaded but not yet section-extracted is still a year the corpus
+    gained, and counting sidecars would report it as missing.
+    """
+    reports = annual_reports_dir(raw_data_dir, bse_code)
+    if not reports.is_dir():
+        return []
+    return sorted(report_year(p) for p in reports.glob("*_annual_report.pdf"))
+
+
 def combined_text(sections: dict[str, dict]) -> str:
     """The single AR string for consumers that predate section extraction.
 

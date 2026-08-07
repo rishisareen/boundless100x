@@ -118,10 +118,29 @@ class TestScopeIsAlwaysExplicit:
         report = sweep_module.sweep(service, tickers=["astral"], dry_run=True)
         assert [p["ticker"] for p in report["plans"]] == ["ASTRAL"]
 
-    def test_all_tickers_reaches_only_the_extractable_ones(self, service, corpus):
+    def test_all_tickers_prices_only_the_extractable_ones(self, service, corpus):
         report = sweep_module.sweep(service, all_tickers=True, dry_run=True)
 
-        assert sorted(p["ticker"] for p in report["plans"]) == ["ASTRAL", "VBL"]
+        priced = [p["ticker"] for p in report["plans"] if not p["skipped"]]
+        assert sorted(priced) == ["ASTRAL", "VBL"]
+        assert report["estimate"]["tickers"] == 2
+
+    def test_all_tickers_still_reports_what_it_skipped_and_why(
+        self, service, corpus
+    ):
+        """The reasons are computed either way; dropping them is the silent cap.
+
+        This is the case the earlier version of this test missed: it asserted
+        only the priced plans, so a report naming 15 tickers to sweep and 0
+        skipped — while 7 had just been excluded with reasons in hand — looked
+        exactly like success.
+        """
+        report = sweep_module.sweep(service, all_tickers=True, dry_run=True)
+
+        skipped = {e["ticker"]: e["reason"] for e in report["skipped"]}
+        assert sorted(skipped) == ["IDEA", "RAIN"]
+        assert "suspect" in skipped["RAIN"]
+        assert "no annual-report sections" in skipped["IDEA"]
 
 
 class TestDryRun:
@@ -186,6 +205,38 @@ class TestDryRun:
 
         assert plan["provenance"]["2025"]["mdna"] == schema.SUSPECT
         assert plan["gate_reasons"]["2025"]["mdna"]
+
+
+class TestPricingIsSharedWithTheLivePath:
+    def test_the_dry_run_prices_the_prompt_the_call_would_send(
+        self, service, corpus
+    ):
+        """One assembly, not a reconstruction that happens to agree."""
+        from boundless100x.llm_layer import forward_growth
+
+        plan = sweep_module.plan_ticker(service, "ASTRAL")
+        sections = sweep_module.load_context(
+            service.suite.raw_data_dir, "ASTRAL"
+        )["annual_report_sections"]
+        submission = forward_growth.plan_submission(
+            service.config, sections, llm=service._llm
+        )["submission"]
+
+        assert plan["prompt_chars"] == len(
+            forward_growth.build_prompt("ASTRAL", "ASTRAL Ltd", submission)
+        )
+
+    def test_an_unpriceable_model_warns_that_the_ceiling_cannot_bind(
+        self, service, corpus, caplog
+    ):
+        """A ceiling that meters on $0 enforces nothing; say so."""
+        service._llm.forward_growth_model = "some-unreleased-model"
+        service.config["llm"]["forward_growth_model"] = "some-unreleased-model"
+
+        with caplog.at_level("WARNING"):
+            sweep_module.sweep(service, tickers=["ASTRAL"], cost_ceiling_usd=1.0)
+
+        assert "ceiling cannot bind" in caplog.text
 
 
 class TestPilotBatch:

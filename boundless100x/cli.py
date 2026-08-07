@@ -157,11 +157,11 @@ def backtest(
     from boundless100x.service import Boundless100xService
 
     svc = Boundless100xService()
-    raw_data_dir = Path(__file__).parent / "data_fetcher" / "raw_data"
 
     console.print("\n[bold blue]Walk-forward backtest[/bold blue]")
     report = WalkForwardBacktest(
-        raw_data_dir, svc.engine, svc.scorer, svc.eligibility, min_total_years=min_years
+        svc.suite.raw_data_dir, svc.engine, svc.scorer, svc.eligibility,
+        min_total_years=min_years,
     ).run()
 
     companies = report["companies"]
@@ -388,11 +388,7 @@ def sweep(
             f"({actual['input_tokens']:,} in + {actual['output_tokens']:,} out)"
         )
 
-    if out:
-        target = Path(out)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(report, indent=2, default=str))
-        console.print(f"\n[dim]Full report written to {target}[/dim]")
+    _write_report(out, report)
 
 
 # ── Corpus Commands ──
@@ -404,16 +400,48 @@ app.add_typer(corpus_app, name="corpus")
 
 
 def _load_config() -> dict:
-    import yaml
+    from boundless100x.service import load_config
 
-    from boundless100x.service import DEFAULT_CONFIG_PATH
-
-    with open(DEFAULT_CONFIG_PATH) as f:
-        return yaml.safe_load(f)
+    return load_config()
 
 
 def _raw_data_dir() -> Path:
-    return Path(__file__).parent / "data_fetcher" / "raw_data"
+    """The corpus the fetchers actually write to.
+
+    Read off the suite rather than recomputed. `corpus restore` *deletes* its
+    destination, and snapshot/audit/restore deriving the path independently of
+    the fetchers would mean that if the location ever moved, restore would
+    delete a stale tree while the fetchers wrote elsewhere — the exact failure
+    the audit exists to catch, in the audit itself.
+    """
+    from boundless100x.data_fetcher.suite import DataFetcherSuite
+
+    return Path(DataFetcherSuite(_load_config()).raw_data_dir)
+
+
+def _resolve_snapshot(explicit: str | None, config: dict):
+    """An explicit snapshot path, or the newest — and a clear error if neither."""
+    from boundless100x.data_fetcher import corpus_snapshot
+
+    chosen = Path(explicit) if explicit else corpus_snapshot.latest_snapshot(
+        config=config
+    )
+    if chosen is None:
+        console.print(
+            f"[red]No snapshot found under "
+            f"{corpus_snapshot.snapshot_root(config)}[/red]"
+        )
+        raise typer.Exit(1)
+    return chosen
+
+
+def _write_report(out: str | None, report: dict) -> None:
+    if not out:
+        return
+    target = Path(out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, indent=2, default=str))
+    console.print(f"\n[dim]Full report written to {target}[/dim]")
 
 
 @corpus_app.command("snapshot")
@@ -460,15 +488,7 @@ def corpus_restore_cmd(
     from boundless100x.data_fetcher import corpus_snapshot
 
     config = _load_config()
-    chosen = Path(snapshot) if snapshot else corpus_snapshot.latest_snapshot(
-        config=config
-    )
-    if chosen is None:
-        console.print(
-            f"[red]No snapshot found under "
-            f"{corpus_snapshot.snapshot_root(config)}[/red]"
-        )
-        raise typer.Exit(1)
+    chosen = _resolve_snapshot(snapshot, config)
 
     target = _raw_data_dir()
     console.print(
@@ -578,15 +598,7 @@ def corpus_audit_cmd(
     from boundless100x.data_fetcher import corpus_audit, corpus_snapshot
 
     config = _load_config()
-    chosen = Path(snapshot) if snapshot else corpus_snapshot.latest_snapshot(
-        config=config
-    )
-    if chosen is None:
-        console.print(
-            f"[red]No snapshot to compare against under "
-            f"{corpus_snapshot.snapshot_root(config)}[/red]"
-        )
-        raise typer.Exit(1)
+    chosen = _resolve_snapshot(snapshot, config)
 
     try:
         report = corpus_audit.audit_against_snapshot(_raw_data_dir(), chosen)
@@ -610,8 +622,8 @@ def corpus_audit_cmd(
         ("Tickers gained adj_close", "gained_adj_close"),
         ("Tickers still without it", "still_without_adj_close"),
         ("Directories gained report years", "gained_report_years"),
-        ("Codes with 2+ found-MD&A years (before)", "two_or_more_mdna_years_before"),
-        ("Codes with 2+ found-MD&A years (after)", "two_or_more_mdna_years_after"),
+        ("Codes with 2+ MD&A years, pre-gate (before)", "two_or_more_mdna_years_before"),
+        ("Codes with 2+ MD&A years, pre-gate (after)", "two_or_more_mdna_years_after"),
     ):
         names = head[key]
         table.add_row(label, str(len(names)), ", ".join(names))
@@ -630,11 +642,7 @@ def corpus_audit_cmd(
     else:
         console.print("\n[green]No regressions: nothing shrank or disappeared.[/green]")
 
-    if out:
-        target = Path(out)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(report, indent=2, default=str))
-        console.print(f"\n[dim]Full report written to {target}[/dim]")
+    _write_report(out, report)
 
 
 # ── Watchlist Commands ──

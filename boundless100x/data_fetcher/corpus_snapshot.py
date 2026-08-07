@@ -29,21 +29,35 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from boundless100x.data_fetcher.download_annual_reports import (
+    cached_report_years,
+    load_cached_sections,
+)
+
 logger = logging.getLogger(__name__)
 
 # The repository root: this file is `<repo>/boundless100x/data_fetcher/`.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Outside the synced tree, and outside the repo. Overridable from config under
-# `corpus_snapshot.dir`, read the way `service.history_path` reads its own.
-DEFAULT_SNAPSHOT_DIR = Path.home() / ".boundless100x" / "corpus_snapshots"
-
 MANIFEST_NAME = "manifest.json"
 SNAPSHOT_PREFIX = "raw_data-"
 
+# Shared state, outside the repository and outside the corpus. Named once so
+# the snapshot directory and the refetch run log cannot drift apart — deriving
+# one from the other by `.parent` made the coupling invisible from both ends.
+STATE_DIR = Path.home() / ".boundless100x"
+
 # A directory holding this is a real ticker rather than a BSE-code directory of
-# annual report PDFs. Same marker the backtest and the pace modulator use.
+# annual report PDFs. **This is the definition** — `backtest` and `pace` import
+# it from here. `data_fetcher` writes `financials.csv`, so the constant belongs
+# in the layer that produces it, and `pace.py` already carries the note saying
+# two copies could drift into disagreeing about which companies the corpus
+# contains. This module briefly made that a third copy.
 TICKER_MARKER = "financials.csv"
+
+# Outside the synced tree, and outside the repo. Overridable from config under
+# `corpus_snapshot.dir`, read the way `service.history_path` reads its own.
+DEFAULT_SNAPSHOT_DIR = STATE_DIR / "corpus_snapshots"
 
 
 class SnapshotError(RuntimeError):
@@ -85,41 +99,20 @@ def _price_has_adj_close(path: Path) -> bool | None:
     return "adj_close" in [column.strip() for column in header.split(",")]
 
 
-def _annual_report_years(directory: Path) -> list[str]:
-    """Report years held as PDFs, which is what "held" means.
-
-    Deliberately read off the PDFs rather than the `.sections.json` sidecars: a
-    year downloaded but not yet section-extracted is still a year the corpus
-    gained, and counting sidecars would report it as missing.
-    """
-    reports = directory / "annual_reports"
-    if not reports.is_dir():
-        return []
-    return sorted(
-        path.name.split("_")[0] for path in reports.glob("*_annual_report.pdf")
-    )
-
-
 def _mdna_found_years(directory: Path) -> list[str]:
     """Report years whose sections sidecar tags MD&A as `found`.
 
-    Raw detection provenance, before the content gate — that gate lives in
+    Raw detection provenance, **before the content gate** — that gate lives in
     `llm_layer`, which this layer must not import. So this is an upper bound on
-    usable MD&A years, and U7's own measurement is the gated figure.
+    usable MD&A years, and anything reporting it must say so; U7's own
+    measurement is the gated figure.
     """
-    reports = directory / "annual_reports"
-    if not reports.is_dir():
-        return []
-    years = []
-    for sidecar in reports.glob("*_annual_report.sections.json"):
-        try:
-            sections = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        mdna = (sections or {}).get("mdna") or {}
-        if isinstance(mdna, dict) and mdna.get("provenance") == "found":
-            years.append(sidecar.name.split("_")[0])
-    return sorted(years)
+    return sorted(
+        year
+        for year, sections in load_cached_sections(directory.parent, directory.name).items()
+        if isinstance((sections or {}).get("mdna"), dict)
+        and sections["mdna"].get("provenance") == "found"
+    )
 
 
 def describe_directory(directory: Path) -> dict:
@@ -141,7 +134,7 @@ def describe_directory(directory: Path) -> dict:
         "is_ticker": (directory / TICKER_MARKER).exists(),
         "has_quarterly": (directory / "quarterly.csv").exists(),
         "has_adj_close": _price_has_adj_close(directory / "price_volume.csv"),
-        "annual_report_years": _annual_report_years(directory),
+        "annual_report_years": cached_report_years(directory.parent, directory.name),
         "mdna_found_years": _mdna_found_years(directory),
     }
 
@@ -242,7 +235,7 @@ def restore(snapshot_path, destination) -> dict:
     payload = source / "raw_data"
     if not payload.is_dir():
         raise SnapshotError(f"no raw_data payload inside {source}")
-    load_manifest(source)  # refuses anything that is not a snapshot
+    manifest = load_manifest(source)  # refuses anything that is not a snapshot
 
     target = Path(destination)
     if target.exists():
@@ -251,8 +244,23 @@ def restore(snapshot_path, destination) -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(payload, target)
 
+    # The walk that describes what landed also *checks* it against the manifest
+    # written when the snapshot was taken. It was already being paid for and
+    # its result thrown away; a recovery path that reports a file count without
+    # comparing it to the one it promised is not a recovery path anyone should
+    # trust. A mismatch warns rather than raises — the files are already back,
+    # and refusing after the fact would help nobody.
     restored = describe_corpus(target)
-    logger.info(
-        f"Restored {restored['totals']['files']} files to {target} from {source}"
-    )
+    expected = (manifest or {}).get("totals") or {}
+    if expected and expected != restored["totals"]:
+        logger.warning(
+            f"Restored corpus does not match the snapshot manifest: "
+            f"expected {expected}, found {restored['totals']} — the files are "
+            f"in place, but investigate before discarding {source}"
+        )
+    else:
+        logger.info(
+            f"Restored {restored['totals']['files']} files to {target} from "
+            f"{source}, matching its manifest"
+        )
     return restored
