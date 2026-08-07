@@ -60,7 +60,11 @@ changes which entries survive belongs in this number.
 #     the metrics needing INR comparability set aside what they cannot use and
 #     say so. Which entries survive changes in both directions, so nothing
 #     validated under the old rule may be read from cache.
-SCHEMA_VERSION = 6
+# 7 — `usd_tn` and `inr_lakh_cr`, found by the first live sweep. Both are units
+#     the corpus states figures in and the vocabulary had no word for, so five
+#     genuinely-present readings were extracted in the nearest available unit
+#     and then correctly refused by grounding.
+SCHEMA_VERSION = 7
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like
@@ -135,11 +139,19 @@ GUIDANCE_SUBJECTS = (SUBJECT_COMPANY, SUBJECT_MARKET)
 # mis-scaled ones the corpus actually contains — a pharma exporter states its
 # market in USD billion, and Indian filings mix crore, lakh and million freely.
 # Anything outside the set is refused, like every other vocabulary here.
+# `usd_tn` and `inr_lakh_cr` were added after the first live sweep, which is
+# the only way this set can honestly be built. The pilot's discards were not
+# defects: ZYDUSLIFE states its markets in USD *trillion* and CAMS states
+# industry AUM in *lakh crore*, and with neither unit available the extractor
+# reached for the nearest one and the grounding check refused it — correctly,
+# since "1.98 trillion" is not 1.98 billion and "40 lakh crore" is not 40
+# crore. Five real readings were lost to a vocabulary that had never met the
+# filings.
 UNIT_INR_CR = "inr_cr"
 UNIT_INR = "inr"
 UNIT_PCT = "pct"
 SETTLING_UNITS = (UNIT_INR_CR, UNIT_INR, UNIT_PCT)
-FOREIGN_UNITS = ("usd_mn", "usd_bn", "inr_lakh", "inr_mn")
+FOREIGN_UNITS = ("usd_mn", "usd_bn", "usd_tn", "inr_lakh", "inr_mn", "inr_lakh_cr")
 UNITS = SETTLING_UNITS + FOREIGN_UNITS
 
 FIELDS: dict[str, dict[str, tuple[str, ...]]] = {

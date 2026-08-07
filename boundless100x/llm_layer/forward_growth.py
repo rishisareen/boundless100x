@@ -458,16 +458,22 @@ _UNIT_WINDOW_AFTER = 18
 # check that used to ask "is this INR crore?" now asks "is this the unit the
 # entry says it is?" — a strictly wider question, and the one that lets a
 # foreign figure be stored honestly instead of being thrown away.
+#
+# `inr_lakh` carries a negative lookahead because "lakh crore" is its own
+# Indian scale, five orders of magnitude from a lakh. Without it a
+# 40-lakh-crore industry AUM would ground as 40 lakh.
 _SCALE_AFTER = {
     "inr_cr": re.compile(r"^\W{0,3}(?:crores?|cr)\b", re.I),
-    "inr_lakh": re.compile(r"^\W{0,3}lakhs?\b", re.I),
+    "inr_lakh": re.compile(r"^\W{0,3}lakhs?\b(?!\W{0,3}crores?\b)", re.I),
+    "inr_lakh_cr": re.compile(r"^\W{0,3}lakhs?\W{0,3}crores?\b", re.I),
     "inr_mn": re.compile(r"^\W{0,3}(?:million|mn)\b", re.I),
     "usd_mn": re.compile(r"^\W{0,3}(?:million|mn)\b", re.I),
     "usd_bn": re.compile(r"^\W{0,3}(?:billion|bn)\b", re.I),
+    "usd_tn": re.compile(r"^\W{0,3}(?:trillion|tn)\b", re.I),
 }
 # A dollar marker has to precede the numeral for a USD claim to stand. Without
 # it, "500 million" is as likely to be rupees.
-_NEEDS_USD_MARKER = frozenset({"usd_mn", "usd_bn"})
+_NEEDS_USD_MARKER = frozenset({"usd_mn", "usd_bn", "usd_tn"})
 
 # Units an Indian filing routinely leaves implicit — a table headed "Rs crore"
 # writes the figures bare. For these, and only these, the absence of a
@@ -615,7 +621,15 @@ def _validate_entry(
     where = f"{year}.{kind}"
 
     def drop(reason):
-        discarded.append({"where": where, "reason": reason})
+        # The quoted sentence travels with the reason. Reading a discard list
+        # without it means going back to the filing to work out whether a
+        # refusal was a defect or a genuine gap — which is exactly the question
+        # a sweep exists to answer, and the first live sweep had to answer it
+        # by hand. Truncated, because this is diagnostics rather than evidence.
+        record = {"where": where, "reason": reason}
+        if isinstance(entry, dict) and isinstance(entry.get("source_sentence"), str):
+            record["source_sentence"] = entry["source_sentence"][:_MAX_FREE_TEXT]
+        discarded.append(record)
         logger.warning(f"Forward-growth entry discarded ({where}): {reason}")
         return None
 

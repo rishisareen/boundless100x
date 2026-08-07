@@ -37,6 +37,32 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEEP_MODEL = "claude-opus-4-6"
 
+# USD per million tokens, (input, output), matched on the family name in the
+# model id. Kept here as the one price table in the repo: the extraction sweep
+# prices a run *before* spending on it, and an estimate computed from a second
+# copy of these numbers would drift out of agreement with the bill.
+MODEL_PRICING = {
+    "opus": (15.0, 75.0),
+    "sonnet": (3.0, 15.0),
+    "haiku": (0.80, 4.0),
+}
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """What a call of this shape costs, in USD. Unknown models price at zero.
+
+    Zero rather than a guess: a made-up price on an unrecognised model would
+    read as a real estimate, and the sweep's cost ceiling would enforce a
+    number nobody chose.
+    """
+    for family, (per_input, per_output) in MODEL_PRICING.items():
+        if family in (model or ""):
+            return (
+                input_tokens * per_input / 1_000_000
+                + output_tokens * per_output / 1_000_000
+            )
+    return 0.0
+
 
 def forward_growth_model(config: dict) -> str:
     """The extraction model a run will use, resolvable without an API key.
@@ -131,6 +157,34 @@ class LLMOrchestrator:
 
     # ── Forward-growth extraction (Stage 1.5) ──
 
+    def build_forward_growth_prompt(
+        self, ticker: str, company_name: str, submission: dict
+    ) -> str:
+        """The exact prompt an extraction call would send.
+
+        Separated so the sweep's dry run can price a real prompt rather than a
+        reconstruction of one (KTD6). An estimate built from a second copy of
+        this assembly would be wrong in exactly the way that matters — it would
+        miss whatever the template and vocabulary block add on top of the
+        report text, which is the fixed cost of every ticker in the list.
+        """
+        template = self._load_template(forward_growth.PROMPT_NAME)
+        return template.format(
+            ticker=ticker,
+            company_name=company_name,
+            vocabulary=forward_growth.vocabulary_prompt_block(),
+            report_text=forward_growth.render_report_text(submission),
+        )
+
+    def usage_summary(self) -> dict:
+        """Cumulative tokens and cost across this orchestrator's calls.
+
+        Public because the sweep meters a running total against a cost ceiling
+        between tickers, and a ceiling read off a private attribute would break
+        silently the first time the accounting changed shape.
+        """
+        return self._summarize_usage()
+
     def run_forward_growth_extraction(
         self, ticker: str, company_name: str, submission: dict
     ) -> dict:
@@ -144,13 +198,7 @@ class LLMOrchestrator:
         if not self.enabled:
             return {}
 
-        template = self._load_template(forward_growth.PROMPT_NAME)
-        prompt = template.format(
-            ticker=ticker,
-            company_name=company_name,
-            vocabulary=forward_growth.vocabulary_prompt_block(),
-            report_text=forward_growth.render_report_text(submission),
-        )
+        prompt = self.build_forward_growth_prompt(ticker, company_name, submission)
         return self._call_api(self.forward_growth_model, prompt, "forward_growth")
 
     def run_analysis(
@@ -425,18 +473,10 @@ class LLMOrchestrator:
         total_output = sum(u["output_tokens"] for u in self._usage_log)
         total_time = sum(u["elapsed_seconds"] for u in self._usage_log)
 
-        # Cost estimate per model (input/output per MTok)
-        cost = 0.0
-        for u in self._usage_log:
-            if "opus" in u["model"]:
-                cost += u["input_tokens"] * 15 / 1_000_000
-                cost += u["output_tokens"] * 75 / 1_000_000
-            elif "sonnet" in u["model"]:
-                cost += u["input_tokens"] * 3 / 1_000_000
-                cost += u["output_tokens"] * 15 / 1_000_000
-            elif "haiku" in u["model"]:
-                cost += u["input_tokens"] * 0.80 / 1_000_000
-                cost += u["output_tokens"] * 4 / 1_000_000
+        cost = sum(
+            estimate_cost(u["model"], u["input_tokens"], u["output_tokens"])
+            for u in self._usage_log
+        )
 
         return {
             "total_input_tokens": total_input,

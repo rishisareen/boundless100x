@@ -284,6 +284,117 @@ def screen(
     console.print(f"\n[green]{len(survivors)} companies passed screening[/green]")
 
 
+@app.command()
+def sweep(
+    tickers: str = typer.Option(
+        None, help="Comma-separated symbols to extract forward growth from"
+    ),
+    all_tickers: bool = typer.Option(
+        False, "--all", help="Every ticker with a gated-found extractable section"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Price the sweep without calling the API"
+    ),
+    pilot: int = typer.Option(
+        None, help="Run only the first N tickers, and name the rest as deferred"
+    ),
+    ceiling: float = typer.Option(
+        None, help="Stop once this much (USD) has been spent"
+    ),
+    out: str = typer.Option(None, help="Write the full report as JSON here"),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Extract forward growth across chosen tickers, with the cost known first."""
+    setup_logging(verbose)
+
+    from boundless100x.llm_layer import sweep as sweep_module
+    from boundless100x.service import Boundless100xService
+
+    svc = Boundless100xService()
+    requested = [t.strip() for t in tickers.split(",")] if tickers else None
+
+    console.print("\n[bold blue]Forward-growth extraction sweep[/bold blue]\n")
+    try:
+        report = sweep_module.sweep(
+            svc, tickers=requested, all_tickers=all_tickers, dry_run=dry_run,
+            cost_ceiling_usd=ceiling, limit=pilot,
+        )
+    except (ValueError, RuntimeError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    priced = [p for p in report["plans"] if not p.get("skipped")]
+    if priced:
+        table = Table(title="What would be submitted")
+        table.add_column("Ticker", style="cyan bold")
+        table.add_column("Years", style="dim")
+        table.add_column("Sections", style="dim")
+        table.add_column("Chars", justify="right")
+        table.add_column("Est. tokens", justify="right")
+        table.add_column("Est. $", justify="right")
+        for plan in priced:
+            table.add_row(
+                plan["ticker"], ", ".join(plan["years"]),
+                ", ".join(plan["sections"]), f"{plan['submission_chars']:,}",
+                f"{plan['estimated_input_tokens']:,}",
+                f"{plan['estimated_cost_usd']:.4f}",
+            )
+        console.print(table)
+
+    estimate = report["estimate"]
+    console.print(
+        f"[bold]Estimate:[/bold] {estimate['tickers']} ticker(s), "
+        f"~${estimate['usd']:.4f} (worst case ${estimate['usd_max']:.4f})"
+    )
+
+    for entry in report["skipped"]:
+        console.print(f"[dim]skipped {entry['ticker']}: {entry['reason']}[/dim]")
+    if report["deferred"]:
+        console.print(
+            f"[dim]deferred to a later batch: {', '.join(report['deferred'])}[/dim]"
+        )
+
+    if report["dry_run"]:
+        console.print("\n[yellow]Dry run — no API call was made.[/yellow]")
+    else:
+        results = Table(title="Extraction results")
+        results.add_column("Ticker", style="cyan bold")
+        results.add_column("Status")
+        results.add_column("Kept", justify="right")
+        results.add_column("Discarded", justify="right")
+        results.add_column("$", justify="right")
+        for result in report["results"]:
+            colour = "green" if result["status"] == "ok" else "red"
+            results.add_row(
+                result["ticker"], f"[{colour}]{result['status']}[/{colour}]",
+                str(result["kept"]), str(len(result["discarded"])),
+                f"{result.get('cost_usd', 0):.4f}",
+            )
+        console.print(results)
+
+        if report.get("discard_summary"):
+            console.print("\n[bold]Why entries were discarded[/bold]")
+            for reason, count in report["discard_summary"].items():
+                console.print(f"  {count:>4}  {reason}")
+
+        if report["not_reached"]:
+            console.print(
+                f"\n[yellow]Cost ceiling reached — not run: "
+                f"{', '.join(report['not_reached'])}[/yellow]"
+            )
+        actual = report["actual"]
+        console.print(
+            f"\n[bold]Actual:[/bold] ${actual['usd']:.4f} "
+            f"({actual['input_tokens']:,} in + {actual['output_tokens']:,} out)"
+        )
+
+    if out:
+        target = Path(out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, indent=2, default=str))
+        console.print(f"\n[dim]Full report written to {target}[/dim]")
+
+
 # ── Corpus Commands ──
 
 corpus_app = typer.Typer(

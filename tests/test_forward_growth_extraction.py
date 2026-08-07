@@ -708,6 +708,75 @@ class TestStatedUnitRetention:
         assert len(kept) == 1
         assert kept[0]["unit"] == "usd_mn"
 
+    def test_a_usd_trillion_market_is_stored_in_trillions(self):
+        """Verbatim from ZYDUSLIFE's FY2026 MD&A — the shape that had no word."""
+        sentence = (
+            "The global biopharmaceutical market was valued at approximately "
+            "USD 537.5 billion in 2025 and is projected to reach nearly "
+            "USD 1.98 trillion by 2035."
+        )
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 1.98, "unit": "usd_tn",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        kept = self._validate(raw, sentence)["years"]["2025"]["tam"]
+
+        assert len(kept) == 1
+        assert kept[0]["unit"] == "usd_tn"
+
+    def test_a_trillion_figure_claimed_as_billions_is_still_refused(self):
+        """Which is what happened before `usd_tn` existed, and correctly so."""
+        sentence = "The market is projected to reach nearly USD 1.98 trillion by 2035."
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 1.98, "unit": "usd_bn",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        assert self._validate(raw, sentence)["years"]["2025"]["tam"] == []
+
+    def test_a_lakh_crore_figure_is_not_read_as_lakh(self):
+        """Verbatim from CAMS's FY2024 MD&A. Five orders of magnitude apart."""
+        sentence = (
+            "The assets under management of the industry crossed a record "
+            "40 lakh crore during the year."
+        )
+        as_lakh_crore = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 40, "unit": "inr_lakh_cr",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+        as_lakh = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 40, "unit": "inr_lakh",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        assert len(self._validate(as_lakh_crore, sentence)["years"]["2025"]["tam"]) == 1
+        assert self._validate(as_lakh, sentence)["years"]["2025"]["tam"] == []
+
+    def test_a_lakh_crore_figure_is_not_read_as_crore(self):
+        sentence = (
+            "The assets under management of the industry crossed a record "
+            "40 lakh crore during the year."
+        )
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 40, "unit": schema.UNIT_INR_CR,
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        assert self._validate(raw, sentence)["years"]["2025"]["tam"] == []
+
+    def test_a_discard_carries_the_sentence_it_was_reading(self):
+        """A discard list without the quotation cannot be triaged."""
+        sentence = "The market is projected to reach nearly USD 1.98 trillion by 2035."
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 1.98, "unit": "usd_bn",
+            "source_sentence": sentence, "section": "mdna",
+        }]}})
+
+        discarded = self._validate(raw, sentence)["discarded"]
+
+        assert any(d.get("source_sentence") == sentence for d in discarded)
+
     def test_a_lakh_figure_is_stored_in_lakh(self):
         sentence = "The project will cost Rs 250 lakh and commissions in FY2027."
         raw = response(**{"2025": {"capex": [{
