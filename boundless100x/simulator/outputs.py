@@ -170,10 +170,11 @@ from typing import Sequence
 
 import pandas as pd
 
+from boundless100x import price_bars
 from boundless100x.lifecycle.lane_gates import DEFAULT_LANE_GATES
 from boundless100x.lifecycle.states import as_date
 from boundless100x.simulator import friction_cash, owner
-from boundless100x.simulator.ledger import BASIS_MODELED_CAPITAL, Ledger
+from boundless100x.simulator.ledger import BASIS_MODELED_CAPITAL, QTY_EPSILON, Ledger
 from boundless100x.watchlist import CORE_LANE, RERATING_LANE
 
 logger = logging.getLogger(__name__)
@@ -189,65 +190,35 @@ SCHEMA_VERSION = 1
 LANE_GATE_IDS = tuple(sorted(DEFAULT_LANE_GATES))
 
 
-# ── local bar-selection hygiene (benchmark buys only) ────────────────────
+# ── bar-selection hygiene (benchmark buys only) ───────────────────────────
 #
-# A third copy of the "on or before" hygiene `friction.py` and `ledger.py`
-# each already carry locally — deliberately, per `ledger.py`'s own module
-# docstring reasoning: a few lines of data cleaning ("drop bad bars, pick a
-# direction"), not a rule a production surface could disagree with this
-# module about, and therefore not the KTD1 violation duplicating an
-# evaluator's *decision* would be. Kept in sync with the other two by hand
-# if this hygiene ever changes.
-
-
-def _is_estimated(value) -> bool:
-    if value is None or pd.isna(value):
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes")
-    return bool(value)
-
-
-def _clean_price_bars(price_df) -> pd.DataFrame | None:
-    if price_df is None or not isinstance(price_df, pd.DataFrame) or price_df.empty:
-        return None
-    if "date" not in price_df.columns:
-        return None
-
-    column = "adj_close" if "adj_close" in price_df.columns else "close"
-    if column not in price_df.columns:
-        return None
-
-    frame = pd.DataFrame({
-        "date": pd.to_datetime(price_df["date"], errors="coerce"),
-        "price": pd.to_numeric(price_df[column], errors="coerce"),
-    })
-    usable = frame["date"].notna() & frame["price"].notna()
-    if column == "adj_close" and "adj_close_is_estimated" in price_df.columns:
-        aliased = price_df["adj_close_is_estimated"].map(_is_estimated)
-        usable &= ~aliased.to_numpy(dtype=bool)
-
-    frame = frame[usable].sort_values("date")
-    return frame if not frame.empty else None
+# Bar cleaning/selection itself now lives in `boundless100x/price_bars.py`,
+# a shared leaf module — this used to be a third local copy of the "on or
+# before" hygiene `friction.py` and `ledger.py` each carried locally, before
+# the two duplicates that appeared within the simulator (this module and
+# `ledger.py`) were consolidated there (Phase 4 residual fix); see that
+# module's own docstring for why `friction.py`'s copy stays separate. What
+# remains here is `_resolved_bar`, a thin wrapper matching `Ledger.buy()`'s
+# own `{date, price}` bar contract, plus the pre-cleaned-frame caches
+# `build_benchmark_curve`/`lane_position_value_curve` build below so neither
+# re-cleans a ticker's whole raw history once per (ticker, date) pair.
 
 
 def _resolved_bar(price_df, as_of) -> dict | None:
     """The `{date, price}` bar contract `Ledger.buy()`-shaped calls expect:
     the last usable close on or before `as_of`, together with its OWN date
     (which may be earlier than `as_of` across a gap in the series).
+
+    `price_df` may be raw (`close`/`adj_close`) or already cleaned (a
+    `price_bars.clean_price_bars` frame, carrying `price`) — see
+    `price_bars.bar_on_or_before`'s own docstring for how the two are told
+    apart. Callers here that hold a pre-cleaned cache pass the cleaned frame
+    straight through and skip the re-clean.
     """
     as_of_date = as_date(as_of)
     if as_of_date is None:
         return None
-    frame = _clean_price_bars(price_df)
-    if frame is None:
-        return None
-    dates = frame["date"].dt.normalize()
-    at_or_before = frame[dates <= pd.Timestamp(as_of_date)]
-    if at_or_before.empty:
-        return None
-    row = at_or_before.iloc[-1]
-    return {"date": row["date"].date(), "price": float(row["price"])}
+    return price_bars.bar_on_or_before(price_df, as_of_date)
 
 
 # ── trade-log kind tagging (input contract #2) ────────────────────────────
@@ -684,6 +655,12 @@ def build_benchmark_curve(
     if n == 0:
         return equity_curve, trade_log
 
+    # Cleaned once per ticker, up front, rather than re-parsed/re-cleaned by
+    # `_resolved_bar` on every (ticker, replay_date) pair below — the raw
+    # frames are static for the whole call. `Ledger.mark_to_market` (called
+    # per date, below) does its own equivalent caching internally.
+    cleaned_frames = {ticker: price_bars.clean_price_bars(df) for ticker, df in price_frames.items()}
+
     # An equal split of the starting pool's own TOTAL cash outlay (notional
     # PLUS entry slippage), not of notional alone — sizing notional to
     # `cash / n` would leave zero headroom for slippage, and since n
@@ -698,25 +675,27 @@ def build_benchmark_curve(
     unit_slippage_rate = friction_cash.cost_of_buy(1.0, config)
     target_notional = target_cost / (1.0 + unit_slippage_rate)
     ticker_lanes = ticker_lanes or {}
-    bought: set[str] = set()
 
     sorted_dates = sorted(d for d in (as_date(x) for x in replay_dates) if d is not None)
 
     for replay_date in sorted_dates:
         for ticker, first_eligible in tickers_by_date:
-            if ticker in bought:
+            # A ticker enters `ledger.positions` exactly when (and only
+            # when) `_benchmark_buy` below successfully adds it — the
+            # benchmark never sells, so nothing is ever removed either.
+            # Checking `ledger.positions` directly retires a redundant
+            # local `bought` set this module used to track in parallel.
+            if ticker in ledger.positions:
                 continue
             first_eligible_date = as_date(first_eligible)
             if first_eligible_date is None or replay_date < first_eligible_date:
                 continue
-            resolved = _resolved_bar(price_frames.get(ticker), replay_date)
+            resolved = _resolved_bar(cleaned_frames.get(ticker), replay_date)
             if resolved is None:
                 continue  # no usable bar yet — retry on a later replay date
             result = _benchmark_buy(ledger, ticker, target_notional, resolved, config)
             lane = ticker_lanes.get(ticker, "unknown")
             trade_log.append({**result, "kind": "buy", "lane": lane})
-            if result["filled"]:
-                bought.add(ticker)
 
         equity_curve.append(ledger.mark_to_market(replay_date, price_frames))
 
@@ -738,8 +717,27 @@ def lane_position_value_curve(
     "tickers_held": [ticker, ...]}` — feed `value_key="positions_value"`
     into `portfolio_cagr`/`max_drawdown` to read a lane-scoped CAGR/drawdown
     off it.
+
+    **This FIFO quantity-consumption walk is deliberately separate from,
+    and simpler than, `Ledger.sell()`'s own FIFO** — open quantity only,
+    reconstructed from a flat historical trade log, for a lane the ledger
+    itself does not track natively. `Ledger.sell()` additionally handles
+    cost basis, tax and slippage against live per-lot state, which this
+    function has no need of (it only ever wants a quantity still held at a
+    given date). The two are not extracted into one shared helper on
+    purpose: they walk genuinely different data (a live `Ledger`'s lot
+    dicts vs. a flat replay of past buy/sell records), and forcing a shared
+    abstraction across that difference would be over-simplification, not
+    the kind of consolidation `price_bars.py` above is (same hazard, same
+    data shape, three copies of one another) — different problem, different
+    answer.
     """
     parsed_dates = sorted(d for d in (as_date(x) for x in dates) if d is not None)
+
+    # Cleaned once per ticker, up front — see `build_benchmark_curve`'s own
+    # note; the same static `price_frames` would otherwise be re-parsed and
+    # re-cleaned once per (ticker, date) pair in the loop below.
+    cleaned_frames = {ticker: price_bars.clean_price_bars(df) for ticker, df in price_frames.items()}
 
     events: list[tuple] = []
     for record in trade_log:
@@ -777,7 +775,7 @@ def lane_position_value_curve(
                     consume = min(lot_qty, remaining)
                     remaining -= consume
                     leftover = lot_qty - consume
-                    if leftover > 1e-9:
+                    if leftover > QTY_EPSILON:
                         survivors.append(leftover)
                 open_qty[ticker] = survivors
             idx += 1
@@ -788,7 +786,7 @@ def lane_position_value_curve(
             total_qty = sum(lots)
             if total_qty <= 0:
                 continue
-            resolved = _resolved_bar(price_frames.get(ticker), point_date)
+            resolved = _resolved_bar(cleaned_frames.get(ticker), point_date)
             if resolved is None:
                 continue  # no usable price yet — excluded from this point's value
             positions_value += total_qty * resolved["price"]

@@ -80,22 +80,19 @@ by `buy`, `sell` (the traded price is itself a fresh observation) and
 a ticker with no usable bar on a given `mark_to_market` date still be
 priced at *something* rather than dropped from the total.
 
-**Bar-selection hygiene is duplicated locally, not imported.**
+**Bar-selection hygiene lives in `price_bars.py`, a shared leaf module.**
 `lifecycle/friction.py`'s `_usable_bars` implements the same two
 `price_volume.csv` hazards this module must also avoid (an
-`adj_close_is_estimated` alias, a trailing-empty adjusted column) — but it
-is underscore-prefixed, and `json_store.py`'s own module docstring names
-exactly why that matters: reaching into another module's private helper
-across a package boundary is "a note to the reader that says 'do not
-depend on this' beside code that does." This is the data-cleaning idiom
-`json_store.py`'s docstring calls out as *not* the KTD1 violation that
-duplicating trigger/gate *evaluation* logic would be — "drop bad bars, pick
-a direction" is a few lines, not a rule a production surface could
-disagree with this module about. `_clean_price_bars` and
-`_bar_on_or_before` below are that duplicate, used only by
-`mark_to_market` (the one method here that takes a raw multi-ticker price
-frame rather than an already-resolved `bar`). Keep them in sync with
-`friction.py`'s hygiene if that logic ever changes.
+`adj_close_is_estimated` alias, a trailing-empty adjusted column); this
+module and `simulator/outputs.py` each grew their own local copy of that
+logic before it was consolidated into `boundless100x/price_bars.py` (Phase
+4 residual fix) — see that module's own docstring for why it is a leaf
+(imports nothing project-specific) and why `friction.py`'s copy stays
+separate rather than folding in too. `mark_to_market` (the one method here
+that takes a raw multi-ticker price frame rather than an already-resolved
+`bar`) is `price_bars`'s caller in this module, via `_cleaned_bars` below,
+which memoizes the cleaned frame per distinct price-frame object so a
+replay's date loop does not re-clean the same static history on every call.
 
 **`buy`/`sell` take an already-resolved `bar` (`{"date", "price"}`), not a
 price frame.** `mark_to_market` is the one method that resolves bars itself
@@ -138,6 +135,7 @@ from datetime import date
 
 import pandas as pd
 
+from boundless100x import price_bars
 from boundless100x.lifecycle import portfolio
 from boundless100x.lifecycle.states import as_date
 from boundless100x.simulator import friction_cash, owner
@@ -154,70 +152,11 @@ BASIS_MODELED_CAPITAL = "modeled_capital"
 # cash figure — see the module docstring's no-rounding rule). Consuming a
 # lot down to 1e-10 units left over is a float artifact, not a real residual
 # holding, and left alone it would linger in `positions` forever as a lot
-# too small for any future sell to round-trip cleanly.
-_QTY_EPSILON = 1e-9
-
-
-# ── local bar-selection hygiene (mark_to_market only — see module docstring) ──
-
-
-def _is_estimated(value) -> bool:
-    """Local duplicate of `friction._is_estimated` — identical three-shape read."""
-    if value is None or pd.isna(value):
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes")
-    return bool(value)
-
-
-def _clean_price_bars(price_df) -> tuple[pd.DataFrame | None, str]:
-    """The subset of `friction._usable_bars` this module needs: drop bad
-    bars, keep the rest sorted by date. No direction is chosen here — that
-    is `_bar_on_or_before`'s job — because a future caller inside this
-    module might one day need the other direction and re-deriving the
-    cleaning step from scratch is exactly the drift this duplication risks
-    if the two are not kept in one place locally.
-    """
-    if price_df is None or not isinstance(price_df, pd.DataFrame) or price_df.empty:
-        return None, "no price series is available for this ticker"
-    if "date" not in price_df.columns:
-        return None, "the price series carries no date column"
-
-    column = "adj_close" if "adj_close" in price_df.columns else "close"
-    if column not in price_df.columns:
-        return None, "the price series carries no close column"
-
-    frame = pd.DataFrame({
-        "date": pd.to_datetime(price_df["date"], errors="coerce"),
-        "price": pd.to_numeric(price_df[column], errors="coerce"),
-    })
-    usable = frame["date"].notna() & frame["price"].notna()
-    if column == "adj_close" and "adj_close_is_estimated" in price_df.columns:
-        aliased = price_df["adj_close_is_estimated"].map(_is_estimated)
-        usable &= ~aliased.to_numpy(dtype=bool)
-
-    frame = frame[usable].sort_values("date")
-    if frame.empty:
-        return None, (
-            f"no usable {column} bars — every bar is empty or an "
-            f"unadjusted-close alias (adj_close_is_estimated)"
-        )
-    return frame, ""
-
-
-def _bar_on_or_before(price_df, as_of: date) -> float | None:
-    """The last usable close on or before `as_of`, or `None` if there isn't
-    one — the exit/mark-to-market-style direction `friction.py`'s
-    `compute_position_return` documents for its own exit bar.
-    """
-    frame, _reason = _clean_price_bars(price_df)
-    if frame is None:
-        return None
-    dates = frame["date"].dt.normalize()
-    at_or_before = frame[dates <= pd.Timestamp(as_of)]
-    if at_or_before.empty:
-        return None
-    return float(at_or_before.iloc[-1]["price"])
+# too small for any future sell to round-trip cleanly. Public (no leading
+# underscore) because `outputs.py`'s `lane_position_value_curve` reuses the
+# identical guard on its own, separate FIFO reconstruction (see that
+# module's own note on why the two walks are not merged).
+QTY_EPSILON = 1e-9
 
 
 # ── bar contract for buy/sell ──────────────────────────────────────────
@@ -281,11 +220,39 @@ class Ledger:
         # so a ticker with no usable bar on one date is still priced (at its
         # last known mark) on every subsequent one, per the plan's own words.
         self._last_mark: dict[str, float] = {}
+        # `price_bars.clean_price_bars` result per distinct price-frame
+        # object, memoized for this Ledger's lifetime — see `_cleaned_bars`.
+        self._cleaned_price_cache: dict[int, pd.DataFrame | None] = {}
 
     # ── internal readings used by sizing/mark-to-market ────────────────
 
     def _resolve_config(self, config: dict | None) -> dict | None:
         return config if config is not None else self._config
+
+    def _cleaned_bars(self, price_df) -> pd.DataFrame | None:
+        """`price_bars.clean_price_bars`, memoized per distinct price-frame
+        object for the life of this Ledger instance.
+
+        `mark_to_market` may be called hundreds of times across a replay's
+        date loop against the SAME `price_frames` dict (module docstring:
+        "the same static object for the whole run") — re-parsing and
+        re-cleaning a ticker's whole raw history on every one of those
+        calls is wasted work once U7's per-replay-date loop exists.
+
+        Keyed by `id(price_df)` rather than by ticker: object identity is
+        what the module docstring actually claims is invariant across
+        calls, and keying by ticker instead would risk caching a permanent
+        `None` for a ticker that is simply absent from `price_frames` on
+        one call and present with real data on a later one. This is sound
+        only because the cache is scoped to one `Ledger` instance backing
+        one run, where the frame behind a given id does not change or get
+        freed (and therefore cannot have its id reused for something else)
+        mid-run.
+        """
+        key = id(price_df)
+        if key not in self._cleaned_price_cache:
+            self._cleaned_price_cache[key] = price_bars.clean_price_bars(price_df)
+        return self._cleaned_price_cache[key]
 
     def _position_qty(self, ticker: str) -> float:
         return sum(lot["qty"] for lot in self.positions.get(ticker, []))
@@ -306,11 +273,12 @@ class Ledger:
         return sum(lot["qty"] * lot["entry_price"] for lot in lots) / qty
 
     def _total_positions_value(self) -> float:
-        return sum(
-            self._position_qty(ticker) * self._mark_or_cost(ticker)
-            for ticker in self.positions
-            if self._position_qty(ticker) > 0
-        )
+        total = 0.0
+        for ticker in self.positions:
+            qty = self._position_qty(ticker)
+            if qty > 0:
+                total += qty * self._mark_or_cost(ticker)
+        return total
 
     def _lane_deployed_value(self, lane: str) -> float:
         total = 0.0
@@ -459,7 +427,7 @@ class Ledger:
         remaining = qty_to_close
 
         for lot in lots:
-            if remaining <= _QTY_EPSILON:
+            if remaining <= QTY_EPSILON:
                 survivors.append(lot)
                 continue
 
@@ -489,7 +457,7 @@ class Ledger:
             remaining -= consume
 
             leftover = lot["qty"] - consume
-            if leftover > _QTY_EPSILON:
+            if leftover > QTY_EPSILON:
                 survivors.append({**lot, "qty": leftover})
 
         if survivors:
@@ -532,8 +500,10 @@ class Ledger:
             if total_qty <= 0:
                 continue
 
-            price = _bar_on_or_before(price_frames.get(ticker), resolved_date)
-            if price is not None:
+            cleaned = self._cleaned_bars(price_frames.get(ticker))
+            resolved = price_bars.bar_on_or_before(cleaned, resolved_date)
+            if resolved is not None:
+                price = resolved["price"]
                 self._last_mark[ticker] = price
             else:
                 stale_marks.append(ticker)

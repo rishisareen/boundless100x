@@ -34,7 +34,7 @@ from typing import Sequence
 
 import pandas as pd
 
-from boundless100x.compute_engine.backtest import MIN_TOTAL_YEARS
+from boundless100x.compute_engine.backtest import MIN_TOTAL_YEARS, REQUIRED_FILES
 from boundless100x.compute_engine.point_in_time import (
     ANNUAL_FRAMES,
     ANNUAL_REPORTING_LAG_MONTHS,
@@ -44,10 +44,11 @@ from boundless100x.data_fetcher.corpus_snapshot import TICKER_MARKER
 
 logger = logging.getLogger(__name__)
 
-# Mirrors `backtest.REQUIRED_FILES` exactly — a genuine ticker missing either
-# file cannot be scored at all, so it is skipped with a reason rather than
-# silently dropped from the discovery list.
-REQUIRED_FILES = ("financials.csv", "price_volume.csv")
+# Imported from `backtest.py` rather than re-declared: a genuine ticker
+# missing either file cannot be scored at all, so it is skipped with a
+# reason rather than silently dropped from the discovery list — and this
+# module already imports `MIN_TOTAL_YEARS` from the same place, so this is
+# not a new coupling.
 
 # The two frames the backtest's own `_load` never reads (its `data` never
 # carries them, so `NON_TRUNCATABLE_INPUTS`'s strip of `shareholding` is moot
