@@ -48,15 +48,26 @@ survived triage.
   unrouted exit, and to stop `propose_routing` emitting `NO_PROCEEDS` when
   `incomplete` is non-empty.
 
-- **Concentration caps gate the advisory router but never `advance --apply`.**
-  `check_concentration` has exactly two consumers: `propose_routing` (inert)
-  and the CLI display. Nothing in the transition path reads it, and the reading
-  is computed *after* the ticker loop — so the first time an owner learns a
-  lane or sector is over its cap, the transitions that broke it are already
-  durable. A cap can therefore only ever be reported as already breached, never
-  prevented. Fixing it means computing the reading before the loop and letting
-  it withhold `should_apply`, which is a real behaviour change to the
-  money-moving path and wants owner sign-off.
+- **~~Concentration caps gate the advisory router but never `advance --apply`.~~**
+  **Fixed** (Tranche 1b), as its own commit, since it is a real behaviour
+  change to the money-moving path. The "does one more name fit?" question moved
+  into `portfolio.would_breach`, so the router and the transition path ask it
+  through one function rather than two. `advance()` supplies a gate recomputed
+  **per candidate** rather than once before the loop — an applying run changes
+  the occupancy it is checking, so two probes into a lane with room for one
+  would both pass a single up-front reading. It fires only when a transition
+  would *add* a name, so `probe → scale` is untouched. A breach withholds
+  `should_apply` even under `--apply`; `--override-caps` proceeds and records
+  the breach in the append-only evidence, because the override needing no flag
+  is editing the config, and that one leaves no trace. The original finding
+  follows.
+
+  `check_concentration` had exactly two consumers: `propose_routing` (inert)
+  and the CLI display. Nothing in the transition path read it, and the reading
+  was computed *after* the ticker loop — so the first time an owner learned a
+  lane or sector was over its cap, the transitions that broke it were already
+  durable. A cap could therefore only ever be reported as already breached,
+  never prevented.
 
 - **Unknown sectors read as sector headroom.** Positioned names whose sector
   could not be read are dropped into `unknown_sector` and surfaced only as a

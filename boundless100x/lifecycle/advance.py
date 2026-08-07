@@ -370,6 +370,8 @@ def advance_ticker(
     as_of=None,
     pace: dict | None = None,
     lane_gates: LaneGateEvaluator | None = None,
+    concentration_gate=None,
+    override_caps: bool = False,
 ) -> dict:
     """Re-score one company and decide what its state should be next.
 
@@ -378,6 +380,12 @@ def advance_ticker(
     engine's metric ids. It is optional so a direct caller (a test, a future
     single-ticker surface) still works; that caller gets an unvalidated
     evaluator built here, which is the seam `lane_view` has always used.
+
+    `concentration_gate` is `(lane, sector) -> [reasons]`, supplied by
+    `advance()` and consulted **before** a transition that would take a
+    position. Optional for the same seam reason: a direct caller with no gate
+    gets the pre-guardrail behaviour, which is what every non-`advance()`
+    caller wants.
     """
     state = watchlist.get(ticker)["state"]
 
@@ -474,6 +482,12 @@ def advance_ticker(
     # reading and not two passes over the same price series.
     friction_estimate = None
 
+    # Read once and used twice — by the concentration gate below and by the
+    # outcome this returns. The run's only path from a per-ticker analysis to
+    # the sector census: `result` is local to this function and never reaches
+    # the caller. Read rather than stored, per `lifecycle/portfolio.py`.
+    sector = _sector_of(result)
+
     proposal = candidates[0] if candidates else None
     if proposal:
         proposal["superseded"] = [c["trigger_id"] for c in candidates[1:]]
@@ -529,7 +543,47 @@ def advance_ticker(
                         f"[{friction_module.describe(reading)}]"
                     )
 
-        should_apply = apply if moves_money else True
+        # ── the concentration guardrail, asked before the money moves ──
+        #
+        # It used to be counted only after the whole loop, which meant a cap
+        # could be *reported* as breached and never *prevented* from being
+        # breached: by the time the reading existed, the transitions that broke
+        # it were already in an append-only history. A guardrail an owner only
+        # ever meets in the past tense is a report, not a guardrail.
+        #
+        # Asked only when this transition would **add a name**, because that is
+        # what the caps count. A `probe → scale` moves the same company deeper
+        # into a position it already holds and changes no count, so gating it
+        # would refuse to let an owner build a position they are already in on
+        # the grounds that they are already in it.
+        cap_reasons = []
+        if (
+            concentration_gate is not None
+            and proposal["to"] in lifecycle_states.POSITIONED
+            and state not in lifecycle_states.POSITIONED
+        ):
+            cap_reasons = list(concentration_gate(lane, sector) or [])
+
+        if cap_reasons:
+            # Into the evidence as well as onto the proposal, following the
+            # deployment-pace clause: if the owner overrides and the transition
+            # lands, the append-only history has to record that a cap was
+            # knowingly breached rather than silently.
+            proposal["concentration_reasons"] = cap_reasons
+            proposal["evidence"] = (
+                f"{proposal['evidence']} "
+                f"[concentration: {'; '.join(cap_reasons)}"
+                f"{'; overridden by the owner' if override_caps else ''}]"
+            )
+
+        # Withheld even under `--apply`, and that is the whole behaviour change.
+        # An override exists because a guardrail with no way past it can trap
+        # the owner out of their own decision — but it is explicit, per-run, and
+        # recorded in the evidence above.
+        withheld = bool(cap_reasons) and not override_caps
+        proposal["concentration_withheld"] = withheld
+
+        should_apply = (apply and not withheld) if moves_money else True
 
         if should_apply:
             watchlist.transition(
@@ -557,12 +611,7 @@ def advance_ticker(
             service, watchlist, ticker, result, as_of, lane_gate_result,
             friction_estimate,
         ),
-        # The run's only path from a per-ticker analysis to the concentration
-        # reading: `result` is local to this function and never reaches the
-        # caller, so without carrying the sector out here `advance()` has no way
-        # to group positioned names by industry at all. Read rather than stored
-        # — see `lifecycle/portfolio.py` on why sector is resolved once per run.
-        "sector": _sector_of(result),
+        "sector": sector,
         "composite": (result.scores or {}).get("composite"),
         "verdict": (result.eligibility or {}).get("verdict", "indeterminate"),
         "lane_gates": lane_gate_result,
@@ -755,6 +804,7 @@ def advance(
     as_of=None,
     pace_reading: dict | None = None,
     queue=None,
+    override_caps: bool = False,
 ) -> dict:
     """Advance every tracked company. Returns outcomes, errors, and three run-level readings.
 
@@ -762,6 +812,14 @@ def advance(
     so it describes the portfolio as it stands once the run's own transitions
     have been applied — including the positions of any company whose analysis
     failed. See `_concentration`.
+
+    It is *also* consulted inside the loop, before any transition that would
+    take a position, which is the one place a cap can be honoured rather than
+    merely reported. Recomputed per candidate rather than taken once up front,
+    because an applying run changes the very occupancy it is checking: two
+    probes into a lane with room for one would both pass a reading taken before
+    either landed. `override_caps` lets the owner proceed anyway, and the
+    breach is written into the evidence when they do — see `advance_ticker`.
 
     A failure on one company must not stop the rest: a stale fetch for one
     holding is no reason to skip checking whether another one's thesis broke.
@@ -831,12 +889,34 @@ def advance(
     outcomes: list[dict] = []
     errors: list[tuple[str, str]] = []
 
+    def concentration_gate(lane, sector) -> list[str]:
+        """Whether one more positioned name fits, counted as the loop stands.
+
+        Live rather than pre-computed: the loop applies the transitions it is
+        checking, so a reading taken before it started would let a second probe
+        into a lane that had room for one. Cheap enough to repeat — the count
+        reads the already-loaded watchlist and the sectors gathered so far, and
+        touches no source.
+
+        A reading that could not be built blocks rather than passes, and says
+        so. Absence must not read as headroom, which is the same rule
+        `portfolio.would_breach` applies to every other gap it meets.
+        """
+        try:
+            reading = _concentration(service, watchlist, outcomes)
+        except Exception as e:
+            logger.error(f"Concentration could not be counted before applying: {e}")
+            reading = portfolio.unavailable(
+                f"the concentration reading could not be built ({e})"
+            )
+        return portfolio.would_breach(lane, sector, reading)
+
     for ticker in tickers:
         try:
             outcomes.append(
                 advance_ticker(
                     service, watchlist, ticker, evaluator, apply, as_of, pace,
-                    lane_gates,
+                    lane_gates, concentration_gate, override_caps,
                 )
             )
         except Exception as e:

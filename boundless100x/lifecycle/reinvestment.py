@@ -512,93 +512,6 @@ def _safety_reasons(outcome: dict) -> list[str]:
     ])
 
 
-def _concentration_reasons(lane: str, sector, reading: dict | None) -> list[str]:
-    """Why adding one more name to this lane or sector would breach a cap.
-
-    Every figure consulted here is a **count of positioned names**, never a
-    share of capital — `lifecycle/portfolio.py` argues why that is the only
-    honest guardrail this system can compute.
-
-    A reading that could not be built blocks everything. The alternative is
-    proposing capital into a lane whose occupancy is unknown, which is the
-    failure mode `portfolio.unavailable` exists to make visible: absence reads
-    as headroom.
-
-    **A lane with no configured cap blocks for the same reason.**
-    `portfolio._lane_counts` reports it honestly — `max: None`, "counted, not
-    checked" — and that honesty is precisely what the router must not read as
-    room. Treated as a pass, the one lane nobody had got round to configuring
-    became the one lane capital could always flow into, which inverts the
-    guardrail. Zero is a cap, not a gap: `portfolio._cap` allows it because
-    "hold nothing in this lane" is a real instruction, and it blocks on the cap
-    it breaches rather than on missing configuration.
-
-    The sector half is deliberately partial and says so. `check_concentration`
-    reports groups of two or more, so a candidate joining a sector that
-    currently holds one positioned name is invisible here. That is the group
-    size the cap is nowhere near, and reconstructing the full sector census
-    would mean the router keeping its own copy of a count the reading already
-    owns.
-    """
-    if not isinstance(reading, dict) or not reading.get("available"):
-        detail = (reading or {}).get("reason", "no reading was produced")
-        return [
-            f"the concentration reading is unavailable ({detail}) — routing "
-            f"cannot confirm the {lane} lane has room"
-        ]
-
-    reasons = []
-    lane_row = (reading.get("lanes") or {}).get(lane)
-    if not isinstance(lane_row, dict):
-        reasons.append(
-            f"the concentration reading describes no {lane!r} lane, so its "
-            f"occupancy is unknown — routing is refused rather than assumed"
-        )
-    else:
-        cap = lane_row.get("max")
-        held = lane_row.get("positioned", 0)
-        if cap is None:
-            reasons.append(
-                f"the {lane} lane holds {held} positioned name(s) and has no cap "
-                f"configured (portfolio.max_positioned_per_lane[{lane}]) — there "
-                f"is no limit to check one more against, so routing is refused "
-                f"rather than assumed"
-            )
-        elif held + 1 > cap:
-            reasons.append(
-                f"the {lane} lane already holds {held} of a maximum {cap} "
-                f"positioned name(s) — one more would breach the cap "
-                f"(counts of names, not a share of capital)"
-            )
-
-    key = _sector_key(sector)
-    if key:
-        for group in reading.get("sectors") or []:
-            cap = group.get("max")
-            if _sector_key(group.get("sector")) != key or cap is None:
-                continue
-            if group.get("count", 0) + 1 > cap:
-                reasons.append(
-                    f"the {group['sector']} sector already holds "
-                    f"{group['count']} positioned name(s) against a cap of "
-                    f"{cap} ({', '.join(group.get('tickers') or [])}) — counts "
-                    f"of names, not a share of capital"
-                )
-    return reasons
-
-
-def _sector_key(sector) -> str:
-    """The same folding `check_concentration` grouped by, borrowed not rewritten.
-
-    The router matches a candidate's sector against an already-reported group,
-    so both sides of the comparison must fold identically. A second
-    implementation here would eventually differ, and "Chemicals" would read as
-    two sectors on one side and one on the other — a cap check that silently
-    stops matching.
-    """
-    return portfolio._sector_key(sector)
-
-
 def _candidate_payload(outcome: dict, entry: dict, fired: dict | None) -> dict:
     """One ranked candidate, carrying the evidence that ranked it.
 
@@ -1093,7 +1006,11 @@ class ReinvestmentQueue(_JsonStore):
                 fired = None
 
             candidate = _candidate_payload(outcome, entry, fired)
-            reasons = _safety_reasons(outcome) + _concentration_reasons(
+            # The same question `advance` asks before it applies a transition
+            # into a position, asked through the same function. A router that
+            # skipped a candidate the transition path was happy to buy would
+            # read as a ranking quirk rather than as a guardrail with two minds.
+            reasons = _safety_reasons(outcome) + portfolio.would_breach(
                 entry.get("lane"), outcome.get("sector"), concentration
             )
             if reasons:

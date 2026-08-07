@@ -121,12 +121,16 @@ class StubService:
     """Stands in for the pipeline; `advance` only needs analyze() and engine."""
 
     def __init__(self, metrics=None, composite=6.4, verdict="eligible", data=None,
-                 flags=None):
+                 flags=None, config=None):
         self._metrics = metrics if metrics is not None else healthy_metrics()
         self._composite = composite
         self._verdict = verdict
         self._data = data or {}
         self._flags = list(flags or [])
+        # The owner-policy blocks a run reads: `portfolio:` for the caps,
+        # `friction:` and `deployment_pace:` for their own. Empty by default, so
+        # every existing caller still gets the shipped defaults.
+        self.config = config or {}
         self.engine = type(
             "E", (),
             {"registry_hash": "abc123", "metrics": engine_metric_ids()},
@@ -839,3 +843,256 @@ class TestRoutingSafety:
 
         assert "lifecycle/advance.py" in reason
         assert "not a declared lane" not in reason
+
+
+class TestConcentrationGatesTheMoneyMovingPath:
+    """A cap that is checked before the transition, not counted after it.
+
+    The reading existed before this and had exactly two consumers, both
+    advisory: the routing proposal and a display line. Nothing in the
+    transition path read it, and it was computed *after* the ticker loop — so
+    the first time an owner learned a lane was over its cap, the transitions
+    that broke it were already in an append-only history. A cap could be
+    reported as breached and never prevented from being breached.
+
+    Two properties carry the fix. It is asked **per candidate, live**, because
+    an applying run changes the occupancy it is checking. And it is asked only
+    when a transition would **add a name**, because that is what the caps
+    count — a `probe → scale` moves the same company deeper into a position it
+    already holds.
+
+    Every figure is a count of positioned names, never a share of capital.
+    """
+
+    # A cap of one makes the boundary reachable without eight stub companies,
+    # and the sector cap is left at the shipped default: this class is about
+    # the lane axis, and `test_portfolio_concentration.py` owns the counting.
+    CAPPED = {"portfolio": {"max_positioned_per_lane": {"core": 1, "rerating": 5}}}
+
+    def full_lane(self, wm):
+        """One positioned core name against a cap of one — the lane is full."""
+        wm.add("HELD")
+        wm.transition("HELD", "probe", "seed", applied_by="owner")
+
+    def waiting(self, wm, ticker="ASTRAL"):
+        """A candidate whose buy-zone trigger will fire this run."""
+        wm.add(ticker)
+        wm.transition(ticker, "watch", "seed")
+        return ticker
+
+    def advanced(self, wm, evaluator, **kwargs):
+        return advance(
+            StubService(config=self.CAPPED), wm, evaluator=evaluator, **kwargs
+        )
+
+    def proposal_for(self, result, ticker):
+        return next(o["proposal"] for o in result["outcomes"] if o["ticker"] == ticker)
+
+    def test_a_full_lane_withholds_the_transition_even_under_apply(
+        self, wm, evaluator
+    ):
+        """The behaviour change, stated at its narrowest: `--apply` is no
+        longer sufficient on its own to take a position."""
+        self.full_lane(wm)
+        self.waiting(wm)
+
+        result = self.advanced(wm, evaluator, apply=True)
+        proposal = self.proposal_for(result, "ASTRAL")
+
+        assert proposal["to"] == "probe"
+        assert proposal["concentration_withheld"] is True
+        assert proposal["applied"] is False
+        assert wm.get("ASTRAL")["state"] == "watch"
+
+    def test_the_refusal_names_the_cap_and_the_basis(self, wm, evaluator):
+        """A guardrail that refuses without saying which limit, at what count,
+        and in what unit is a system the owner works around rather than with."""
+        self.full_lane(wm)
+        self.waiting(wm)
+
+        result = self.advanced(wm, evaluator, apply=True)
+        reasons = self.proposal_for(result, "ASTRAL")["concentration_reasons"]
+
+        assert len(reasons) == 1
+        assert "core lane already holds 1 of a maximum 1" in reasons[0]
+        assert "counts of names, not a share of capital" in reasons[0]
+
+    def test_a_lane_with_room_still_applies(self, wm, evaluator):
+        """The guardrail must not be a blanket refusal — headroom is the
+        ordinary case and has to stay ordinary."""
+        self.waiting(wm)
+
+        result = self.advanced(wm, evaluator, apply=True)
+        proposal = self.proposal_for(result, "ASTRAL")
+
+        assert proposal["concentration_withheld"] is False
+        assert proposal["applied"] is True
+        assert wm.get("ASTRAL")["state"] == "probe"
+
+    def test_the_count_is_live_within_the_run(self, wm, evaluator):
+        """Why the reading is recomputed per candidate rather than taken once.
+
+        Both candidates pass a reading taken before the loop starts — the lane
+        is empty then. The first transition is what fills it, and a pre-computed
+        reading would let the second through on the strength of a count that
+        stopped being true the moment the first was applied.
+        """
+        first = self.waiting(wm, "AAA")
+        second = self.waiting(wm, "ZZZ")
+
+        result = self.advanced(wm, evaluator, apply=True)
+
+        assert self.proposal_for(result, first)["applied"] is True
+        assert self.proposal_for(result, second)["concentration_withheld"] is True
+        assert [wm.get(first)["state"], wm.get(second)["state"]] == ["probe", "watch"]
+
+    def scale_registry(self):
+        """The shipped registry plus a `probe → scale` trigger that fires.
+
+        Synthetic, because the shipped registry declares none — `scale` appears
+        only as a `from:` state today, so nothing currently proposes entering
+        it. The rule is worth pinning anyway: it is a property of the gate
+        rather than of any trigger, and the day a scale-up transition is
+        declared, the guardrail must already know that adding to a position
+        adds no name.
+        """
+        triggers = dict(load_triggers())
+        triggers["scale_up"] = {
+            "label": "Scale up",
+            "rationale": "Synthetic — exercises the gate's add-a-name rule.",
+            "from": ["probe"],
+            "to": "scale",
+            "lane": ["core"],
+            "mode": "all",
+            "conditions": [
+                {"metric": "roce_5yr_avg", "comparator": "gte", "threshold": 20.0}
+            ],
+        }
+        return triggers
+
+    def test_scaling_an_existing_position_is_not_gated(self, wm):
+        """The cap counts *names*. A company already in `probe` is already
+        counted, so `probe → scale` adds nothing to any count — gating it would
+        refuse to let an owner build a position on the grounds that they hold
+        it.
+
+        The lane is at its cap here *because of this very company*, which is
+        the shape of the mistake: a naive `held + 1 > cap` would count it twice
+        and refuse.
+        """
+        wm.add("HELD")
+        wm.transition("HELD", "probe", "seed", applied_by="owner")
+        evaluator = TriggerEvaluator(self.scale_registry())
+
+        result = self.advanced(wm, evaluator, apply=True)
+        proposal = self.proposal_for(result, "HELD")
+
+        assert proposal["to"] == "scale"
+        assert proposal["concentration_withheld"] is False
+        assert wm.get("HELD")["state"] == "scale"
+
+    def test_an_unreadable_count_blocks_rather_than_passes(self, wm, evaluator):
+        """Absence must not read as headroom — the same rule every other gap in
+        this layer follows. A reading that could not be built is not a lane with
+        room, it is a lane whose occupancy nobody knows."""
+        self.waiting(wm)
+        service = StubService(config=self.CAPPED)
+
+        def unreadable(*args, **kwargs):
+            raise RuntimeError("the watchlist could not be counted")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                "boundless100x.lifecycle.advance._concentration", unreadable
+            )
+            result = advance(service, wm, evaluator=evaluator, apply=True)
+
+        proposal = self.proposal_for(result, "ASTRAL")
+        assert proposal["concentration_withheld"] is True
+        assert "could not be built" in proposal["concentration_reasons"][0]
+        assert wm.get("ASTRAL")["state"] == "watch"
+
+    def test_a_pre_position_transition_is_never_gated(self, wm, evaluator):
+        """Qualifying and watching move no money, so a full lane has no opinion
+        about them. Gating them would stop the pipeline that feeds the lane the
+        moment the lane filled up."""
+        self.full_lane(wm)
+        wm.add("EARLY")
+
+        result = self.advanced(wm, evaluator, apply=True)
+        proposal = self.proposal_for(result, "EARLY")
+
+        assert proposal["to"] not in ("probe", "scale")
+        assert proposal["applied"] is True
+        assert proposal["concentration_withheld"] is False
+
+
+class TestOverridingAConcentrationCap:
+    """The escape hatch, and why it is explicit rather than absent.
+
+    A guardrail with no way past it can trap an owner out of their own
+    decision — and the way past it that needs no flag is editing the cap in
+    `config.yaml`, which leaves no record of the breach at all. So the override
+    is a per-run flag, and taking it writes the breach into the append-only
+    evidence beside the reason the transition fired.
+    """
+
+    CAPPED = TestConcentrationGatesTheMoneyMovingPath.CAPPED
+
+    def setup_full_lane(self, wm):
+        wm.add("HELD")
+        wm.transition("HELD", "probe", "seed", applied_by="owner")
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "watch", "seed")
+
+    def advanced(self, wm, evaluator, **kwargs):
+        return advance(
+            StubService(config=self.CAPPED), wm, evaluator=evaluator, **kwargs
+        )
+
+    def proposal_for(self, result, ticker="ASTRAL"):
+        return next(o["proposal"] for o in result["outcomes"] if o["ticker"] == ticker)
+
+    def test_the_override_applies_the_transition(self, wm, evaluator):
+        self.setup_full_lane(wm)
+
+        result = self.advanced(wm, evaluator, apply=True, override_caps=True)
+
+        assert self.proposal_for(result)["concentration_withheld"] is False
+        assert self.proposal_for(result)["applied"] is True
+        assert wm.get("ASTRAL")["state"] == "probe"
+
+    def test_the_breach_is_written_into_the_history(self, wm, evaluator):
+        """The point of the flag being a flag. A cap knowingly breached is a
+        decision, and a decision this system records is one that can be
+        reviewed later — which is what the whole append-only history is for."""
+        self.setup_full_lane(wm)
+
+        self.advanced(wm, evaluator, apply=True, override_caps=True)
+
+        evidence = wm.get("ASTRAL")["state_history"][-1]["evidence"]
+        assert "concentration:" in evidence
+        assert "core lane already holds 1 of a maximum 1" in evidence
+        assert "overridden by the owner" in evidence
+
+    def test_the_reasons_still_travel_on_the_proposal(self, wm, evaluator):
+        """Overriding suppresses the refusal, never the reading. A surface that
+        stopped showing the breach once it was allowed would make the override
+        the last time anyone saw it."""
+        self.setup_full_lane(wm)
+
+        result = self.advanced(wm, evaluator, apply=True, override_caps=True)
+
+        assert self.proposal_for(result)["concentration_reasons"]
+
+    def test_the_override_alone_still_does_not_apply(self, wm, evaluator):
+        """It overrides the cap, not the owner's confirmation. Without
+        `--apply` a money-moving transition is still a proposal, and a flag
+        about concentration must not quietly become a second way to buy."""
+        self.setup_full_lane(wm)
+
+        result = self.advanced(wm, evaluator, override_caps=True)
+
+        assert self.proposal_for(result)["applied"] is False
+        assert self.proposal_for(result)["needs_confirmation"] is True
+        assert wm.get("ASTRAL")["state"] == "watch"

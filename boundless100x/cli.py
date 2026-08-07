@@ -1220,9 +1220,29 @@ def watchlist_advance(
     quarterly: bool = typer.Option(
         False, "--quarterly", help="Only advance stale (90+ days) entries"
     ),
+    override_caps: bool = typer.Option(
+        False, "--override-caps",
+        help="Apply a position transition even when it would breach a per-lane "
+             "or per-sector concentration cap. The breach is recorded in the "
+             "transition's evidence.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ):
-    """Re-score the watchlist, evaluate triggers, and propose transitions."""
+    """Re-score the watchlist, evaluate triggers, and propose transitions.
+
+    **A concentration cap is checked before the transition, not after it.** A
+    proposal that would take the portfolio past a per-lane or per-sector cap is
+    withheld even under `--apply`, and says which cap and by how much. The
+    reading used to be counted only once the loop had finished, which meant an
+    owner could learn a lane was over its cap only from the run that had
+    already put it there. Every figure is a count of positioned names, never a
+    share of capital — see `lifecycle/portfolio.py`.
+
+    `--override-caps` proceeds anyway. It exists because a guardrail with no
+    way past it can trap an owner out of their own decision, and it is explicit
+    rather than silent: the breach is written into the append-only evidence
+    beside the reason the transition fired.
+    """
     setup_logging(verbose)
 
     from boundless100x.lifecycle.advance import advance
@@ -1256,7 +1276,10 @@ def watchlist_advance(
         )
         queue = None
 
-    result = advance(svc, wm, apply=apply, quarterly=quarterly, queue=queue)
+    result = advance(
+        svc, wm, apply=apply, quarterly=quarterly, queue=queue,
+        override_caps=override_caps,
+    )
     outcomes, errors = result["outcomes"], result["errors"]
 
     # Say when the corpus's valuation tightened entry, before showing what did
@@ -1293,7 +1316,12 @@ def watchlist_advance(
             continue
 
         arrow = f"→ [{STATE_COLOURS.get(proposal['to'], 'white')}]{proposal['to']}[/]"
-        if proposal["needs_confirmation"]:
+        if proposal.get("concentration_withheld"):
+            # Distinct from the ordinary "confirm with --apply", because
+            # re-running with --apply will not move this one: the owner has a
+            # decision to make about the cap, not a confirmation to give.
+            arrow += " [red](cap breached — see below)[/red]"
+        elif proposal["needs_confirmation"]:
             arrow += " [yellow](confirm with --apply)[/yellow]"
         elif proposal["applied"]:
             arrow += " [green]applied[/green]"
@@ -1309,7 +1337,13 @@ def watchlist_advance(
     for ticker, message in errors:
         console.print(f"[red]{ticker}: {message}[/red]")
 
-    pending = [o for o in outcomes if o["proposal"] and o["proposal"]["needs_confirmation"]]
+    _print_capped_transitions(outcomes)
+
+    pending = [
+        o for o in outcomes
+        if o["proposal"] and o["proposal"]["needs_confirmation"]
+        and not o["proposal"].get("concentration_withheld")
+    ]
     if pending:
         console.print(
             f"\n[yellow]{len(pending)} transition(s) move money and were not "
@@ -1317,6 +1351,47 @@ def watchlist_advance(
         )
 
     _print_routing_result(result.get("routing"))
+
+
+def _print_capped_transitions(outcomes) -> None:
+    """Which entries a concentration cap held back, and by how much.
+
+    Its own block rather than a line in the table, for `_print_exit_friction`'s
+    reason: the cap has to travel with the count it breaches and the basis that
+    count is in, and an evidence cell truncated to 54 characters would show
+    "the core lane already holds 8 of a maxi…" — which reads as a system that
+    refused without saying why.
+
+    It prints the escape hatch too. A guardrail whose only visible face is a
+    refusal invites being worked around by editing the config, which is the
+    version of the override that leaves no record.
+    """
+    from rich.markup import escape
+
+    capped = [
+        o for o in outcomes
+        if o["proposal"] and o["proposal"].get("concentration_withheld")
+    ]
+    if not capped:
+        return
+
+    console.print(
+        f"\n[bold red]{len(capped)} transition(s) withheld by a concentration "
+        f"cap[/bold red]"
+    )
+    for outcome in capped:
+        proposal = outcome["proposal"]
+        console.print(
+            f"  [cyan]{escape(str(outcome['ticker']))}[/cyan] "
+            f"[dim]{outcome['state']} → {proposal['to']}[/dim]"
+        )
+        for reason in proposal.get("concentration_reasons") or []:
+            console.print(f"    [red]- {escape(str(reason))}[/red]")
+    console.print(
+        "  [dim]Exit or drop a name to make room, raise the cap in "
+        "config.yaml under `portfolio:`, or re-run with --override-caps to "
+        "proceed and record the breach in the evidence.[/dim]"
+    )
 
 
 def _print_routing_result(routing) -> None:

@@ -339,6 +339,91 @@ def _sector_groups(rows: list[dict], sector_cap) -> tuple[list[dict], list[str]]
     return reported, sorted(unknown)
 
 
+def would_breach(lane: str, sector, reading: dict | None) -> list[str]:
+    """Why adding one more positioned name to this lane or sector breaks a cap.
+
+    Empty means there is room. **The one statement of the question**, asked
+    identically by the two places that need it: `reinvestment.propose_routing`
+    deciding whether to advise deploying into a candidate, and `advance`
+    deciding whether it may apply a transition that would take a position. Two
+    copies would eventually disagree, and the disagreement would be invisible —
+    a router that skips a candidate the transition path is happy to buy reads
+    as a ranking quirk, not as a guardrail with two minds.
+
+    Every figure consulted is a **count of positioned names**, never a share of
+    capital; the module docstring argues why that is the only honest guardrail
+    this system can compute.
+
+    Three fail-closed cases, all saying the same thing in different words:
+    absence must not read as headroom.
+
+      * **A reading that could not be built blocks everything.** The
+        alternative is committing capital into a lane whose occupancy is
+        unknown.
+      * **A lane the reading does not describe blocks.** Its occupancy is not
+        zero, it is unmeasured.
+      * **A lane with no configured cap blocks.** `_lane_counts` reports it
+        honestly — `max: None`, "counted, not checked" — and that honesty is
+        precisely what must not be read as room, or the one lane nobody had got
+        round to configuring becomes the one lane capital can always flow into.
+        Zero is a cap, not a gap: `_cap` allows it because "hold nothing in
+        this lane" is a real instruction, and it blocks on the cap it breaches
+        rather than on missing configuration.
+
+    The sector half is deliberately partial and says so. `check_concentration`
+    reports groups of two or more, so a candidate joining a sector that
+    currently holds one positioned name is invisible here — that is the group
+    size the cap is nowhere near. A name whose sector could not be read is
+    invisible on the other side, for the reason the module docstring gives.
+    """
+    if not isinstance(reading, dict) or not reading.get("available"):
+        detail = (reading or {}).get("reason", "no reading was produced")
+        return [
+            f"the concentration reading is unavailable ({detail}), so the "
+            f"{lane} lane cannot be shown to have room — refused rather than "
+            f"assumed"
+        ]
+
+    reasons = []
+    lane_row = (reading.get("lanes") or {}).get(lane)
+    if not isinstance(lane_row, dict):
+        reasons.append(
+            f"the concentration reading describes no {lane!r} lane, so its "
+            f"occupancy is unknown — refused rather than assumed"
+        )
+    else:
+        cap = lane_row.get("max")
+        held = lane_row.get("positioned", 0)
+        if cap is None:
+            reasons.append(
+                f"the {lane} lane holds {held} positioned name(s) and has no cap "
+                f"configured (portfolio.max_positioned_per_lane[{lane}]) — there "
+                f"is no limit to check one more against, so it is refused rather "
+                f"than assumed"
+            )
+        elif held + 1 > cap:
+            reasons.append(
+                f"the {lane} lane already holds {held} of a maximum {cap} "
+                f"positioned name(s) — one more would breach the cap "
+                f"(counts of names, not a share of capital)"
+            )
+
+    key = _sector_key(sector)
+    if key:
+        for group in reading.get("sectors") or []:
+            cap = group.get("max")
+            if _sector_key(group.get("sector")) != key or cap is None:
+                continue
+            if group.get("count", 0) + 1 > cap:
+                reasons.append(
+                    f"the {group['sector']} sector already holds "
+                    f"{group['count']} positioned name(s) against a cap of "
+                    f"{cap} ({', '.join(group.get('tickers') or [])}) — counts "
+                    f"of names, not a share of capital"
+                )
+    return reasons
+
+
 def describe(reading: dict | None) -> str:
     """One line a person can read, with the basis attached.
 

@@ -896,3 +896,65 @@ class TestRemoveGuardsRecordedProceeds:
         assert "could not be read" in result.output
         assert "Nothing was removed" in result.output
         assert stores.wm().get("QUIET") is not None
+
+
+class TestCappedTransitionDisplay:
+    """What an owner sees when a concentration cap holds a transition back.
+
+    Its own block rather than a cell in the table, for `_print_exit_friction`'s
+    reason: the cap has to travel with the count it breaches and the basis that
+    count is in, and the evidence column truncates at 54 characters — "the core
+    lane already holds 1 of a maxi…" reads as a system that refused without
+    saying why.
+
+    The escape hatch is printed too. A guardrail whose only visible face is a
+    refusal invites being worked around by quietly raising the cap in the
+    config, which is the version of the override that leaves no record.
+    """
+
+    def render(self, outcomes) -> str:
+        from boundless100x import cli
+
+        with cli.console.capture() as captured:
+            cli._print_capped_transitions(outcomes)
+        return captured.get()
+
+    def withheld(self, ticker="ASTRAL", **overrides) -> dict:
+        proposal = {
+            "to": "probe",
+            "concentration_withheld": True,
+            "concentration_reasons": [
+                "the core lane already holds 8 of a maximum 8 positioned "
+                "name(s) — one more would breach the cap (counts of names, "
+                "not a share of capital)"
+            ],
+        }
+        proposal.update(overrides)
+        return {"ticker": ticker, "state": "watch", "proposal": proposal}
+
+    def test_it_names_the_company_the_move_and_the_cap(self, stores):
+        text = self.render([self.withheld()])
+
+        assert "ASTRAL" in text
+        assert "watch → probe" in text
+        assert "8 of a maximum 8" in text
+
+    def test_the_basis_survives_into_the_rendered_line(self, stores):
+        """Counts of names, never a share of capital — the sentence this whole
+        module exists to keep attached to its numbers."""
+        assert "not a share of capital" in self.render([self.withheld()])
+
+    def test_it_offers_the_three_ways_forward(self, stores):
+        text = self.render([self.withheld()])
+
+        assert "--override-caps" in text
+        assert "config.yaml" in text
+        assert "Exit or drop a name" in text
+
+    def test_an_uncapped_run_prints_nothing_at_all(self, stores):
+        """Silence is the ordinary case, and a heading over an empty list would
+        make every clean run look like it had something to answer for."""
+        clear = {"ticker": "ASTRAL", "state": "watch",
+                 "proposal": {"to": "probe", "concentration_withheld": False}}
+
+        assert self.render([clear, {"ticker": "X", "proposal": None}]) == ""
