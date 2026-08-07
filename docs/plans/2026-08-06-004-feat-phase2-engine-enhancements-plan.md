@@ -1094,6 +1094,18 @@ need only *one* usable MD&A year and the corpus has 11 across 10 tickers, so
 an INR-reporting domestic company is the obvious next candidate — that is the
 cheapest way to close this bar.
 
+> **Settled by the follow-up phase.** This bar is no longer outstanding; it was
+> answered on 2026-08-07 by
+> `docs/plans/2026-08-07-005-feat-forward-signal-activation-plan.md`, whose
+> Implementation Record carries the per-sub-metric result. In short: the corpus
+> refetch and a priced extraction sweep produced **58 grounded entries across
+> 11 tickers**, `quarterly_momentum` went 5/22 → 21/22, and the three
+> text-derived sub-metrics were measured *separately* rather than against this
+> section's any-one-of-them bar — which is why they are not reported here as a
+> single pass or fail. `promises_kept_ratio` and `tam_runway` both have live
+> inputs and named blockers; `capex_pipeline` extracted nothing in 54
+> report-years and carries a retire recommendation.
+
 Each of the three schema revisions moved `forward_signal_hash`
 (`6102f9fea8ff → 6bc5a9558b3d`) and left `registry_hash` at `1d9f30d09df3`
 throughout — **KTD8 doing exactly its job under a real scenario**, three
@@ -1106,9 +1118,17 @@ times, with no ticker's momentum baseline disturbed.
   assumption in `macro:` or a `stated_value` + `unit` pair grounded separately
   from a derived INR figure. Deliberately not done here: it is a schema
   expansion, and a wrong conversion is worse than no number.
+  *(Half-closed 2026-08-07: the follow-up plan took the second option — every
+  figure is now stored in its stated unit and stays grounded, so 27 readings
+  the old rule discarded are recorded and the coverage gap is visible in the
+  data. The FX decision itself is still open, and is now the single blocker on
+  `tam_runway`.)*
 - **Refetch the corpus.** 17 of 22 tickers predate `quarterly.csv`, and
   `max_reports: 3` applies only from Phase 0 forward. Both `quarterly_momentum`
   coverage and promises-kept coverage are gated on this, not on the metrics.
+  *(Done 2026-08-07 — all 22 tickers now carry a quarterly series and an
+  adjusted price series, and the corpus holds 54 report-years instead of 29.
+  See the follow-up plan's Implementation Record.)*
 
 ### Corrections the phase forced
 

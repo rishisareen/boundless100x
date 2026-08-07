@@ -704,3 +704,247 @@ record with each text-derived sub-metric reported separately and a retire
 recommendation for any that remain at zero; Phase 2's record updated to point
 here; `CLAUDE.md`'s corpus counts corrected; and any dead-end code from approaches that did not pan out removed
 from the diff.
+
+---
+
+## Implementation Record (2026-08-07)
+
+Landed on `main` with the suite green (934 passed, 2 network tests deselected).
+The measurements the Definition of Done asks to be recorded here.
+
+### The KTD9 gate, and how it read
+
+The schema track was gated on the refetch showing company-subject guidance, and
+the refetch moved it decisively. Scanning every gated-`found` MD&A and
+chairman slice for forward-looking numeric statements, classified by shape and
+by whose growth they describe:
+
+| Statement shape | Before | After |
+|---|---|---|
+| Percent growth, **company** subject | 1 (1 code, **1 report year**) | 5 (1 code, **3 report years**) |
+| Percent growth, market/industry/economy | 34 (7 codes) | 70 (9 codes) |
+| Percent growth, subject unattributed | 13 (5 codes) | 20 (6 codes) |
+| Absolute INR crore, **company** subject | 0 | 0 |
+| Absolute INR crore, other subject | 5 | 6 |
+
+The row that decided it is the first. `promises_kept_ratio` needs
+company-subject guidance in **two** report years for one ticker; before the
+refetch no ticker had that in even one year but 500405 (SPLPETRO), with a
+single statement. After it, SPLPETRO carries company-subject growth guidance in
+three consecutive report years. That population did not exist and now does.
+
+The second finding held exactly as the Problem Frame predicted, and is the one
+that most shapes the recommendations below: **not one forward-looking
+company-subject INR-crore figure appears anywhere in the corpus**, before or
+after. The schema's original absolute-INR guidance vocabulary still has nothing
+to bind to.
+
+The scan is a heuristic instrument and its market/unattributed split is coarser
+than a hand read. Its company-subject column is the one that matters and was
+verified sentence by sentence; a sentence naming both the company and a market
+is classified `market`, which is the conservative direction (KTD8).
+
+### Coverage audit (U3)
+
+| Measure | Before | After |
+|---|---|---|
+| Tickers with `quarterly.csv` | 5 / 22 | **22 / 22** |
+| Tickers with an `adj_close` series | 9 / 22 | **22 / 22** |
+| Annual-report years held | 29 | **54** (25 added across 15 codes) |
+| Codes with 2+ `found`-MD&A years | 1 | **9** |
+
+A1 and A2 both held: every one of the 17 tickers missing a quarterly series
+gained one, so the absence was fetch vintage rather than Screener omitting the
+section, and BSE served the older report years `max_reports: 3` asks for.
+
+The audit reported **27 regressions and every one was investigated before the
+snapshot was kept**. All 27 are the analysis window rolling forward: `Mar 2014`
+leaves the ten-year window, `Mar 2026` enters, and the interim balance-sheet
+column (`Sep 2025`) and the `TTM` P&L row are replaced by the now-reported
+annual row. No column was lost anywhere and no row count fell except by exactly
+those interim rows. Four `price_volume.csv` files shrank by 10–25 bytes with
+identical row and column counts — float formatting, not data.
+
+### Phase 2's R7 re-proof — code versus code on fixed data
+
+Run against the **U1 snapshot**, so the comparison isolates this plan's code
+from the refetch's data (KTD7). Across all 22 tickers, `composite`, every
+element score, the whole `coverage` dict, `scores["flags"]`, the eligibility
+verdict, every gate outcome and **every `details` entry** are byte-identical
+between the pre-plan tree (`2ab0636`) and this one.
+
+`registry_hash` stayed at `1d9f30d09df3` throughout while `forward_signal_hash`
+moved `cc06090cb71a → 061cba100a81`. KTD8's split doing its job again: three
+schema revisions and a new metric vocabulary, and not one ticker's momentum
+baseline was disturbed.
+
+### Corpus-change report — kept separate (KTD7)
+
+Scores also moved, on data alone, and that is new information rather than a
+regression. Same code both sides, snapshot corpus against refetched:
+
+**18 of 22 tickers moved**, driven by the FY2026 annual row arriving. Two
+verdicts changed — BLS `not_eligible → eligible`, TBOTEK `not_eligible →
+indeterminate`. Largest moves: GRAPHITE 4.41 → 3.30, CONCOR 5.32 → 4.53,
+TNPETRO 5.59 → 4.94, SPLPETRO 4.96 → 5.49, BSE 5.80 → 6.29.
+
+### Three-bucket provenance split
+
+29 report-years across 20 BSE codes became **54 across the same 20**.
+
+| Section | `found` | `suspect` | `fallback` | Raw `found` → survived |
+|---|---|---|---|---|
+| `mdna` | 24 (was 11) | 4 (was 2) | 26 (was 16) | 28 → 24 (**86%**, was 85%) |
+| `chairman` | 18 (was 9) | 2 (was 2) | 34 (was 18) | 20 → 18 (**90%**, was 82%) |
+| `governance` | 33 (was 22) | 16 (was 4) | 5 (was 3) | 49 → 33 (**67%**, was 85%) |
+
+Read against Phase 2's A1: MD&A detection roughly doubled its absolute reach
+while the gate's survival rate held at ~85%, which is the stability that says
+the rate is a property of the detector rather than of the sample. `suspect`
+counts are non-zero in every section, so the gate is still gating — governance
+notably harder than before, which costs nothing because `governance` is gated
+for reporting and never submitted.
+
+### The extraction sweep
+
+The population that can be *attempted* went from effectively one ticker to
+**15** — every ticker with at least one gated-`found` extractable section.
+
+- Dry run priced 15 tickers at **~$0.67** (worst case $1.28), no API call.
+- Pilot batch of 3 (SPLPETRO, ZYDUSLIFE, CAMS): **$0.1587** actual against a
+  $0.1310 point estimate and a $0.2749 worst case — 21% over the point, inside
+  the bound. The point estimate assumed 900 output tokens per call; two pilots
+  measured ~1,350, and the constant now says so.
+- Full sweep: 11 of 15 tickers extracted for **$0.2869**.
+
+**Four tickers were not extracted, and the reason is external.** IXIGO,
+RAILTEL, RAIN and VBL failed with `Your credit balance is too low to access the
+Anthropic API`. The pass behaved exactly as designed for an outage: nothing was
+cached, so `python -m boundless100x sweep --tickers IXIGO,RAILTEL,RAIN,VBL`
+retries them once the account is topped up, and the figures below are therefore
+a floor rather than a ceiling.
+
+**The pilot's discards named two schema gaps and no pipeline defect** — which
+is what U6's verification asks the discard summary to be able to do. ZYDUSLIFE
+states its markets in USD *trillion* and CAMS states industry AUM in *lakh
+crore*; with neither word in the vocabulary the extractor reached for the
+nearest unit and grounding refused it, correctly. `usd_tn` and `inr_lakh_cr`
+were added, `inr_lakh` gained a negative lookahead so "lakh crore" cannot
+ground as "lakh", and the re-run turned 5 refused readings into stored ones
+(CAMS 0 → 2 kept, ZYDUSLIFE 13 → 17). Discards now carry the sentence they were
+reading, because triaging the first sweep meant going back to the PDFs.
+
+Three discards survive across the whole sweep and all three are correct
+refusals: two SPLPETRO promises whose sentence names no year ("in current
+year"), and one ZYDUSLIFE figure whose numeral is not denominated as claimed.
+
+### What is stored now
+
+**58 grounded entries across 11 tickers**, where Phase 2 had none.
+
+| | Count |
+|---|---|
+| `guidance` | 32 — **3 company-subject**, 29 market-subject |
+| `tam` | 26 |
+| `capex` | **0** |
+| Stated units | 31 `pct`, 20 `usd_bn`, 5 `usd_tn`, 2 `inr_lakh_cr`, **0 `inr_cr`** |
+
+KTD8 is doing visible work: 29 of 32 guidance statements are market forecasts
+that would have inflated promises-kept with macroeconomic predictions no
+management is accountable for. KTD5 is too: 27 of 58 entries are figures the
+old schema discarded outright and that are now stored, grounded and auditable
+with the coverage gap visible in the data.
+
+### Minimum-yield bar, per sub-metric (R8a)
+
+The retire threshold, stated before the result was read: *a text-derived
+sub-metric that produces no value on any ticker after the refetch, the sweep
+and the schema work is a candidate for removal.*
+
+| Signal | Before | After | Verdict |
+|---|---|---|---|
+| `rerating_headroom` | 16/22 | **17/22** | clears the bar |
+| `quarterly_momentum` | 5/22 | **21/22** | clears the bar |
+| `promises_kept_ratio` | 0/22 | 0/22 | **keep** — see below |
+| `tam_runway` | 0/22 | 0/22 | **keep, blocked on one decision** |
+| `capex_pipeline` | 0/22 | 0/22 | **retire candidate** |
+
+`quarterly_momentum` is the plainest win: it computed on 5 of the 5 tickers
+that had a quarterly series and now computes on 21 of 22. The one exception is
+SPLPETRO, whose Screener page renders only 5 quarters against the 6 a second
+difference needs — a real limit, honestly reported.
+
+**`promises_kept_ratio` — keep.** Its input now exists and its mechanism works
+end to end. SPLPETRO carries three company-subject growth promises across two
+report years, all correctly typed, grounded, subject-tagged and unit-tagged.
+They read *pending* rather than kept-or-missed for a reason outside this
+metric: Screener renders SPLPETRO's P&L as `Jun 2006 … Jun 2010` plus a lone
+`Mar 2026`, and `_get_annual_rows`'s dominant-period-label rule — which exists
+so a non-March filer is not paired against interim rows — drops the only
+settleable year. Changing that rule would move scored metrics, which v05 §13
+forbids. One filer with an ordinary annual table produces a value; retiring a
+metric whose input demonstrably exists would be the wrong call.
+
+The other ten extracted tickers separate cleanly, and none of the reasons is
+the same shape: ZYDUSLIFE and IRCON have guidance but all of it market-subject;
+IRCTC, EDELWEISS and CONTROLPR have one report year where two are needed; CAMS,
+BLS and CONCOR have no usable MD&A year; GRAPHITE and IDEA have a usable MD&A
+that carried no guidance at all.
+
+**`tam_runway` — keep, and the blocker is now a single decision.** 26 stated
+addressable markets across 6 tickers, every one of them in `usd_bn`, `usd_tn`
+or `inr_lakh_cr` and **not one in `inr_cr`**. This is not an absent signal; it
+is precisely the FX gap KTD5 deferred, now measured rather than assumed. Two
+cheap moves would produce values, and they are separable:
+
+- `inr_lakh_cr` needs **no exchange rate at all** — a lakh crore is 100,000
+  crore, a fixed scale that cannot go stale and does not belong in the macro
+  block. CAMS's two entries are reachable today.
+- `usd_bn` / `usd_tn` need the FX decision the Scope Boundaries defer. U5 did
+  its job: the figures are recorded and waiting.
+
+**`capex_pipeline` — retire candidate, and the only one.** Zero capex entries
+in 54 report-years across 20 codes and 11 extracted tickers. Not a unit
+problem, not a section problem, not a subject problem: the corpus's MD&A
+sections do not state capital commitments with a commissioning year in any form
+the extractor recognises. It is the one text-derived sub-metric with no visible
+path to a value, and it should be removed rather than left as a permanently
+blank column — subject to the four un-swept tickers being run first, since they
+are the only evidence still outstanding.
+
+### Momentum honesty check
+
+`score_history.jsonl` holds 7 rows, all dated 2026-08-06 and all under
+`config_hash 715479102494` — a superseded regime. All 5 tickers report
+`insufficient_history` with `latest: None`. **Not one reports a zero delta**,
+which is the property that matters: a zero means flat and no delta means
+unknown, and they look identical in a table.
+
+### Backtest
+
+Runs, and the Verification Contract's own question found a defect. The four
+forward-growth sub-metrics are excluded on all 15 qualifying companies and
+`rerating_headroom` on 3 of 15 — both byte-identical to Phase 2's figures.
+
+The contract predicted the 13 tickers gaining `adj_close` would *reduce* the
+realized-return exclusions. Checked, and the opposite had happened: usable
+realized returns fell from 15 to 10. Cause: the price source publishes the
+most recent bar's raw close before its adjusted one, so a series fetched today
+ends in a single NaN `adj_close`, and `_realized_return` took the last row
+unconditionally. Invisible until now because the affected tickers had no
+adjusted series and fell back to the raw close. Fixed — and the real gain is
+not the count but the basis: **all 15 now sit on a genuinely adjusted series
+where 7 of them previously sat on a raw close**, which reads a 1:5 split as an
+80% loss.
+
+### Follow-up this phase surfaced
+
+- **Four tickers still to sweep** (IXIGO, RAILTEL, RAIN, VBL), blocked on API
+  credit rather than on anything in the code.
+- **Scale-only INR conversion** (`inr_lakh`, `inr_mn`, `inr_lakh_cr` → `inr_cr`).
+  Fixed multipliers, no exchange rate, no macro-block entry, no staleness — a
+  materially smaller decision than FX and the one that unblocks the INR half of
+  `tam_runway`.
+- **SPLPETRO's P&L shape.** One ticker whose Screener table mixes June and March
+  period ends, so the dominant-label rule discards its only recent annual row.
+  Out of scope here because the rule is load-bearing for scored metrics.
