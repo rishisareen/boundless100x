@@ -106,6 +106,27 @@ metrics:
     scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
 
+  # ── Phase 3 fast-lane input — registered at weight 0.0 ──
+  # §9.2's growth gate is "latest TTM growth >= historical CAGR", which nothing
+  # else here answers: every metric above is a multi-year rate, and Phase 2's
+  # quarterly_momentum is a second difference that a steadily shrinking company
+  # passes. Read by lifecycle/lane_gates.yaml, and by nothing that scores — the
+  # scorer's `weight == 0` branch returns before weighted accumulation, so this
+  # reaches neither the growth element mean, the composite, nor the coverage
+  # denominator.
+  ttm_growth_vs_cagr:
+    name: "TTM Growth vs 5yr CAGR (pp)"
+    module: "builtin.growth"
+    function: "compute_ttm_growth_vs_cagr"
+    inputs: ["quarterly", "financials"]
+    params:
+      field: "revenue"
+      # The anchor window, matched to the scored revenue_cagr_5yr above so the
+      # gate and the growth element cannot describe one company two ways.
+      cagr_years: 5
+    scoring: { weight: 0.0 }
+    display: { format: "{:+.1f}pp", section: "growth_decomposition" }
+
   # Display-only (weight 0). Real volume is not in any source we fetch, so this
   # deflates revenue growth by a constant — which cannot separate pricing power
   # from volume, and merely restates revenue CAGR, already scored twice above.

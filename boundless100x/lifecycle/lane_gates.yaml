@@ -1,0 +1,85 @@
+# Fast-lane entry gates (v05 §9.2).
+#
+# The conjunctive battery a re-rating candidate must clear before any capital
+# moves, read by lifecycle/lane_gates.py the way triggers.yaml is read by
+# lifecycle/evaluator.py. Every gate must pass; a gate whose inputs are missing
+# is indeterminate, never a silent pass, because on this side of the system a
+# cleared gate is what lets money move.
+#
+# This is a third question, distinct from both siblings. registry.yaml's
+# eligibility gates ask "could this plausibly 100x?"; triggers.yaml asks "what
+# transition is due?"; these ask "does this qualify for the fast lane, right
+# now?". Four of the six are answered by metrics that already existed — only
+# the accumulation streak and the TTM-versus-CAGR gap were written for this.
+#
+# Condition kinds (exactly one key per condition):
+#   metric:          a computed metric's value
+#   score:           `composite` or an element name
+#   flag_present / flag_absent:
+#                    a MetricResult flag. `sources` names the metrics expected
+#                    to emit it — an absence proves nothing if they never ran
+#   catalyst_status: the owner-recorded catalyst on the watchlist entry. The
+#                    system cannot compute whether a catalyst exists (§9.2
+#                    calls it "recorded, not scored"), so an entry with none
+#                    fails, and no entry at all reads indeterminate
+#
+# Every threshold below is a STARTING POINT awaiting Phase 4/5 simulator
+# evidence, exactly as triggers.yaml's thresholds have been since Phase 1.
+
+lane_gates:
+
+  quality_floor:
+    label: "Quality floor"
+    rationale: "A discount is only worth acting on in a company worth owning."
+    conditions:
+      # STARTING POINT: the core lane's own candidate bar. Fast-lane candidacy
+      # is deliberately lighter than this, but entry is not.
+      - { score: composite, comparator: gte, threshold: 5.5 }
+
+  valuation_discount:
+    label: "Valuation discount"
+    rationale: "A re-rating needs something to re-rate from."
+    # Either route is enough: a multiple low in its own history, or a multiple
+    # below what the company's own fundamentals justify.
+    mode: any
+    conditions:
+      # STARTING POINT: §9.2 names the 40th-50th percentile of the ten-year band.
+      - { metric: pe_vs_historical, comparator: lte, threshold: 50 }
+      # Phase 2's favourable band (headroom at or above +25%).
+      - flag_present: rerating_headroom_favourable
+        sources: [rerating_headroom]
+
+  growth_intact:
+    label: "Growth intact"
+    rationale: "The discount must be the market's mistake, not the company's decline."
+    conditions:
+      # STARTING POINT: §9.2's rule verbatim — latest TTM growth at or above the
+      # demonstrated CAGR, which is what a zero gap means.
+      - { metric: ttm_growth_vs_cagr, comparator: gte, threshold: 0 }
+      # §9.2's second clause: growth that is not financial-leverage driven.
+      - flag_absent: growth_quality_risky
+        sources: [growth_quality_grade]
+
+  institutional_accumulation:
+    label: "Institutional accumulation"
+    rationale: "Somebody obliged to disclose is already buying."
+    conditions:
+      # STARTING POINT: §9.2's "rising for 2+ consecutive quarters". Two rises
+      # span three quarterly observations — see compute_institutional_
+      # accumulation_trend for why the counted unit is rises.
+      - { metric: institutional_accumulation_streak, comparator: gte, threshold: 2 }
+
+  catalyst_identified:
+    label: "Catalyst identified"
+    rationale: "A re-rating thesis with no named catalyst is a hope with a deadline."
+    conditions:
+      - { catalyst_status: active }
+
+  liquidity_floor:
+    label: "Liquidity floor"
+    rationale: "A position that cannot be exited at size is not one to enter."
+    conditions:
+      # STARTING POINT: the lower edge of daily_turnover_ratio's existing
+      # range_optimal band in size.yaml, so entry and scoring agree on what
+      # counts as tradeable.
+      - { metric: daily_turnover_ratio, comparator: gte, threshold: 0.02 }

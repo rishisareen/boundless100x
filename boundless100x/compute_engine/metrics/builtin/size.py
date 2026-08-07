@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.builtin._helpers import quarter_index
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
 
@@ -52,6 +53,112 @@ def compute_institutional_holding(data: dict, params: dict) -> MetricResult:
         value=total,
         flags=flags,
         metadata={"fii_pct": fii, "dii_pct": dii},
+    )
+
+
+def compute_institutional_accumulation_trend(data: dict, params: dict) -> MetricResult:
+    """Consecutive quarter-on-quarter rises in FII + DII holding.
+
+    The fast lane's flow gate (v05 §9.2, "FII+DII rising for 2+ consecutive
+    quarters"). Built on `compute_promoter_trend`'s shape — a value, a change,
+    and a `raw_series` — over the two institutional legs combined, since a
+    re-rating usually shows up as somebody accumulating before it shows up in
+    the accounts.
+
+    Three things about the count are stated rather than implied, because the
+    obvious phrasings each give a different number:
+
+    * **The frame is read in file order, and the walk runs backward from the
+      last row.** `shareholding.csv` is stored oldest first. Reading it the
+      other way would report a company being sold as one being accumulated,
+      which is the single most expensive mistake this metric could make.
+    * **The unit counted is rises, not observations.** Four strictly increasing
+      quarters yield 3 — three comparisons between four points — so the gate's
+      `>= 2` asks for two consecutive rises across three quarters.
+    * **A rise counts only between rows exactly one quarter apart.** This is
+      deliberately stricter than `compute_promoter_trend`, which reads by
+      position: a 20-quarter *trend* can absorb a missing filing, but a
+      consecutive-quarters *gate* is defined by adjacency, and "FII+DII rose
+      across a hole in the data" is missing evidence rather than a rise. Same
+      rule, and the same reason, as `quarterly_momentum`'s period matching.
+
+    A label this parser cannot read errors outright: adjacency is unverifiable
+    on a frame whose periods cannot be placed, and falling back to position
+    there would reintroduce exactly the gap-as-rise reading the rule above
+    exists to prevent. An error reads as gate-indeterminate, never a pass.
+    """
+    min_rises_to_flag = int(params.get("rising_min_rises", 2))
+
+    sh = data.get("shareholding")
+    if not isinstance(sh, pd.DataFrame) or sh.empty:
+        return MetricResult(error="No shareholding data")
+    if "quarter" not in sh.columns:
+        return MetricResult(
+            error=(
+                "shareholding data carries no period labels, so consecutive "
+                "quarters cannot be told apart from a gap"
+            )
+        )
+    for column in ("fii_pct", "dii_pct"):
+        if column not in sh.columns:
+            return MetricResult(error=f"No {column} column in shareholding data")
+
+    fii = pd.to_numeric(sh["fii_pct"], errors="coerce")
+    dii = pd.to_numeric(sh["dii_pct"], errors="coerce")
+
+    periods: list[int] = []
+    combined: list[float] = []
+    labels: list[str] = []
+    for label, foreign, domestic in zip(sh["quarter"], fii, dii):
+        index = quarter_index(label)
+        if index is None:
+            return MetricResult(
+                error=(
+                    f"Unreadable shareholding period label {label!r} — quarter "
+                    f"adjacency cannot be verified, so no rise can be confirmed"
+                )
+            )
+        # **Both legs must be present.** A point-in-time read can treat a
+        # missing FII as zero and lose only precision; a *difference* cannot,
+        # because the next row's full figure would then read as a jump — a rise
+        # manufactured out of a data gap. An unreadable row simply leaves the
+        # series, where the adjacency rule below ends the walk at it.
+        if pd.isna(foreign) or pd.isna(domestic):
+            continue
+        periods.append(index)
+        combined.append(float(foreign) + float(domestic))
+        labels.append(str(label))
+
+    if len(combined) < 2:
+        return MetricResult(
+            error=(
+                f"{len(combined)} readable quarter(s) of FII+DII holding, needs "
+                f"2 — a rise is a comparison between two"
+            )
+        )
+
+    rises = 0
+    for i in range(len(combined) - 1, 0, -1):
+        if periods[i] - periods[i - 1] != 1:
+            break
+        if combined[i] <= combined[i - 1]:
+            break
+        rises += 1
+
+    flags = []
+    if rises >= min_rises_to_flag:
+        flags.append("institutional_accumulation_rising")
+
+    return MetricResult(
+        value=float(rises),
+        raw_series=combined,
+        flags=flags,
+        metadata={
+            "latest_combined_pct": combined[-1],
+            "latest_quarter": labels[-1],
+            "readable_quarters": len(combined),
+            "quarters_in_file": len(sh),
+        },
     )
 
 

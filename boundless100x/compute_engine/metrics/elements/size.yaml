@@ -23,6 +23,25 @@ metrics:
       weight: 0.25
     display: { format: "{:.1f}%", section: "size_analysis", peer_compare: true }
 
+  # ── Phase 3 fast-lane input — registered at weight 0.0 ──
+  # The lane gates in lifecycle/lane_gates.yaml read this; SQGLP scoring must
+  # not. The scorer's `weight == 0` branch returns before weighted
+  # accumulation, so it reaches neither the size element mean, the composite,
+  # nor the coverage denominator — following the precedent Phase 2 set for
+  # every zero-weight metric.
+  institutional_accumulation_streak:
+    name: "FII + DII Accumulation Streak"
+    module: "builtin.size"
+    function: "compute_institutional_accumulation_trend"
+    inputs: ["shareholding"]
+    params:
+      # Rises needed before the flag is raised. A STARTING POINT awaiting
+      # Phase 4/5 simulator evidence, and deliberately the same number as the
+      # lane gate's threshold — §9.2's "2+ consecutive quarters".
+      rising_min_rises: 2
+    scoring: { weight: 0.0 }
+    display: { format: "{:.0f} rises", section: "size_analysis" }
+
   analyst_coverage:
     name: "Analyst Coverage Count"
     module: "builtin.size"

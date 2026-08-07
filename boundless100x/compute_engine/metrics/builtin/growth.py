@@ -8,7 +8,10 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
-from boundless100x.compute_engine.metrics.builtin._helpers import smoothed_endpoints
+from boundless100x.compute_engine.metrics.builtin._helpers import (
+    quarter_index,
+    smoothed_endpoints,
+)
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
 
@@ -85,6 +88,121 @@ def compute_cagr(data: dict, params: dict) -> MetricResult:
         raw_series=values.tolist(),
         flags=flags,
         metadata=meta,
+    )
+
+
+# A trailing-twelve-month figure is four quarters; comparing it against the
+# four before those needs eight, all adjacent.
+_TTM_QUARTERS = 4
+_TTM_WINDOW = _TTM_QUARTERS * 2
+
+
+def compute_ttm_growth_vs_cagr(data: dict, params: dict) -> MetricResult:
+    """Trailing-twelve-month growth minus the demonstrated CAGR, in pp.
+
+    The fast lane's growth gate (v05 §9.2, "latest TTM growth ≥ historical
+    CAGR"): is the company still doing what its multi-year record says it does?
+    A positive value means it is, so the gate condition is a plain `gte 0`.
+
+    No existing metric answers this. `quarterly_momentum` is a *second
+    difference* — whether growth is speeding up — so a company shrinking at a
+    steady rate reads as perfectly un-decelerating while its revenue falls away
+    from everything the five-year CAGR promised. That company must fail this
+    gate, and only a comparison against the historical rate makes it do so.
+
+    Two construction rules carry the number:
+
+    * **The quarters are paired by period label, never by row position.** Four
+      rows back is not four quarters back the moment one interior quarter is
+      missing, and this window is eight quarters wide — a positional read there
+      would silently compare a trailing year against a fifteen-month base. The
+      correction Phase 2 recorded for `quarterly_momentum` after a single gap
+      fabricated 1.4pp of movement applies here at a whole quarter's scale, so
+      an incomplete window errors rather than answers.
+    * **The historical anchor is `compute_cagr`, called rather than
+      reimplemented**, so this gate and the scored growth element can never
+      disagree about one company's CAGR.
+    """
+    field = params.get("field", "revenue")
+    cagr_years = int(params.get("cagr_years", 5))
+
+    frame = data.get("quarterly")
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return MetricResult(error="No quarterly results — refetch required")
+    if field not in frame.columns:
+        return MetricResult(error=f"Column '{field}' absent from quarterly results")
+    if "quarter" not in frame.columns:
+        return MetricResult(
+            error=(
+                "quarterly results carry no period labels, so a trailing "
+                "twelve months cannot be verified as four consecutive quarters"
+            )
+        )
+
+    numeric = pd.to_numeric(frame[field], errors="coerce")
+    by_period: dict[int, float] = {}
+    labels: dict[int, str] = {}
+    for label, value in zip(frame["quarter"], numeric):
+        index = quarter_index(label)
+        if index is not None and pd.notna(value):
+            by_period[index] = float(value)
+            labels[index] = str(label)
+
+    if len(by_period) < _TTM_WINDOW:
+        return MetricResult(
+            error=(
+                f"{len(by_period)} readable quarters of {field}, needs "
+                f"{_TTM_WINDOW} — a trailing twelve months and the twelve "
+                f"months before it"
+            )
+        )
+
+    latest = max(by_period)
+    present = [
+        offset for offset in range(_TTM_WINDOW) if (latest - offset) in by_period
+    ]
+    if len(present) < _TTM_WINDOW:
+        return MetricResult(
+            error=(
+                f"{len(present)} of the {_TTM_WINDOW} quarters ending "
+                f"{labels[latest]} are present — the window must be contiguous, "
+                f"since pairing by position would measure a trailing year "
+                f"against a base of a different length"
+            )
+        )
+
+    trailing = sum(by_period[latest - o] for o in range(_TTM_QUARTERS))
+    prior = sum(by_period[latest - o] for o in range(_TTM_QUARTERS, _TTM_WINDOW))
+    if prior <= 0:
+        return MetricResult(
+            error=(
+                f"prior-year {field} of {prior:,.1f} is not positive — a growth "
+                f"percentage off a zero or negative base is not a reading"
+            )
+        )
+
+    ttm_growth = (trailing - prior) / prior * 100
+
+    cagr = compute_cagr(data, {"field": field, "years": cagr_years})
+    if not cagr.ok or cagr.value is None:
+        return MetricResult(
+            error=f"no {field} CAGR to compare against: {cagr.error}"
+        )
+
+    return MetricResult(
+        value=round(ttm_growth - float(cagr.value), 2),
+        metadata={
+            "field": field,
+            "ttm_growth_pct": round(ttm_growth, 2),
+            "cagr_pct": round(float(cagr.value), 2),
+            "cagr_years": cagr_years,
+            "ttm": round(trailing, 2),
+            "prior_twelve_months": round(prior, 2),
+            "latest_period": labels[latest],
+            "quarters_read": len(by_period),
+            "unit": "pp",
+            "direction": "higher_is_better",
+        },
     )
 
 
