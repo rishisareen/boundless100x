@@ -3,7 +3,7 @@ title: Phase 4 Strategy Simulator - Plan
 type: feat
 date: 2026-08-07
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: draft — owner decisions pending (see Session-settled decisions)
+artifact_readiness: implementation-ready
 product_contract_source: Design/Financial Model v05 - Phased Growth Roadmap.md (§8.2, §10, §12 Phase 4, §14)
 execution: code
 ---
@@ -142,11 +142,15 @@ thresholds, and scoring the owner actually runs.
   the per-position model cannot disagree about the regime, only about the
   arithmetic level (cash flows vs. return transform) each is documented to
   operate at. A loss is not taxed, in both.
-- R6. **Kill-switch severity as config (§14.3).** The placeholder mapping —
-  governance = full exit, valuation saturation = reduce (a fractional sale,
-  itself config), everything else = exit review followed by simulated
-  confirmation — applied at replay and recorded per exit, so Phase 5's
-  sweep can vary it.
+- R6. **Kill-switch severity as config (§14.3), with "reduce" deferred.**
+  The placeholder mapping — governance = full exit, everything else =
+  exit review followed by simulated confirmation — applied at replay and
+  recorded per exit, so Phase 5's sweep can vary it. §14.3's third value,
+  valuation saturation = reduce, has no settled fraction (decision 4 is
+  owner-deferred): the partial-sale mechanics ship built but inactive
+  behind config with no default, and a saturation trigger in the baseline
+  resolves through the same review-then-confirm full exit as every other
+  switch, counted separately so the affected sample is visible.
 - R7. **The six §10 outputs, plus the benchmark.** Portfolio CAGR, max
   drawdown, turnover, per-lane net-vs-gross, fast-lane break-even (the
   friction cost per fast-lane round trip, stated per §8.2 as the
@@ -218,6 +222,73 @@ thresholds, and scoring the owner actually runs.
 
 ### Key Technical Decisions
 
+- **KTD0 — What a point-in-time *valuation* reading may be. UNRESOLVED, and
+  it precedes every other decision here.** Numbered 0 rather than 11 because
+  U1 cannot be written until it is settled, and the units below already name
+  the other decisions by number — renumbering would break those references
+  for no gain.
+
+  Measured on 2026-08-07 by running `backtest._truncate` → `engine.run_all`
+  → `EligibilityEvaluator` → `LaneGateEvaluator` over eight cached tickers at
+  their own split-half cutoffs. Every input the lifecycle opens a position on
+  errors, identically on all eight:
+
+  | Metric | Reading under truncation | What it gates |
+  |---|---|---|
+  | `market_cap` | `No market cap in metadata` | `size` eligibility gate |
+  | `trailing_peg`, `peg_ratio` | `No P/E` | `price` eligibility gate; core `valuation_buy_zone` |
+  | `reverse_dcf_growth` | `No market cap for reverse DCF` | the `price` gate's `veto_sources` |
+  | `pe_vs_historical` | `No current P/E` | core `valuation_buy_zone`; `valuation_discount` gate |
+  | `ttm_growth_vs_cagr` | `Missing input(s): quarterly` | `growth_intact` gate |
+  | `institutional_accumulation_streak` | `Missing input(s): shareholding` | `institutional_accumulation` gate |
+  | `daily_turnover_ratio` | `No market cap for turnover calculation` | `liquidity_floor` gate |
+
+  Traced through the shipped registries that is not a coverage dent, it is a
+  closed door. The eligibility verdict can never read `eligible` — `size` and
+  `price` are both permanently indeterminate — so core `qualification_passed`
+  never fires and the only core transition the replay can reach is
+  `qualification_failed → dropped`. `valuation_buy_zone` needs two of the
+  errored metrics. Four of the fast lane's six gates read indeterminate, so
+  `lane_verdict` is never `qualifies` and `fast_lane_buy_zone` never fires.
+  **The replay buys nothing, in either lane, at any date** — a flat equity
+  curve, and all six of R7's readings undefined rather than poor. The fast
+  lane's "accelerated" claim, which the Goal Capsule names as the whole point
+  of the phase, would be untestable.
+
+  This is neither the quarterly-depth constraint KTD7 inherits nor a defect:
+  `_point_in_time_metadata` omits market cap and Stock P/E **on purpose**,
+  because today's market cap is the single worst leak available and a P/E
+  rebuilt off split-adjusted closes is not the ratio anyone saw. R1's leakage
+  discipline and R7's six outputs are, as written, mutually exclusive. The
+  decision is which of them bends, and it is the owner's:
+
+  a. **Rebuild both from truncatable inputs.** The precedent is already
+     shipped and already argued: `valuation._current_multiple` builds the
+     current multiple from price and as-reported annual EPS *specifically* to
+     keep `rerating_headroom` inside the backtest — and it is the one
+     valuation metric that came back `OK` above. Extending the construction to
+     a point-in-time market cap needs a share count the pipeline does not
+     store reliably, which is the objection `_point_in_time_metadata` records;
+     deriving one from equity capital and face value is possible and would
+     have to be proven against the **raw** close, never the adjusted one.
+  b. **Accept a documented reduced gate set.** The backtest already does this
+     — it drops the `size` gate outright rather than scoring around it, and
+     states the divergence in its own `note`. The simulator would state the
+     same, per lane, and every output would carry which gates were and were
+     not consulted. Cheapest, and the most honest about what it did not test;
+     it also weakens KTD1, because the replayed rules are then not quite the
+     shipped ones, and that cost must be named in the limitations block.
+  c. **Narrow the window to where the corpus supports the gates.** Defensible
+     for the fast lane and nearly useless for the core one — see U1's measured
+     frame depths.
+
+  **Recommendation: (b) as the baseline, plus the `pe_vs_historical` half of
+  (a).** (b) makes the phase produce something on day one with its limits
+  stated, which is this system's house style; a point-in-time P/E is the cheap
+  half of (a) and unblocks three gates at once. A point-in-time market cap is
+  the expensive, leak-adjacent half and should wait for evidence that the rest
+  works. **Until this is settled, U1 is not implementable and no unit below
+  should start.**
 - **KTD1 — The replay calls the production evaluators; nothing is
   reimplemented.** The backtest's KTD3 ("reuse the production engine on
   truncated inputs") applies one level up: a simulator with its own copy of
@@ -228,13 +299,26 @@ thresholds, and scoring the owner actually runs.
   as `advance()` does), and `evaluate()` is called per ticker per replay
   date with the same keyword contract `advance_ticker` uses — metrics,
   scores, eligibility, checkpoint summary, lane-gate result, catalyst,
-  state history, lane, `as_of`. What the simulator writes itself is the
-  *orchestration* `advance_ticker` cannot provide, because
-  `advance_ticker` calls `service.analyze` (network, LLM, score-history
-  append) — the replay loop is the thin layer that scores truncated data
-  and hands readings to the same evaluators. The divergence is stated
-  plainly in the limitations block: the replay reproduces `advance()`'s
-  *decisions*, not its fetch pipeline.
+  state history, lane, `as_of`.
+
+  **Calling the evaluators is not enough on its own, and that gap is what
+  U0 closes.** `advance_ticker` cannot be reused whole — it opens with
+  `service.analyze`, which fetches, calls the LLM path, and appends to
+  `score_history.jsonl`. But everything *after* the readings are in hand is
+  also production rule: the precedence sort (`_rank`, and `_exit_rank`'s
+  universal-before-lane-scoped tiebreak at an exit review), the kill-switch
+  status derivation, the deployment-pace evidence clause and the rule that
+  it attaches by trigger id rather than destination state, the friction
+  estimate on an `exit_review` proposal, the concentration gate asked only
+  when a transition would add a name, and `moves_money → should_apply`.
+  Restating those in the replay loop would be a second statement of exactly
+  the rules this decision forbids duplicating — and the drift would be
+  invisible in the worst way, because a simulator that ranked a buy-zone
+  above a kill-switch would report a *better* result for it. So the decision
+  core is extracted once (U0) and both callers use it; the replay loop is
+  then genuinely thin. The residual divergence is stated plainly in the
+  limitations block: the replay reproduces `advance()`'s *decisions*, not
+  its fetch pipeline.
 - **KTD2 — Truncation generalizes from split-half to arbitrary date, in one
   shared module.** `compute_engine/backtest.py._truncate` carries the
   leakage discipline: period-end cuts (never positional) against
@@ -281,14 +365,34 @@ thresholds, and scoring the owner actually runs.
   `friction.config_from` (one statement of the regime: STCG/LTCG rates,
   holding threshold, slippage bps) and `friction._usable_bars`-equivalent
   bar hygiene through the shared truncation path, but applies the costs in
-  cash: slippage charged on each leg's traded notional (entry and exit,
-  matching the round-trip semantics), tax charged per closing lot on
-  post-slippage gain when positive, bracket by that lot's bar-to-bar
+  cash: slippage on each leg's traded notional, tax charged per closing lot
+  on post-slippage gain when positive, bracket by that lot's bar-to-bar
   holding days — the same two conventions `compute_net_return` documents
-  (slippage before tax, a loss untaxed), so the per-position model and the
-  simulator disagree about nothing except the arithmetic level each is
-  documented to operate at. The per-lane net-vs-gross output is computed
-  from the ledger's own cash flows, not inferred.
+  (slippage before tax, a loss untaxed).
+
+  **`slippage_bps` is a round trip, so each leg carries half of it.**
+  `config.yaml` says so in capitals and `friction.py` states it once
+  precisely so it cannot drift ("Round trip: entry *and* exit... Split into
+  two half-legs it would be the same number"). Charging the configured bps on
+  entry *and* again on exit would silently double the regime the rest of the
+  system runs under — the same class of error as reading a per-position cap
+  as a per-lane one. So the ledger charges `slippage_bps / 2` per leg, and
+  the halving is stated in the code rather than inferred from the name.
+
+  **The two models still cannot agree on magnitude, and that is arithmetic,
+  not a defect to fix.** `compute_net_return` deducts bps off the *return
+  percentage*; the ledger charges bps on *notional*, and the exit leg's
+  notional is the grown position. On a +100% gross the notional path costs
+  1.5pp of return where the transform costs a flat 1.0pp, and the gap widens
+  with the return. They converge only near zero. So the claim this KTD makes
+  is narrower than "the same number": the two share the **regime** — the same
+  rates from `friction.config_from`, the same `ltcg_holding_days` bracket
+  boundary, slippage before tax, a loss untaxed — and differ by construction
+  on level, because a transform on a return and a charge on a traded amount
+  are different quantities. U5 asserts the regime and documents the level
+  difference with a worked example; it does not assert equality. The per-lane
+  net-vs-gross output is computed from the ledger's own cash flows, not
+  inferred.
 - **KTD6 — Unreplayable inputs are exclusions or stated policies, never
   stubs.** Three production inputs have no point-in-time replay source.
   **Checkpoints** are Pass 2 output: none exist historically, so
@@ -346,30 +450,73 @@ thresholds, and scoring the owner actually runs.
 
 ### Session-settled decisions
 
-Drafted defaults, **pending owner confirmation before implementation** —
-the same posture Phase 3's plan took toward its owner-policy placeholders.
-Each is config-shaped so confirmation is an edit, not a refactor.
+Settled with the owner on 2026-08-07. Each is config-shaped, so a later
+reconsideration is an edit, not a refactor.
 
-1. **Starting pool and its unit.** The ledger needs a modeled starting
-   amount to make CAGR and cash drag concrete. Draft: a configurable
-   `starting_pool` defaulting to 100 (unitless "capital units"), since
-   every output is a ratio; an owner who wants rupee-shaped numbers edits
-   one value. No production figure is implied either way.
-2. **Confirmation lags.** Draft: entries 5 trading days, exits 2, routing
-   5 — placeholders in the §14.1–.3 spirit ("config now, evidence later"),
-   deliberately non-zero (KTD3). Sweep candidates for Phase 5.
-3. **Catalyst policy window.** Draft: synthetic catalysts carry a
-   9-month expected window (mid §9.1's 6–18), after which the simulated
-   owner marks them spent unless the position has already exited — the
-   replayable half of the catalyst dynamic (KTD6).
-4. **Reduction fraction for §14.3's "reduce" severity.** Draft: sell half
-   the position's lots (FIFO) — config, sweep candidate.
-5. **Cap enforcement posture.** Draft: the simulated owner *obeys* the
-   lane/sector count caps (skips and records the skip) rather than
-   breaching-and-reporting, because the sweep question is "what do the caps
-   do to returns" — a posture the advisory production system cannot take.
-   Config-switchable to advisory-only if the owner wants the baseline
-   measured uncapped.
+**Two are open.** Decision 4 was deferred by the owner from the start.
+Decision 5 was **reopened on review**: it was settled on a claim about
+production behaviour that a later commit had already made false, and a
+decision is only as settled as the premise under it. Both are marked in
+place rather than deleted — what a decision was reversed *from* is the part
+a reader needs, and dropping it would leave the same wrong premise available
+to be reasoned from again.
+
+1. **Starting pool and its unit — SETTLED: 100 unitless "capital
+   units."** Every output is a ratio, so the unit cancels, and no simulated
+   figure can be mistaken for a real rupee amount. An owner who later wants
+   rupee-shaped outputs edits one config value.
+2. **Confirmation lags — SETTLED: 5 trading days to confirm an entry, 2
+   to confirm an exit, 5 to route exit proceeds.** Deliberately non-zero
+   (KTD3): an instantaneous owner would flatter cash drag and deployment
+   pace to zero, the exact readings this phase exists to produce. Sweep
+   candidates for Phase 5.
+3. **Catalyst policy window — SETTLED: 6 months.** The aggressive end of
+   §9.1's 6–18 month horizon, not the midpoint: the synthetic catalyst's
+   window is what drives catalyst-spent exits (KTD6), and the owner prefers
+   the lane's discipline tested at its tightest stated bound. A candidate
+   whose re-rating has not come six months after its fabricated catalyst
+   meets the exit rule a real thesis of that shape would have met.
+4. **Reduction fraction for §14.3's "reduce" severity — DEFERRED by the
+   owner.** No fraction is settled, so the baseline gives "reduce" nowhere
+   to land: a valuation-saturation trigger resolves through the same
+   review-then-confirm path as every other kill-switch (a full exit after
+   the exit lag), and the partial-sale mechanics ship built but inactive
+   behind config with no default. The consequence is stated plainly in the
+   limitations block: the baseline measures a strategy that always exits
+   valuation saturation in full, and the reduce-fraction sweep is Phase 5
+   work that starts only once the owner settles the number. Simulated
+   valuation-saturation events are counted separately so the affected
+   sample is visible.
+5. **Cap enforcement posture — REOPENED 2026-08-07: the premise it was
+   settled on is stale.** It read "SETTLED: advisory — the simulated owner
+   breaches-and-reports, exactly as production behaves (Phase 3's documented
+   residual: caps gate the advisory router, never the transition path)."
+   Production stopped behaving that way in `72a509f feat(portfolio): a
+   concentration cap that prevents rather than reports`. Today
+   `advance_ticker` consults `concentration_gate` **before** any transition
+   that would add a positioned name, sets `concentration_withheld`, and
+   computes `should_apply = (apply and not withheld)` — so a breaching
+   transition is withheld even under `--apply`. `--override-caps` is an
+   explicit per-run escape hatch that writes the breach into the append-only
+   evidence, and `portfolio.would_breach` fails *closed* on an unavailable
+   reading, an undescribed lane, an unconfigured cap, and a sector that
+   cannot be shown to fit.
+
+   So "the strategy as it is actually run" is **enforced, with the breach
+   recorded and an explicit per-run override** — the opposite of what the
+   decision concluded from it. The baseline posture is therefore
+   **enforced-by-default** until the owner says otherwise: a baseline
+   measuring a posture production does not run answers a question nobody
+   asked. What survives unchanged is the reason the decision gave for
+   recording breaches — every withheld transition is logged with the cap it
+   would have broken, so a Phase 5 enforced-vs-advisory sweep can still price
+   what obedience cost or saved. Advisory becomes the config switch, and the
+   simulated owner needs a **third** value, `override`, the analogue of
+   `--override-caps`, so all three postures production can be run in are
+   reachable from config.
+
+   **Owner decision needed:** confirm enforced-by-default, or state which
+   posture the baseline should measure now that the premise is corrected.
 
 ### Assumptions
 
@@ -398,11 +545,12 @@ Each is config-shaped so confirmation is an edit, not a refactor.
 |---|---|---|
 | Replay start | earliest date with ≥ engine minimum years of truncated financials for ≥ 2 tickers | derived |
 | Replay cadence | quarterly, on the corpus fiscal calendar | starting point (A4) |
-| Starting pool | 100 capital units | placeholder (decision 1) |
-| Confirmation lag: entry / exit / route | 5 / 2 / 5 trading days | placeholder (decision 2) |
-| Synthetic catalyst window | 9 months | placeholder (decision 3) |
-| Reduce-severity fraction | 50% of lots, FIFO | placeholder (decision 4) |
-| Cap posture | enforced | placeholder (decision 5) |
+| Starting pool | 100 capital units | settled (decision 1) |
+| Confirmation lag: entry / exit / route | 5 / 2 / 5 trading days | settled (decision 2) |
+| Synthetic catalyst window | 6 months | settled (decision 3) |
+| Reduce-severity fraction | none — reduce ships inactive; saturation exits in full | deferred (decision 4) |
+| Cap posture | enforced — breaching transition withheld and recorded; `advisory` and `override` are config values | **reopened** (decision 5) |
+| Point-in-time valuation inputs | unresolved — market cap and Stock P/E are omitted by design, closing every entry gate | **blocks U1** (KTD0) |
 | Friction regime | `friction:` config, unchanged | shipped (Phase 3) |
 | Tranche sizing / sleeve split | `portfolio:` config, unchanged | shipped (Phase 3, §14.1–.2) |
 
@@ -454,11 +602,60 @@ same skeleton:
 
 ### Phase A: Point-in-Time Mechanics
 
+### U0. Split `advance_ticker` into decision and effects
+
+- **Goal:** One statement of "given these readings, what should happen to
+  this company next," callable by production and by the replay. Numbered 0
+  for KTD0's reason — it precedes the simulator package and renumbering
+  U1–U7 would break the references above.
+- **Requirements:** R2 (and it is what makes KTD1 true rather than
+  intended). **Dependencies:** none — this is a production-side refactor and
+  is not blocked by KTD0.
+- **Files:** `boundless100x/lifecycle/advance.py`,
+  `tests/test_lifecycle_advance.py`
+- **Approach:**
+  1. Extract `decide(...) -> dict` from `advance_ticker`: everything between
+     the analysis being in hand and the first write. It takes the entry, the
+     state and lane read off it, the readings (`metrics`, `scores`,
+     `eligibility`, the price frame, the sector), `as_of`, the run's
+     `evaluator`, `lane_gates`, `pace`, `concentration_gate` and
+     `override_caps`, plus `config` for the friction rates. It returns
+     `{evaluation, checkpoint_summary, checkpoint_outcomes,
+     lane_gate_result, proposal, friction_estimate, routing_safety}` and
+     **performs no I/O and no writes** — that is the property that makes it
+     replayable and the one a test should pin directly.
+  2. `advance_ticker` becomes: `service.analyze` → re-read `entry` →
+     `decide(...)` → the three writes in their existing order
+     (`set_kill_switch_status`, `transition` when `should_apply`,
+     `record_snapshot` **last**) → `lane_context` off the re-read entry →
+     the outcome dict. The snapshot-last ordering is load-bearing and
+     documented in place; the extraction must not disturb it, because
+     `get_stale(90)` reads that timestamp and an earlier write is what made
+     a failed run look freshly scored.
+  3. No behaviour change, and no signature change to `advance_ticker` or
+     `advance` — every existing caller (CLI, tests) is untouched.
+- **Patterns to follow:** `friction.reading_for_exit` and
+  `portfolio.would_breach` — both are the same move already made in this
+  layer, a rule with two callers stated once, and both docstrings argue why.
+- **Test scenarios:**
+  - `decide` is called with a stub watchlist entry and hand-built readings
+    and returns the expected proposal, with **no** watchlist mutation — the
+    purity assertion, made against a store that raises on any write.
+  - Precedence survives the move: a kill-switch and a buy-zone firing in the
+    same run still resolve to the kill-switch; at an exit review a universal
+    switch still outranks a lane-scoped one for the displayed rationale.
+  - The existing `test_lifecycle_advance.py` suite passes unchanged — that
+    it needed no edit is the evidence the refactor was behaviour-preserving.
+- **Verification:** a cached ticker advanced before and after the split
+  produces an identical outcome dict (minus timestamps), recorded in the
+  Implementation Record.
+
 ### U1. Arbitrary-date truncation (`compute_engine/point_in_time.py`)
 
 - **Goal:** One shared statement of "what was knowable on date D," consumed
   by the backtest and the simulator alike.
-- **Requirements:** R1, R2. **Dependencies:** none.
+- **Requirements:** R1, R2. **Dependencies:** KTD0 must be settled first —
+  this unit is what implements whatever it decides.
 - **Files:** `boundless100x/compute_engine/point_in_time.py` (new),
   `boundless100x/compute_engine/backtest.py`,
   `tests/test_point_in_time.py` (new), `tests/test_backtest.py`
@@ -470,16 +667,47 @@ same skeleton:
      module, verbatim semantics.
   2. `backtest.py` computes its split-half cutoff exactly as today and
      delegates; its exclusion reasons and return shape are unchanged.
-  3. The quarterly and shareholding frames are cut by their own period
-     labels with the same reporting-lag rule — the backtest's
-     `ANNUAL_FRAMES` handling extends to the frames Phase 0/3 added, since
-     the lane gates read them.
+  3. Implement KTD0's resolution in `_point_in_time_metadata`'s successor,
+     which is the only place the valuation inputs can come from. Whatever is
+     decided, the *reason* a field is absent travels with the truncated view
+     rather than being re-derived by each consumer — a metric that errors
+     with "No P/E" cannot say whether the field was withheld to prevent a
+     leak or was never fetched, and those are different exclusions.
+  4. **The `quarterly` frame is cut by its own period labels** under the same
+     reporting-lag rule, extending the backtest's `ANNUAL_FRAMES` handling to
+     a frame Phase 0 added and the `growth_intact` gate reads.
+
+     **`shareholding` is a separate question and this plan previously
+     contradicted itself on it** — step 1 lifts a `NON_TRUNCATABLE_INPUTS`
+     strip that contains `"shareholding"`, and the step this replaces then
+     truncated the frame that strip removes. Both cannot hold. Resolve it in
+     the direction the data supports: `shareholding.csv` is in fact a
+     labelled quarterly series and *is* cuttable, but the measured corpus
+     depth is **12 quarters starting Sep 2023** (ASTRAL, CONCOR, 2026-08-07),
+     and `institutional_accumulation_streak` needs three adjacent quarters to
+     see two rises. So truncating it buys the `institutional_accumulation`
+     gate roughly the last 8 of ~24 replay dates and nothing before. Cut it,
+     because a real reading late in the window beats none; drop it from
+     `NON_TRUNCATABLE_INPUTS` **only** in the simulator's caller, leaving the
+     backtest's strip byte-identical, since changing what the backtest
+     withholds would move its published correlations.
 - **Patterns to follow:** `_truncate` itself; `period_end_date`'s handling
   of non-March fiscal years.
+- **Measured frame depths** (2026-08-07, feeding KTD7's revised constraint):
+  `financials` 13–14 annual rows; `price_volume` from 2016-08-09;
+  `quarterly` 13 rows from Mar/Jun 2023; `shareholding` 12 rows from
+  Sep 2023. At `MIN_TOTAL_YEARS=8` the first eligible cutoff observed is
+  2020-09-30, so the replay window is ~24 quarterly dates and the two
+  quarterly-grain gates are computable across roughly the last third of it.
 - **Test scenarios:**
   - A ticker truncated at an arbitrary date exposes no frame row, price
     bar, shareholding row, or quarterly row whose period ends after the
     cutoff minus reporting lag (the leak test, per column).
+  - The backtest's own truncated view is unchanged by the shareholding
+    decision above — it still receives no `shareholding` key at all.
+  - A quarterly or shareholding frame too shallow to reach the cutoff
+    yields an absent-with-reason reading, never an empty frame that a
+    metric would read as "no rises".
   - A trailing part-year column sharing a calendar year with the cutoff
     is excluded (the case `_truncate`'s comment records).
   - The refactored backtest on a fixed fixture produces a byte-identical
@@ -512,11 +740,14 @@ same skeleton:
      production schema validation and append-only discipline included,
      production files untouchable by construction — and `add`s each
      ticker at `screen` on its first-eligible date. Lane assignment is
-     the simulated owner's: a config rule (draft: every candidate enters
-     the core lane; a candidate moves to the fast lane's *evaluation*
-     when its fast-lane gate battery is consulted — both lanes simulated
-     in parallel watchlists is an anti-goal; one watchlist, lane chosen
-     per the config rule, recorded per ticker).
+     the simulated owner's, stated as a config rule: every candidate is
+     screened against the fast-lane gate battery each replay date it has
+     the readings for, and a candidate whose five computable gates clear
+     (the sixth being the fabricated catalyst, KTD6) enters at `screen`
+     in the `rerating` lane; all others enter `core`. One watchlist —
+     parallel lanes in parallel watchlists is an anti-goal — and the
+     lane is recorded per ticker per assignment, so the per-lane outputs
+     can attribute every transition to the lane that produced it.
 - **Test scenarios:**
   - Replay dates never fall before the earliest sufficient-history date
     or after the last priced date.
@@ -538,9 +769,11 @@ same skeleton:
   `tests/test_simulator_owner.py` (new)
 - **Approach:**
   1. `config.yaml` gains a commented `simulator:` block: starting pool,
-     confirmation lags (entry/exit/route), catalyst window, reduce
-     fraction, cap posture — each labeled a placeholder awaiting Phase 5
-     evidence, beside the `friction:`/`portfolio:` blocks it consults.
+     confirmation lags (entry/exit/route), catalyst window, cap posture —
+     each labeled with its settled value or deferral (see Session-settled
+     decisions), beside the `friction:`/`portfolio:` blocks it consults.
+     The reduce fraction is *absent*, not defaulted: decision 4 is
+     owner-deferred, and a config that invents one would read as settled.
   2. `owner.py`: pure policy functions — `decide(proposal, portfolio,
      config) -> scheduled confirmation | skip with reason`;
      `catalyst_for(candidate, gate_result, config) -> catalyst dict |
@@ -549,15 +782,22 @@ same skeleton:
      blocked-with-reasons idiom).
   3. Severity mapping (§14.3) lives here as config: trigger id →
      `full_exit | reduce | review`, with `review` resolving to a
-     scheduled exit confirmation after the exit lag.
+     scheduled exit confirmation after the exit lag. In the baseline no
+     trigger maps to `reduce` — the fraction is unsettled (decision 4) —
+     so a valuation-saturation trigger resolves as `review` → full exit,
+     and each such event is counted separately for the limitations block.
 - **Test scenarios:**
   - A proposal is never confirmed before its lag elapses; the scheduled
     date is recorded.
-  - A cap-blocked entry under the enforced posture is skipped with the
-    cap's reason and the capital stays idle (and drags).
+  - A cap-breaching entry under the advisory posture is *not* skipped —
+    the breach is recorded with its cap and the buy proceeds, matching
+    production's advisory semantics (decision 5); the same entry under
+    the config-switched enforced posture is skipped and the cash drags.
+  - A valuation-saturation trigger resolves as review → full exit after
+    the exit lag, and the event lands in the saturation count.
   - The catalyst policy fabricates a catalyst only for a candidate that
-    has cleared the other five gates, and marks it spent when the window
-    passes.
+    has cleared the other five gates, with the settled 6-month window,
+    and marks it spent when the window passes.
   - Every decision lands in the run's policy record verbatim.
 
 ### U4. The capital ledger (`ledger.py`)
@@ -601,15 +841,27 @@ same skeleton:
      by the lot's bar-to-bar holding days against
      `ltcg_holding_days`; tax on post-slippage gain when positive; a loss
      untaxed (the `compute_net_return` conventions, restated in cash).
-  2. Rates come only from `friction.config_from` — a statute change
+  2. **Each leg charges `slippage_bps / 2`**, because the configured figure
+     is a round trip (KTD5). The halving is a named constant with the reason
+     beside it, not an inline `/ 2`: charging the full figure twice is the
+     one error here that produces plausible numbers.
+  3. Rates come only from `friction.config_from` — a statute change
      remains one config edit for the whole system.
 - **Test scenarios:**
   - Hand-computed: a known lot at a known price delta and holding period
     settles to exactly the expected proceeds, tax, and regime.
-  - The round trip's total cost equals the per-position model's
-    `compute_net_return` applied to the same return, within rounding —
-    the consistency check that the transform and the ledger tell one
-    story.
+  - **Regime consistency, not equality.** A round trip and
+    `compute_net_return` on the same gross return agree on tax regime,
+    `tax_pct`, `ltcg_holding_days` boundary behaviour (at the boundary and
+    one day either side), slippage-before-tax ordering, and a loss going
+    untaxed. They are asserted to **differ** on level in the documented
+    direction — the notional path costs more as the return grows, because
+    the exit leg's notional is the grown position — with a worked case
+    (+100% gross: 1.5pp of return against the transform's flat 1.0pp)
+    checked in as a literal so a future change to either side has to
+    confront the arithmetic rather than silently reconcile it.
+  - Total round-trip slippage on a flat position equals exactly
+    `slippage_bps` of notional, never twice it — the double-charge guard.
   - Config edits (e.g. `stcg_pct: 25`) flow through with no code change.
 
 ### Phase C: Evidence
@@ -653,7 +905,7 @@ same skeleton:
 
 - **Goal:** Wire A+B into the loop of the High-Level Design; ship the
   command; prove it on the hand-computed fixture and the real corpus.
-- **Requirements:** all. **Dependencies:** U1–U6.
+- **Requirements:** all. **Dependencies:** U0–U6.
 - **Files:** `boundless100x/simulator/replay.py` (fleshed out),
   `boundless100x/simulator/__init__.py`, `boundless100x/cli.py`
   (`simulate` command), `tests/test_simulator_replay.py` (new),
@@ -708,13 +960,19 @@ same skeleton:
   present, transition counts per lane printed beside every rate, and the
   benchmark beside every strategy figure — recorded in the Implementation
   Record with its actual numbers, not just "passed."
-- **Friction consistency.** The U5 round-trip check (ledger cash costs vs.
-  `compute_net_return` on the same return, within rounding) passes,
-  recorded with its values.
+- **Friction regime consistency.** The U5 check passes: ledger cash costs and
+  `compute_net_return` agree on regime, rates, bracket boundary, ordering and
+  loss handling, and differ on level in the documented direction. Recorded
+  with its values, including the worked +100% case — a level *agreement*
+  would mean one of the two stopped doing what it says it does.
 
 ## Definition of Done
 
-- All seven units merged with tests green.
+- All eight units merged with tests green (U0 plus U1–U7).
+- **The decision core has exactly one statement.** No trigger precedence,
+  kill-switch derivation, pace-evidence, friction-on-exit, concentration-gate
+  or `moves_money` rule is written twice — the replay reaches them by calling
+  `decide`, not by restating them (U0, KTD1).
 - The byte-identical backtest proof and the production non-regression
   proof recorded with their actual outputs.
 - The hand-computed fixture proof recorded — §12 Phase 4's own validation.
