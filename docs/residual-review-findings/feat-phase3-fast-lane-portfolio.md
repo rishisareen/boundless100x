@@ -114,11 +114,58 @@ survived triage.
   lane gates, routing safety, friction and the sector lookup between the
   snapshot and the return.
 
-- **Concurrency beyond the lost-update guard.** `_commit` now refuses a
-  superseded write (fixed in `e43b207`), which closes silent data loss. It is
-  not a lock: the read-then-write race window remains, and two processes can
-  still interleave. Closing it properly needs an `O_EXCL` lockfile or `flock` —
-  a design call, and arguably unnecessary for a single-owner CLI.
+- **Concurrency beyond the lost-update guard.** Still open, but the question
+  has been sharpened and it is **two questions, not one**. The original
+  finding follows the analysis.
+
+  **What the guard actually leaves.** `_commit` re-reads the on-disk counter
+  immediately before writing, so the window that remains is one file read and
+  a rename wide. Two processes can both read revision 5, both pass, and both
+  write revision 6; the second rename wins and the counter reads perfectly
+  consistent afterwards, so nothing detects it. Losing a write to that needs
+  two writers aligned within roughly a millisecond. The window the *documented
+  workflow* reaches — `watchlist advance` holding both stores open across a
+  minutes-long fetch loop while `watchlist exit` runs in another terminal — is
+  already a loud refusal.
+
+  **`flock` and an `O_EXCL` lockfile are not interchangeable, and the recorded
+  rationale conflated them.** `json_store.py` argued against locking on the
+  grounds that a lock file outlives the process holding it and a stale one
+  would block the exit command exactly when it is needed. That is true of an
+  `O_EXCL` lockfile and false of `flock`, which the kernel releases on process
+  death, SIGKILL included. The objection only ever applied to one of the two
+  options the finding listed. Corrected in the docstring; if this is ever
+  closed, `flock` is the tool.
+
+  **The exposure that is actually plausible is not local, and a lock does not
+  address it.** Both stores live inside an iCloud-synced directory
+  (`~/Library/Mobile Documents/com~apple~CloudDocs/…/boundless100x/`), so the
+  second writer to worry about is the sync daemon or another Mac, not another
+  process on this one. `flock` and `os.replace` are local-filesystem
+  guarantees and say nothing about a file replaced underneath them by a sync.
+  (Reasoned from the path and general sync behaviour, not from anything
+  verified about iCloud's internals — worth confirming before acting on it.)
+  The revision check turns out to be the right instrument for that case
+  anyway: a store synced in from elsewhere carries a counter this instance did
+  not load, so the next commit refuses rather than clobbering.
+
+  **So the decision is:**
+  1. *Local simultaneity* — close it or not? Current read: **not**, and for a
+     better reason than "single-owner CLI", which is an assumption about the
+     future rather than a fact about the code. The window is sub-millisecond
+     and needs exact alignment.
+  2. *Sync as a second writer* — the one with real exposure. Locking is not
+     the lever. The levers are moving the stores outside the synced tree (they
+     are git-tracked, so iCloud adds little) or accepting it and relying on
+     the revision refusal. **This is the one that would change if the
+     "GUI-ready" service layer in `CLAUDE.md` ever grows a GUI, or if the
+     repo is ever cloned onto a second machine.**
+
+  The original finding: `_commit` now refuses a superseded write (fixed in
+  `e43b207`), which closes silent data loss. It is not a lock: the
+  read-then-write race window remains, and two processes can still interleave.
+  Closing it properly needs an `O_EXCL` lockfile or `flock` — a design call,
+  and arguably unnecessary for a single-owner CLI.
 
 - **~~One deployment transition can close several exits.~~** **Fixed**
   (Tranche 2): `deployments_consumed_by` records which transitions have

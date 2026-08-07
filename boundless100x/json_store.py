@@ -197,12 +197,33 @@ class JsonStore:
         still be the one this instance loaded.
 
         **This closes the lost-update window, not the race.** Two processes can
-        still pass the check and reach `os.replace` in either order; what is
-        gone is the far wider window between loading a store and committing to
-        it. Deliberately not a lock: a lock file is state that outlives the
-        process holding it, and a stale one would block the exit command at
-        precisely the moment it is needed. A refusal the caller can retry from
-        a fresh load is the smaller promise, honestly kept.
+        still read the same counter here, both pass, and reach `os.replace` in
+        either order — the loser's change vanishes under a counter that reads
+        perfectly consistent afterwards. What is gone is the far wider window
+        between *loading* a store and committing to it, which is the one the
+        documented workflow actually reaches. The remainder is a file read and
+        a rename apart, so losing a write to it needs two processes aligned
+        within about a millisecond.
+
+        **Deliberately not a lock, and the honest reason is the size of that
+        window rather than the cost of locking.** An earlier version of this
+        argued that "a lock file is state that outlives the process holding it,
+        and a stale one would block the exit command at precisely the moment it
+        is needed" — true of an `O_EXCL` lockfile, and **not** true of `flock`,
+        which the kernel releases when the process dies, SIGKILL included. The
+        two are not interchangeable and the objection only ever applied to one
+        of them. If this is closed later, `flock` is the tool.
+
+        **A lock would not address the exposure that is actually plausible
+        here.** Both stores sit inside an iCloud-synced directory, so the
+        second writer to worry about is the sync daemon or another machine, not
+        another process on this one — and `flock` and `os.replace` are
+        local-filesystem guarantees that say nothing about a file replaced
+        underneath them by a sync. The revision check happens to be the right
+        instrument for that case too: a store synced in from elsewhere carries
+        a counter this instance did not load, so the next commit refuses
+        instead of clobbering. `docs/residual-review-findings/` carries the
+        decision this is still waiting on.
         """
         loaded = revision_of(self.data)
         current = self._on_disk_revision()
