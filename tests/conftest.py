@@ -416,6 +416,69 @@ def make_metadata(market_cap: float = 5000.0, name: str = "Test Co",
     return meta
 
 
+def write_ticker_dir(
+    root, ticker: str, *,
+    years: int = 10, quarters: int | None = 13, shareholding_quarters: int | None = 12,
+    price_days: int = 3200, market_cap: float = 5000.0,
+    financials_kwargs: dict | None = None, balance_sheet_kwargs: dict | None = None,
+    cashflow_kwargs: dict | None = None, ratios_kwargs: dict | None = None,
+    price_kwargs: dict | None = None, quarterly_kwargs: dict | None = None,
+    shareholding_kwargs: dict | None = None, metadata_overrides: dict | None = None,
+):
+    """Write one ticker's `raw_data/{TICKER}/`-shaped directory to disk —
+    the CSV/JSON files `WalkForwardBacktest._load` and
+    `simulator.universe.load_ticker_data` both read. Every column comes from
+    this file's own `make_*` builders, so a simulator test exercises the
+    same schema every other test does.
+
+    `quarters`/`shareholding_quarters` of `None` skips writing that file
+    entirely (a ticker fetched before Phase 0/before the shareholding
+    truncation decision landed carries neither) — everything else is
+    always written, since `financials.csv` alone is `TICKER_MARKER` and a
+    ticker directory without a usable price series cannot be truncated at
+    all.
+
+    `price_days=3200` (~12.7 business-year years from `make_price`'s fixed
+    2015-01-01 anchor) is chosen so the series comfortably outlives the
+    default 2023-2026 simulator replay window; a test needing a shorter or
+    longer tail overrides it directly.
+    """
+    import json
+    from pathlib import Path
+
+    ticker_dir = Path(root) / ticker
+    ticker_dir.mkdir(parents=True, exist_ok=True)
+
+    make_financials(years, **(financials_kwargs or {})).to_csv(
+        ticker_dir / "financials.csv", index=False
+    )
+    make_balance_sheet(years, **(balance_sheet_kwargs or {})).to_csv(
+        ticker_dir / "balance_sheet.csv", index=False
+    )
+    make_cashflow(years, **(cashflow_kwargs or {})).to_csv(
+        ticker_dir / "cashflow.csv", index=False
+    )
+    make_ratios(years, **(ratios_kwargs or {})).to_csv(
+        ticker_dir / "ratios.csv", index=False
+    )
+    make_price(price_days, **(price_kwargs or {})).to_csv(
+        ticker_dir / "price_volume.csv", index=False
+    )
+    if quarters is not None:
+        make_quarterly(quarters, **(quarterly_kwargs or {})).to_csv(
+            ticker_dir / "quarterly.csv", index=False
+        )
+    if shareholding_quarters is not None:
+        make_shareholding(shareholding_quarters, **(shareholding_kwargs or {})).to_csv(
+            ticker_dir / "shareholding.csv", index=False
+        )
+
+    meta = make_metadata(market_cap=market_cap, name=ticker, **(metadata_overrides or {}))
+    (ticker_dir / "metadata.json").write_text(json.dumps(meta))
+
+    return ticker_dir
+
+
 def make_data(n: int = 10, market_cap: float = 5000.0, **kwargs) -> dict:
     """The `data` dict the compute engine and report generator consume.
 
