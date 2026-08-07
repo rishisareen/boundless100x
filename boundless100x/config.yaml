@@ -30,6 +30,16 @@ fetching:
   retry_count: 3
   retry_delay_seconds: 5
 
+# ── Corpus Snapshots ──
+# `raw_data/` is gitignored and is the only copy of everything ever fetched, so
+# a refetch has no revert. Snapshot first. The default is OUTSIDE the
+# repository on purpose: the repo sits in an iCloud-synced directory and the
+# corpus is ~370MB, so an in-tree copy would churn the full amount through sync
+# and may not settle into a stable copy. A destination inside the repo is
+# refused.
+corpus_snapshot:
+  dir: "~/.boundless100x/corpus_snapshots"
+
 # ── LLM Configuration ──
 llm:
   provider: "anthropic"

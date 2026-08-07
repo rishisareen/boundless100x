@@ -102,11 +102,21 @@ class CacheManager:
             if path.exists():
                 path.unlink()
 
-    def clear_all(self) -> int:
-        """Remove all cached data. Returns count of removed entries."""
+    def clear_all(self, keep: "list[str] | tuple[str, ...]" = ()) -> int:
+        """Remove all cached data. Returns count of removed entries.
+
+        `keep` names keys to leave alone. Every fetcher shares one cache
+        directory, so a corpus refetch clearing it wholesale would also drop
+        the BSE scrip master — an index shared across all tickers, on its own
+        week-long TTL, which the refetch has no reason to invalidate and would
+        then re-download before it could resolve a single code.
+        """
+        protected = {self._key_to_path(key).name for key in keep}
         count = 0
         for path in self.cache_dir.iterdir():
             if path.suffix in (".csv", ".json", ".txt", ".meta"):
+                if path.stem in protected:
+                    continue
                 path.unlink()
                 count += 1
         return count

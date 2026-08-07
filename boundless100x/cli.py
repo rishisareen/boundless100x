@@ -284,6 +284,248 @@ def screen(
     console.print(f"\n[green]{len(survivors)} companies passed screening[/green]")
 
 
+# ── Corpus Commands ──
+
+corpus_app = typer.Typer(
+    help="Snapshot, refetch and audit the cached corpus in raw_data/"
+)
+app.add_typer(corpus_app, name="corpus")
+
+
+def _load_config() -> dict:
+    import yaml
+
+    from boundless100x.service import DEFAULT_CONFIG_PATH
+
+    with open(DEFAULT_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _raw_data_dir() -> Path:
+    return Path(__file__).parent / "data_fetcher" / "raw_data"
+
+
+@corpus_app.command("snapshot")
+def corpus_snapshot_cmd(
+    destination: str = typer.Option(
+        None, help="Where to write the snapshot (default: corpus_snapshot.dir)"
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Copy raw_data/ somewhere safe before anything overwrites it."""
+    setup_logging(verbose)
+
+    from boundless100x.data_fetcher import corpus_snapshot
+
+    try:
+        made = corpus_snapshot.snapshot(
+            _raw_data_dir(), destination=destination, config=_load_config()
+        )
+    except corpus_snapshot.SnapshotError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    totals = made["manifest"]["totals"]
+    console.print(
+        f"[green]Snapshot written to {made['path']}[/green]\n"
+        f"[dim]{totals['directories']} directories, {totals['files']} files, "
+        f"{totals['bytes'] / 1e6:.0f}MB[/dim]"
+    )
+    console.print(
+        f"\n[dim]Restore with: python -m boundless100x corpus restore "
+        f"--snapshot {made['path']}[/dim]"
+    )
+
+
+@corpus_app.command("restore")
+def corpus_restore_cmd(
+    snapshot: str = typer.Option(None, help="Snapshot directory (default: newest)"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt"),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Put a snapshot back, replacing the current raw_data/ entirely."""
+    setup_logging(verbose)
+
+    from boundless100x.data_fetcher import corpus_snapshot
+
+    config = _load_config()
+    chosen = Path(snapshot) if snapshot else corpus_snapshot.latest_snapshot(
+        config=config
+    )
+    if chosen is None:
+        console.print(
+            f"[red]No snapshot found under "
+            f"{corpus_snapshot.snapshot_root(config)}[/red]"
+        )
+        raise typer.Exit(1)
+
+    target = _raw_data_dir()
+    console.print(
+        f"[yellow]This replaces {target} entirely with {chosen}.[/yellow]\n"
+        f"[dim]Restore replaces rather than merges — a half-restored corpus is "
+        f"worse than either state.[/dim]"
+    )
+    if not yes and not typer.confirm("Proceed?"):
+        console.print("[dim]Cancelled[/dim]")
+        raise typer.Exit(1)
+
+    try:
+        restored = corpus_snapshot.restore(chosen, target)
+    except corpus_snapshot.SnapshotError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    totals = restored["totals"]
+    console.print(
+        f"[green]Restored {totals['files']} files "
+        f"({totals['bytes'] / 1e6:.0f}MB) to {target}[/green]"
+    )
+
+
+@corpus_app.command("refetch")
+def corpus_refetch_cmd(
+    tickers: str = typer.Option(
+        None, help="Comma-separated symbols (default: every cached ticker)"
+    ),
+    no_cache_bypass: bool = typer.Option(
+        False, "--no-cache-bypass",
+        help="Serve fresh cache entries instead of reaching the network",
+    ),
+    no_resume: bool = typer.Option(
+        False, "--no-resume", help="Refetch tickers the run log records as done"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Start even with no corpus snapshot present"
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Refresh every cached ticker from the network, one at a time."""
+    setup_logging(verbose)
+
+    from boundless100x.data_fetcher import corpus_snapshot, refetch as refetch_module
+    from boundless100x.service import Boundless100xService
+
+    config = _load_config()
+    svc = Boundless100xService(config=config)
+    requested = [t.strip() for t in tickers.split(",")] if tickers else None
+
+    console.print("\n[bold blue]Corpus refetch[/bold blue]\n")
+    try:
+        report = refetch_module.refetch(
+            svc.suite,
+            tickers=requested,
+            bypass_cache=not no_cache_bypass,
+            resume=not no_resume,
+            require_snapshot=not force,
+            snapshot_config=config,
+        )
+    except corpus_snapshot.SnapshotError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    for entry in report["skipped"]:
+        console.print(f"[dim]skipped {entry['name']}: {entry['reason']}[/dim]")
+    if report["resumed"]:
+        console.print(
+            f"[dim]resumed: {len(report['resumed'])} ticker(s) already complete "
+            f"({', '.join(report['resumed'])})[/dim]"
+        )
+
+    table = Table(title="Refetch outcomes")
+    table.add_column("Ticker", style="cyan bold")
+    table.add_column("Status")
+    table.add_column("Seconds", justify="right")
+    table.add_column("Detail", style="dim", max_width=60)
+    for outcome in report["outcomes"]:
+        colour = "green" if outcome["status"] == "ok" else "red"
+        table.add_row(
+            outcome["ticker"], f"[{colour}]{outcome['status']}[/{colour}]",
+            f"{outcome['seconds']:.0f}", outcome["detail"],
+        )
+    console.print(table)
+
+    failed = [o for o in report["outcomes"] if o["status"] != "ok"]
+    console.print(
+        f"\n[green]{len(report['outcomes']) - len(failed)} refetched[/green]"
+        + (f", [red]{len(failed)} failed[/red]" if failed else "")
+    )
+    console.print(f"[dim]Run log: {report['run_log']}[/dim]")
+    console.print(
+        "[dim]Now run: python -m boundless100x corpus audit[/dim]"
+    )
+
+
+@corpus_app.command("audit")
+def corpus_audit_cmd(
+    snapshot: str = typer.Option(None, help="Snapshot to compare against (default: newest)"),
+    out: str = typer.Option(None, help="Write the full report as JSON here"),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+):
+    """Say what the refetch changed, counted off the corpus on disk."""
+    setup_logging(verbose)
+
+    from boundless100x.data_fetcher import corpus_audit, corpus_snapshot
+
+    config = _load_config()
+    chosen = Path(snapshot) if snapshot else corpus_snapshot.latest_snapshot(
+        config=config
+    )
+    if chosen is None:
+        console.print(
+            f"[red]No snapshot to compare against under "
+            f"{corpus_snapshot.snapshot_root(config)}[/red]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        report = corpus_audit.audit_against_snapshot(_raw_data_dir(), chosen)
+    except corpus_snapshot.SnapshotError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    head = report["headline"]
+    console.print(
+        f"\n[bold blue]Corpus audit[/bold blue] "
+        f"[dim](before: {report['before']['created_at']} — {chosen.name})[/dim]\n"
+    )
+
+    table = Table(title="Headline")
+    table.add_column("Measure", style="bold")
+    table.add_column("Count", justify="right")
+    table.add_column("Which", style="dim", max_width=70)
+    for label, key in (
+        ("Tickers gained quarterly.csv", "gained_quarterly"),
+        ("Tickers still without one", "still_without_quarterly"),
+        ("Tickers gained adj_close", "gained_adj_close"),
+        ("Tickers still without it", "still_without_adj_close"),
+        ("Directories gained report years", "gained_report_years"),
+        ("Codes with 2+ found-MD&A years (before)", "two_or_more_mdna_years_before"),
+        ("Codes with 2+ found-MD&A years (after)", "two_or_more_mdna_years_after"),
+    ):
+        names = head[key]
+        table.add_row(label, str(len(names)), ", ".join(names))
+    table.add_row("Annual report years added", str(head["report_years_added"]), "")
+    console.print(table)
+
+    if report["regressions"]:
+        console.print(
+            f"\n[bold red]{len(report['regressions'])} regression(s) — "
+            f"investigate before discarding the snapshot[/bold red]"
+        )
+        for entry in report["regressions"]:
+            console.print(
+                f"  [red]{entry['directory']}[/red] {entry['kind']}: {entry['detail']}"
+            )
+    else:
+        console.print("\n[green]No regressions: nothing shrank or disappeared.[/green]")
+
+    if out:
+        target = Path(out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, indent=2, default=str))
+        console.print(f"\n[dim]Full report written to {target}[/dim]")
+
+
 # ── Watchlist Commands ──
 
 watchlist_app = typer.Typer(help="Manage your company watchlist")
