@@ -300,3 +300,54 @@ class TestPeriodMatching:
         assert value == 170.0
         assert "position-matched" in why
         assert period is None
+
+
+class TestRecordingRejectsPastDueDates:
+    """A checkpoint already due when recorded was never monitored.
+
+    Taken from the first real `analyze` run: Pass 2 returned four well-formed
+    monitorables, every one dated 2025-09-30 — eleven months before the run.
+    The prompt asked for "the ISO date by which it should be true" without ever
+    saying what today was, so the model answered from its training cutoff.
+    """
+
+    PAST_RUN = [
+        {"metric_id": "quarterly_pat_yoy_pct", "comparator": "gte",
+         "threshold": 12, "due_date": "2025-09-30"},
+        {"metric_id": "quarterly_opm_pct", "comparator": "gte",
+         "threshold": 15, "due_date": "2025-09-30"},
+    ]
+
+    def test_the_real_past_dated_run_is_demoted_to_prose(self):
+        recorded = cp.record_from_pass2(
+            {"structured_monitorables": self.PAST_RUN}, as_of=date(2026, 8, 7)
+        )
+
+        assert recorded["checkpoints"] == []
+        assert len(recorded["demoted"]) == 2
+        assert all("not in the future" in r
+                   for item in recorded["demoted"] for r in item["reasons"])
+
+    def test_a_future_dated_monitorable_is_kept(self):
+        future = [dict(self.PAST_RUN[0], due_date="2026-12-31")]
+
+        recorded = cp.record_from_pass2(
+            {"structured_monitorables": future}, as_of=date(2026, 8, 7)
+        )
+
+        assert len(recorded["checkpoints"]) == 1
+        assert recorded["demoted"] == []
+
+    def test_a_checkpoint_due_today_is_not_a_monitorable(self):
+        today = [dict(self.PAST_RUN[0], due_date="2026-08-07")]
+
+        recorded = cp.record_from_pass2(
+            {"structured_monitorables": today}, as_of=date(2026, 8, 7)
+        )
+
+        assert recorded["checkpoints"] == []
+
+    def test_a_stored_checkpoint_may_still_become_due_with_time(self):
+        """The restriction is on recording, not on evaluation — otherwise no
+        checkpoint could ever come due, which is the point of having them."""
+        assert cp.validate(self.PAST_RUN[0]) == []

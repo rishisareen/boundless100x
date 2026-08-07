@@ -10,6 +10,7 @@ only as data. See `llm_layer/forward_growth.py` for why that seam matters.
 
 import json
 import logging
+from datetime import date
 import os
 import time
 from pathlib import Path
@@ -312,6 +313,10 @@ class LLMOrchestrator:
             # menu, a model invents plausible ones — sending the vocabulary is
             # what makes structured monitorables possible at all.
             checkpoint_vocabulary=vocabulary_prompt_block(),
+            # The model cannot know the run date, and asked for one without it
+            # it answers from its training cutoff — the first real run dated
+            # every monitorable eleven months in the past.
+            today=date.today().isoformat(),
         )
 
         return self._call_api(self.pass2_model, prompt, "pass2")

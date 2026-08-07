@@ -60,6 +60,13 @@ promise nobody keeps, so:
 - `due_date` is the ISO date (YYYY-MM-DD) by which it should be true — normally
   the next quarterly result, one to two quarters out.
 
+  **Today is {today}. Every `due_date` MUST be after it.** Do not infer the
+  date from anything else you know; use the one given here. A checkpoint dated
+  in the past is already due the moment it is recorded, which collapses the
+  whole point of a monitorable — watching a thesis over the coming quarters —
+  into a single evaluation of what already happened. Past-dated monitorables
+  are rejected and kept as prose only.
+
 Prefer three to five structured monitorables that would genuinely distinguish
 the thesis working from the thesis failing. Do not pad the list with items that
 would be true under any outcome.

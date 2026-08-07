@@ -99,7 +99,11 @@ def validate(checkpoint: dict, vocabulary: dict | None = None) -> list[str]:
     return errors
 
 
-def record_from_pass2(pass2: dict | None, vocabulary: dict | None = None) -> dict:
+def record_from_pass2(
+    pass2: dict | None,
+    vocabulary: dict | None = None,
+    as_of: date | None = None,
+) -> dict:
     """Extract the checkpoints Pass 2 proposed, keeping only evaluable ones.
 
     Returns `{"checkpoints": [...], "demoted": [{"proposed", "reasons"}]}`.
@@ -130,8 +134,25 @@ def record_from_pass2(pass2: dict | None, vocabulary: dict | None = None) -> dic
         return {"checkpoints": kept, "demoted": [{"proposed": proposed,
                                                  "reasons": ["not a list"]}]}
 
+    as_of = as_of or date.today()
     for item in proposed:
         errors = validate(item, vocabulary)
+        due = _parse_date(item.get("due_date")) if isinstance(item, dict) else None
+        if not errors and due is not None and due <= as_of:
+            # **A checkpoint already due when recorded was never monitored.**
+            # Pending-versus-due is the whole value of the mechanism — it lets
+            # `advance` say "not yet" instead of scoring a thesis on evidence
+            # that predates it. The first real run dated all four monitorables
+            # eleven months in the past because the prompt asked for a date
+            # without ever saying what today was, so the model answered from
+            # its training cutoff. The prompt now states the date; this makes
+            # it a rule rather than a request. Only *recording* is restricted:
+            # a stored checkpoint becoming due with time is the point.
+            errors = [
+                f"due_date {item.get('due_date')} is not in the future (as of "
+                f"{as_of.isoformat()}) — a checkpoint due when recorded is an "
+                f"evaluation, not a monitorable"
+            ]
         if errors:
             demoted.append({"proposed": item, "reasons": errors})
             logger.warning(f"Monitorable demoted to prose-only: {'; '.join(errors)}")
