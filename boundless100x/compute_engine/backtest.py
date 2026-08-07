@@ -31,31 +31,22 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.builtin._helpers import period_end_date
+from boundless100x.compute_engine.point_in_time import (
+    ANNUAL_FRAMES,
+    ANNUAL_REPORTING_LAG_MONTHS as REPORTING_LAG_MONTHS,
+    _annual_rows,
+    truncate_to_date,
+)
 from boundless100x.data_fetcher.corpus_snapshot import TICKER_MARKER
 
 logger = logging.getLogger(__name__)
-
-# Fetched artefacts that cannot be rewound to a historical date.
-NON_TRUNCATABLE_INPUTS = ("shareholding", "analyst_coverage", "shareholding_bse")
-
-# Frames that carry one row per financial year and can be truncated.
-ANNUAL_FRAMES = ("financials", "balance_sheet", "cashflow", "ratios")
 
 # A directory with financials is a real ticker. BSE-code directories hold only
 # annual report PDFs and are not tickers at all.
 REQUIRED_FILES = ("financials.csv", "price_volume.csv")
 
 MIN_TOTAL_YEARS = 8
-# Indian annual results are filed within months of the year end; scoring at the
-# year end itself would use figures that were not yet public.
-REPORTING_LAG_MONTHS = 6
 MIN_FORWARD_DAYS = 365
-
-
-def _annual_rows(df: pd.DataFrame) -> pd.DataFrame:
-    if "year" not in df.columns:
-        return df
-    return df[~df["year"].astype(str).str.contains("TTM", case=False, na=False)]
 
 
 class WalkForwardBacktest:
@@ -120,7 +111,13 @@ class WalkForwardBacktest:
         return data
 
     def _truncate(self, data: dict) -> tuple[dict | None, pd.Timestamp | None, str]:
-        """Split history in half and rebuild a point-in-time view of the past."""
+        """Split history in half and delegate to `point_in_time.truncate_to_date`.
+
+        This method owns only the backtest's own policy — which row is the
+        split-half cutoff — and hands the actual "what was knowable" logic to
+        the shared module (KTD2), which both this class and a later simulator
+        call for identical answers.
+        """
         financials = _annual_rows(data["financials"])
         total_years = len(financials)
         if total_years < self.min_total_years:
@@ -140,62 +137,24 @@ class WalkForwardBacktest:
         # for a non-March fiscal year end, not just the common case.
         truncation_date = cutoff_period_end + pd.DateOffset(months=self.reporting_lag_months)
 
-        truncated = {}
-        for name in ANNUAL_FRAMES:
-            if name not in data:
-                continue
-            frame = _annual_rows(data[name])
-            # Cut on the actual period-end date, not the bare calendar year: a
-            # trailing part-year column Screener appends (e.g. a "Sep 2025"
-            # balance-sheet column) can share a calendar year with the cutoff
-            # row while covering a later period. A year-only comparison would
-            # let that later, not-yet-public period leak in as "past" data;
-            # comparing real dates catches it. Frames do not all start in the
-            # same year either, so a positional cut alone would leave
-            # post-cutoff rows in place.
-            period_ends = frame["year"].map(period_end_date) if "year" in frame.columns else None
-            if period_ends is not None and period_ends.notna().any():
-                frame = frame[period_ends <= cutoff_period_end]
-            else:
-                frame = frame.head(keep)
-            truncated[name] = frame.reset_index(drop=True)
-
-        price = data["price"]
-        past_price = price[price["date"] <= truncation_date]
-        if past_price.empty:
-            return None, None, f"price history starts after {truncation_date.date()}"
-        truncated["price"] = past_price.reset_index(drop=True)
-
-        truncated["metadata"] = self._point_in_time_metadata(
-            data["_metadata_raw"], truncated, past_price
+        truncated, reason = truncate_to_date(
+            data,
+            truncation_date,
+            annual_lag_months=self.reporting_lag_months,
+            annual_fallback_rows=keep,
+            # KTD0(a) lives in the shared module so a later simulator caller
+            # can opt in, but the backtest's own published correlations and
+            # test suite were built on the pre-KTD0 omission — rebuilding
+            # Market Cap/Stock P/E here would newly satisfy `market_cap`,
+            # `pe_vs_historical` and the `price`/`size` eligibility gates for
+            # any ticker whose corpus reconciles, which is a real scoring
+            # change, not a refactor. This flag is what keeps this call
+            # byte-identical to the pre-KTD2 behaviour.
+            rebuild_valuation=False,
         )
-        # Belt and braces: the loader never reads these, and nothing may add them.
-        for leaky in NON_TRUNCATABLE_INPUTS:
-            truncated.pop(leaky, None)
+        if truncated is None:
+            return None, None, reason
         return truncated, truncation_date, ""
-
-    @staticmethod
-    def _point_in_time_metadata(raw: dict, truncated: dict, past_price: pd.DataFrame) -> dict:
-        """Rebuild only what is genuinely knowable at the truncation date.
-
-        Market cap is omitted on purpose: reconstructing it would take a share
-        count this pipeline does not store reliably, and today's value is the
-        single worst leak available — a company that re-rated would be scored
-        on its post-re-rating size precisely because it later did well.
-        """
-        close = float(past_price.iloc[-1]["close"])
-        meta = {
-            "name": raw.get("name"),
-            "sector": raw.get("sector"),          # static enough to carry over
-            "Face Value": raw.get("Face Value"),
-            "Current Price": close,
-        }
-
-        # Stock P/E is omitted for the same reason as market cap: the stored
-        # closes are split- and dividend-adjusted, so dividing one by an
-        # unadjusted historical EPS would not be the P/E anyone saw. Metrics
-        # needing it exclude themselves rather than score a fabricated ratio.
-        return meta
 
     @staticmethod
     def _realized_return(price: pd.DataFrame, truncation_date: pd.Timestamp) -> tuple[float | None, dict]:
