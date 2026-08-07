@@ -1200,3 +1200,199 @@ same skeleton:
   names, which §10's rev note anticipated only in part.
 - The `simulate(config, overrides)` seam demonstrated with one override,
   so Phase 5 starts from a proven callable.
+
+## Implementation Record (2026-08-08)
+
+All eight units (U0 plus U1–U7) merged on `main` across eight commits
+(`d8e5968`..`d905f2e`, plus U0's own `2911b79`), suite green at **1953
+passed, 2 deselected**.
+
+### Byte-identical backtest proof
+
+`WalkForwardBacktest.run()` against the real `raw_data/` corpus, before
+U1 (`git stash` back to `a2337d5`) and after every subsequent commit
+through `d905f2e`: **15 companies scored, 7 skipped, sorted-key JSON diff
+empty** at both checkpoints. Re-run at the end of the phase against the
+final tree — still empty.
+
+### Production non-regression proof
+
+ASTRAL scored before this phase (from `score_history.jsonl`'s own
+pre-phase row) and after, from the cached corpus:
+
+| Reading | Before | After |
+|---|---|---|
+| `composite` | 5.04 | **5.04** |
+| every element score | — | **identical** |
+| `coverage` | 0.98 | **identical** |
+| eligibility verdict | `not_eligible` | **identical** |
+| `registry_hash` | `1d9f30d09df3` | **`1d9f30d09df3`** |
+
+The three production stores (`watchlist.json`, `score_history.jsonl`,
+`lifecycle/reinvestment_queue.json`) were hashed before/after a full
+`simulate()` run against the real corpus at the end of every unit from U2
+onward — byte-identical every time, most recently after U7's exit.py fix.
+
+### Leak test
+
+U1's `tests/test_point_in_time.py` asserts, per frame/column, that no
+truncated view exposes a row whose period end (plus its frame's own
+reporting lag) falls after the cutoff, and that the rebuilt Market
+Cap/Stock P/E use only `close` (never `adj_close`) so a split cannot
+double-count. A two-cutoff scoring diff on a fixture with a scripted split
+confirms no output cell references post-cutoff data.
+
+### Friction regime consistency
+
+`friction_cash`'s cash-level costs and `friction.compute_net_return`'s
+return-percentage transform agree on regime (rates, the `>=`
+LTCG-holding-days boundary, slippage-before-tax ordering, a loss
+untaxed) and differ on level exactly as KTD5 predicts. Worked and
+verified at the end of the phase:
+
+- **+100% gross round trip**: notional-path slippage costs **1.5pp** of
+  the original position (entry 0.5pp + exit 1.0pp, since the exit leg's
+  notional is the grown position); the transform deducts a flat **1.0pp**
+  regardless of return size.
+- **Double-charge guard**: a flat position's total round-trip slippage
+  (`cost_of_buy` entry leg + `settle_sale` exit leg) equals **exactly**
+  `slippage_bps` of notional (100.0 on a 10,000 notional at the default
+  100bps) — never twice it.
+
+### Hand-computed two-name fixture (§12 Phase 4's stated validation)
+
+`tests/test_simulator_fixture.py` drives `replay.run_replay()` directly
+over two synthetic tickers (`ALPHA`, `BETA`) across four replay dates.
+Every tranche notional, slippage charge, tax line and holding-day count
+was independently re-derived from each module's own documented formula
+(`Ledger._tranche_notional`, `friction_cash.cost_of_buy`/`settle_sale`,
+KTD0's valuation rebuild) in a scratch script, cross-checked against the
+real classes, then written into the test as literal expected values —
+that cross-check caught one arithmetic mistake in the derivation itself
+before it reached the test (a tranche notional of 23.0964195 instead of
+the correct 23.0733195, from forgetting the first tranche's notional, not
+just its slippage, had already left the pool). The final assertions match
+the real replay's output **exactly**, bit-for-bit, at all four equity-curve
+points — not only the last one — including the full KTD10 exit sequence
+(`exit_review` → `confirm_exit`'s two-store write → `exited`) and an
+independent `Ledger.sell` settlement (LTCG, 421 holding days, tax
+1.4220937499999993) that never touches the watchlist's own friction
+reading, per R5/KTD5's two-models-never-reconciled rule.
+
+Building this fixture found and fixed a real defect (see Corrections
+below).
+
+### Full-corpus validation run
+
+`simulate(None, None)` over the full real corpus, 2023-02-28 → 2026-05-31
+(14 quarterly replay dates), completed in **7.5 seconds**:
+
+| Reading | Strategy | Benchmark (KTD9, equal-weight buy-and-hold) |
+|---|---|---|
+| CAGR | **−0.50%** | **46.51%** |
+| Max drawdown | 4.39% | 18.20% |
+| Turnover (annualized) | 0.14% | — |
+
+- **17 eligible tickers, 5 excluded** (never reach `MIN_TOTAL_YEARS=8`
+  within the window): IGIL, IRCTC, IXIGO, KFINTECH, SPLPETRO.
+- **Exactly one round trip the whole run**: TNPETRO entered `probe` on
+  2023-09-06 (`valuation_buy_zone`, deployment-pace-tightened thresholds —
+  the corpus read as expensive, factor ×0.85), exited on 2024-12-04
+  (`incremental_return_break`, RoIIC 1.44 < 12.0), net −8.8% after 455
+  days. `core` lane: 1 settlement, gross −1.40, net −1.51 (modeled capital
+  units). Cash sat idle a **mean 91.7% of total value** across the curve.
+- **Fast lane: unmeasured for the entire window.** Lane assignment
+  happens once, at each ticker's own first-eligible date (Feb/Mar 2023),
+  which precedes the corpus's `rerating` battery-complete date
+  (2024-05-31, per `ReplayCalendar`) for every one of the 17 — so every
+  eligible ticker entered `core`, `gate_coverage` shows 0 of 14 windows
+  measured, and `fast_lane_break_even` correctly reports `"unmeasured"`
+  rather than a zero.
+- **104 KTD0 reconciliation exclusions** (22 `non_positive_input`, 82
+  `reconciliation_failed`) across 17 tickers × 14 dates — see Corrections.
+- `checkpoint_driven_transitions_excluded`: 5 (every replay-date TNPETRO
+  held `probe`/`scale` while `checkpoints_failed` was applicable — no LLM
+  ever ran, so the trigger could never resolve on any of them).
+- Limitations block: survivorship/upper-bound, quarterly-depth
+  (`battery_complete`: core 2023-02-28, rerating 2024-05-31), the
+  fast-lane gate-coverage caveat stated unconditionally, the rebuilt-P/E
+  basis divergence, every simulated-owner policy by its actual configured
+  value (`starting_pool: 100`, lags `5/2/5`, `catalyst_window_months: 6`,
+  `cap_posture: enforced`, `reduce_fraction: null`), and the design doc's
+  statistical-humility clause quoted verbatim.
+
+**Read with the statistical-humility clause squarely in front of it: one
+trade is not evidence the rules are wrong, or right.** What the run does
+show cleanly is *why* so little happened — the reconciliation-exclusion
+rate below, not a thin corpus alone.
+
+### `simulate(config, overrides)` seam, demonstrated
+
+`tests/test_simulator_replay.py::test_simulate_override_seam_changes_recorded_policy_and_observed_behavior`
+runs `simulate(None, {"simulator.confirmation_lag_days.entry": 0}, ...)`
+in-process, no subprocess, and asserts both the recorded policy
+(`result["limitations"]["simulated_owner_policies"]`) and the observed
+confirmation timing change. Phase 5 starts from a proven callable.
+
+### Corrections this phase forced against the roadmap and this plan
+
+- **The checkpoint-grain correction KTD6 names.** §10's rev note expected
+  checkpoint-driven transitions to be "validated on the annual grain."
+  With no LLM in the replay there are no checkpoint *definitions* at any
+  grain — Pass 2 never runs, so nothing is ever recorded to validate. The
+  correct statement, which KTD6 already gives and this run confirms
+  empirically, is "excluded and counted," not "validated coarsely."
+- **KTD0(a)'s reconciliation coverage is materially lower on the real
+  corpus than the settling measurement suggested.** KTD0 was settled on a
+  same-date check (20 of 22 tickers reconcile *at the corpus's latest
+  date*, within 2%) plus a smaller historical spot-check. The full-corpus
+  run is the first time the **every-replay-date** guard actually ran at
+  scale, and it excludes **104 of 238** ticker-date valuation attempts
+  (~44%) — not the rare case the settling measurement's headline number
+  implied. The mechanism is exactly what U1's own real-corpus sanity
+  check (recorded in that unit's dispatch) predicted: `face_value` is read
+  from *today's* static metadata against a *historical* `equity_capital`,
+  so any ticker with a bonus issue or split between the replay date and
+  today diverges — correctly excluded by the guard rather than scored on
+  a fabricated size, but a real, load-bearing limitation on how much of
+  the corpus's history this simulator can actually evaluate. Phase 5
+  should read `reconciliation_failures`' per-ticker detail before
+  concluding the strategy — rather than the data — produced this run's
+  thin trade count.
+- **A latent Phase 3 defect, surfaced by Phase 4's replay context, fixed
+  in `lifecycle/exit.py`.** `confirm_exit`'s `EXITED` transition write
+  never passed `at=`, so every exit — simulated or real — was stamped
+  with wall-clock time rather than the date being confirmed. Invisible in
+  production (`as_of` already defaults to `date.today()`, the same
+  instant either way) but silently wrong for any backdated caller, which
+  a replay always is. Found while hand-verifying the two-name fixture
+  (the `EXITED` record's date did not match the hand computation), fixed
+  with the same `exit_date` already passed to `record_exit` two lines
+  above, verified against the full `test_confirm_exit.py`/
+  `test_watchlist_lifecycle.py`/`test_reinvestment_queue.py`/
+  `test_lifecycle_advance.py` suites (349 tests, zero behavior change for
+  every existing production caller).
+
+### Follow-up work this phase surfaced
+
+- **Three redundant computations across `calendar.py`/`universe.py`/
+  `replay.py`'s call graph**, flagged by an efficiency review and
+  deliberately left unfixed: every ticker's raw data is loaded from disk
+  up to three times within one `build_initial_watchlist`/`simulate` call
+  (`compute_calendar`, `build_universe`, and the per-ticker scoring loop
+  each call `load_ticker_data` independently), and `calendar.py`'s
+  `_battery_complete_core` re-runs the identical `first_sufficient_
+  history_date` scan `universe.build_universe` already performs moments
+  later. Cheap on the current ~22-ticker corpus (the full-corpus run
+  above completed in 7.5 seconds); worth collapsing before a much larger
+  corpus or a Phase 5 sweep loop makes the ~3x waste the actual hot path.
+- **The reduce-severity fraction (decision 4) is still owner-deferred.**
+  `valuation_saturation` exits are tagged `"reduce"` and counted
+  separately (none fired in the full-corpus run) but resolve as a full
+  exit until a fraction is settled.
+- **No fast-lane evidence exists yet from the real corpus.** The
+  `rerating` lane's battery-complete date (2024-05-31) postdates every
+  current candidate's own lane-assignment date. A later replay window
+  starting after mid-2024, or a corpus refetch that deepens `quarterly`/
+  `shareholding` further back, would be needed before Phase 5 has any
+  fast-lane transitions to sweep over at all.
