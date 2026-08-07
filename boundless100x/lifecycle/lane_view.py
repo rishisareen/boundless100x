@@ -53,6 +53,7 @@ def build_lane_context(
     as_of=None,
     lane_gate_result: dict | None = None,
     config: dict | None = None,
+    friction_estimate: dict | None = None,
 ) -> dict | None:
     """Everything a surface renders about one tracked company's lane.
 
@@ -64,6 +65,15 @@ def build_lane_context(
     slippage rates it resolves travel in the context because the break-even
     line lists them, and a rendered assumption must be the one that was
     actually applied rather than a plausible default typed into a template.
+
+    `friction_estimate` is the same already-computed seam `lane_gate_result` is,
+    and for the same reason: on an exit-proposing ticker `advance_ticker` has
+    already modeled this exact reading from these exact arguments, and modeling
+    it twice means rebuilding a frame over the whole daily price series to
+    reach an answer already in hand — or, worse, a *different* answer if
+    anything underneath moved between the two passes. It is used only where a
+    reading would otherwise be computed, so a caller that supplies one for a
+    company with no modeled position still gets None.
     """
     if not entry:
         return None
@@ -74,7 +84,7 @@ def build_lane_context(
         "as_of": str(as_of or date.today()),
         "catalyst": _catalyst_view(entry, as_of),
         "lane_gates": _lane_gates(entry, result, lane_gate_result),
-        "friction": _friction(entry, result, as_of, config),
+        "friction": _friction(entry, result, as_of, config, friction_estimate),
         "friction_assumptions": friction_module.config_from(config),
     }
 
@@ -150,7 +160,7 @@ def _is_overdue(catalyst: dict, as_of) -> bool:
     return window < (as_of or date.today())
 
 
-def _friction(entry: dict, result, as_of, config) -> dict | None:
+def _friction(entry: dict, result, as_of, config, estimate=None) -> dict | None:
     """The reading that fits where this company stands, or None if none does.
 
     Three states of the world, kept apart on purpose:
@@ -162,6 +172,13 @@ def _friction(entry: dict, result, as_of, config) -> dict | None:
       * **anything earlier** — None. No capital was ever committed, so there is
         no modeled position to price, and that is a different fact from one
         that could not be priced.
+
+    The state dispatch happens *before* any supplied `estimate` is consulted,
+    which is what keeps the third case honest: a caller that modeled an exit for
+    a company sitting at `watch` — possible, since a kill-switch can propose an
+    exit review from anywhere its `from` list allows — still gets None here,
+    because whether there is a position to report is this function's question
+    and not the caller's.
     """
     state = entry.get("state")
 
@@ -169,7 +186,9 @@ def _friction(entry: dict, result, as_of, config) -> dict | None:
         return _recorded_reading(entry)
 
     if state in lifecycle_states.POSITIONED or state == lifecycle_states.EXIT_REVIEW:
-        return _estimated_reading(entry, result, as_of, config)
+        return estimate if estimate is not None else _estimated_reading(
+            entry, result, as_of, config
+        )
 
     return None
 
@@ -205,32 +224,19 @@ def _recorded_reading(entry: dict) -> dict:
 def _estimated_reading(entry: dict, result, as_of, config) -> dict | None:
     """An in-flight reading: last `probe` confirmation → `as_of`.
 
-    None when the history holds no `probe`, matching
-    `advance._friction_for_exit`: a position with no recorded entry date has no
-    modeled holding period, and inventing one from the day it was added to the
-    watchlist would date a tax bracket off an administrative act.
-
-    Any failure below becomes unavailable-with-reason. A report is worth more
-    than the reading it could not take, and an exception here would cost the
-    whole page.
+    `friction.reading_for_exit` does the work, which is the whole point of that
+    helper existing: this and `advance._friction_for_exit` are the same reading
+    of the same position, and they used to be two copies of it. A position with
+    no recorded `probe` is None either way — no modeled holding period, and
+    inventing one from the day the company was added to the watchlist would
+    date a tax bracket off an administrative act — and any failure becomes
+    unavailable-with-reason, because a report is worth more than the reading it
+    could not take.
     """
-    probe = lifecycle_states.last_transition_into(entry, lifecycle_states.PROBE)
-    if probe is None:
-        return None
-
-    try:
-        return friction_module.model_exit(
-            (getattr(result, "data", None) or {}).get("price"),
-            probe.get("at"),
-            as_of or date.today(),
-            config=config,
-            basis=friction_module.BASIS_ESTIMATE,
-        )
-    except Exception as e:
-        logger.warning(f"The friction reading could not be computed: {e}")
-        return {
-            **friction_module.unavailable(
-                f"the friction model could not be computed ({e})"
-            ),
-            "basis": friction_module.BASIS_ESTIMATE,
-        }
+    return friction_module.reading_for_exit(
+        entry,
+        (getattr(result, "data", None) or {}).get("price"),
+        as_of or date.today(),
+        config=config,
+        basis=friction_module.BASIS_ESTIMATE,
+    )

@@ -49,6 +49,22 @@ _CATALYST = "catalyst_status"
 
 CONDITION_KINDS = (_METRIC, _SCORE, _FLAG_PRESENT, _FLAG_ABSENT, _CATALYST)
 
+# The fast lane's verdict vocabulary, deliberately not the 100x one: a company
+# can easily be `eligible` for a hundredfold and `not_qualified` for a
+# re-rating today, and one word covering both would hide exactly that.
+#
+# **Exported because three other modules act on these exact words**, and each
+# breaks differently on a rename nobody propagated. `evaluator.py` validates
+# every `lane_verdict:` trigger against them, so a stale word is a startup
+# error; `advance.py` routes capital on `QUALIFIES` and refuses anything else,
+# so a stale word is a silent capital freeze; `report_generator.py` keys a
+# label map on them, so a stale word renders a blank badge. Three failure modes
+# from one edit is the argument for the words living where they are produced.
+QUALIFIES = "qualifies"
+NOT_QUALIFIED = "not_qualified"
+INDETERMINATE = "indeterminate"
+LANE_VERDICTS = (QUALIFIES, NOT_QUALIFIED, INDETERMINATE)
+
 # Shipped defaults, mirrored in lane_gates.yaml — the same arrangement
 # `DEFAULT_GATES` has with registry.yaml, so a missing or unreadable registry
 # file means the shipped regime rather than no gates at all. Every threshold is
@@ -232,10 +248,11 @@ class LaneGateEvaluator:
     ) -> dict:
         """Return the lane verdict plus per-gate detail.
 
-        The verdict vocabulary is this context's own —
-        `qualifies`/`not_qualified`/`indeterminate` — because "eligible" is
-        already taken by the 100x question and a company can easily be one and
-        not the other. The three-valued shape underneath is identical.
+        The verdict vocabulary is this context's own — `QUALIFIES` /
+        `NOT_QUALIFIED` / `INDETERMINATE`, declared at module level — because
+        "eligible" is already taken by the 100x question and a company can
+        easily be one and not the other. The three-valued shape underneath is
+        identical.
 
         `catalyst` defaults to None meaning *no watchlist context was supplied*,
         which is distinct from an entry carrying no catalyst.
@@ -255,11 +272,11 @@ class LaneGateEvaluator:
         # A failure settles the question even when another gate is unknown: one
         # gate is already known to be unmet, and no later reading can unmeet it.
         if failed:
-            verdict, qualifies = "not_qualified", False
+            verdict, qualifies = NOT_QUALIFIED, False
         elif indeterminate:
-            verdict, qualifies = "indeterminate", None
+            verdict, qualifies = INDETERMINATE, None
         else:
-            verdict, qualifies = "qualifies", True
+            verdict, qualifies = QUALIFIES, True
 
         return {
             "qualifies": qualifies,

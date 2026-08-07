@@ -33,9 +33,10 @@ in a table those look identical.
 
 import logging
 import math
-from datetime import date, datetime
 
 import pandas as pd
+
+from boundless100x.lifecycle import states as lifecycle_states
 
 logger = logging.getLogger(__name__)
 
@@ -92,30 +93,6 @@ def unavailable(reason: str) -> dict:
     always a reason to show.
     """
     return {"available": False, "reason": reason}
-
-
-def _as_date(value) -> date | None:
-    """A calendar date from whatever the caller or the store happened to hold.
-
-    The same two formats `lifecycle.evaluator._as_date` reconciles: `as_of` is
-    a `date`, while a `state_history` record's `at` is a full ISO datetime
-    because `watchlist._now()` writes `datetime.now()`. Timestamps normalize to
-    dates here because a market bar has no time of day, and pretending
-    otherwise would put a spurious few hours into a holding period that decides
-    a tax bracket.
-    """
-    if isinstance(value, datetime):  # checked first — datetime subclasses date
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, pd.Timestamp):
-        return value.date()
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value).date()
-        except ValueError:
-            return None
-    return None
 
 
 def _is_finite_number(value) -> bool:
@@ -234,10 +211,10 @@ def compute_position_return(price_df, entry_date, exit_date) -> dict:
     `{available: False, reason}`. Nothing here is a statement about trades that
     happened; see the module docstring.
     """
-    entry = _as_date(entry_date)
+    entry = lifecycle_states.as_date(entry_date)
     if entry is None:
         return unavailable(f"entry date {entry_date!r} could not be read")
-    settled = _as_date(exit_date)
+    settled = lifecycle_states.as_date(exit_date)
     if settled is None:
         return unavailable(f"exit date {exit_date!r} could not be read")
 
@@ -387,6 +364,77 @@ def model_exit(
         return {**net, "basis": basis}
 
     return {**position, **net, "basis": basis}
+
+
+# The default wording for a reading that raised on its way to being computed.
+# A template rather than a literal because the recorded path says something
+# narrower — see `reading_for_exit`.
+_MODEL_FAILED = "the friction model could not be computed ({error})"
+
+
+def reading_for_exit(
+    entry: dict | None,
+    price_source,
+    exit_date,
+    config=None,
+    basis: str = BASIS_ESTIMATE,
+    no_probe_reason: str | None = None,
+    failure_reason: str = _MODEL_FAILED,
+    label: str = "",
+) -> dict | None:
+    """Price a tracked company's position from its own history. Never raises.
+
+    **The one wrapper around `model_exit` for anything holding a watchlist
+    entry.** Three surfaces needed the identical three steps — find the last
+    `probe` transition, model the exit from it, convert any failure into
+    unavailable-with-reason — and each had written them out: an exit proposal in
+    `advance`, a lane view in `lane_view`, a confirmed sale in `exit`. Two of
+    those three run on the *same* ticker in the *same* advance pass with the
+    same arguments, so the duplication was not only a drift risk but a second
+    pass over the whole daily price series for an answer already in hand. And
+    drift here is the expensive kind: the terminal's exit block and the report's
+    lane section would print different net returns for one position, which is
+    precisely the disagreement `lane_view` exists to prevent.
+
+    Three things genuinely differ between the callers, and each is a parameter
+    rather than a rounded-off edge:
+
+    * **`no_probe_reason` decides what "never held" looks like.** A *proposal*
+      with no recorded `probe` carries no friction key at all (None), because
+      there is no modeled position to price and that is a different fact from a
+      position nobody could price. A *recorded sale* must state why there is no
+      figure beside it, because the sale is going into the books either way. So
+      None returns None and a string returns unavailable-with-reason.
+    * **`price_source` may be a frame or a callable.** The estimate paths
+      already hold the series their run fetched; the recorded path fetches one
+      itself and must have that fetch inside the try, since a fetch that fails
+      is exactly as unpriceable as a series that cannot be read — and it must
+      not pay for the fetch at all when there is no `probe` to price from.
+    * **`failure_reason` is the caller's sentence.** It reaches an append-only
+      queue event on the recorded path, so it says what that path was doing.
+
+    `basis` travels onto every shape returned, including the failures, because
+    a reader meeting an unavailable reading still needs to know which kind of
+    reading it would have been.
+    """
+    probe = lifecycle_states.last_transition_into(entry or {}, lifecycle_states.PROBE)
+    if probe is None:
+        if no_probe_reason is None:
+            return None
+        return {**unavailable(no_probe_reason), "basis": basis}
+
+    try:
+        price = price_source() if callable(price_source) else price_source
+        return model_exit(
+            price, probe.get("at"), exit_date, config=config, basis=basis
+        )
+    except Exception as e:
+        # A reading is worth less than what it sits beside — a kill-switch that
+        # fired, a report page, a sale that already happened — so a failure here
+        # costs the figure and says why, and never the thing it was decorating.
+        where = f"{label}: " if label else ""
+        logger.warning(f"{where}the friction reading could not be computed: {e}")
+        return {**unavailable(failure_reason.format(error=e)), "basis": basis}
 
 
 def describe(reading: dict | None) -> str:

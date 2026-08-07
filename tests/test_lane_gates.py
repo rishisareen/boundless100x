@@ -23,6 +23,10 @@ from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.lifecycle.lane_gates import (
     DEFAULT_LANE_GATES,
     DEFAULT_LANE_GATES_PATH,
+    INDETERMINATE,
+    LANE_VERDICTS,
+    NOT_QUALIFIED,
+    QUALIFIES,
     LaneGateEvaluator,
     effective_lane_gates,
     load_lane_gates,
@@ -359,3 +363,38 @@ class TestTheYamlIsReadable:
         loaded = yaml.safe_load(DEFAULT_LANE_GATES_PATH.read_text())
 
         assert set(loaded) == {"lane_gates"}
+
+
+class TestTheVerdictVocabularyIsExportedFromItsSource:
+    """One statement of three words that four modules act on.
+
+    Each acts on them differently and each breaks differently on a rename
+    nobody propagated: the trigger evaluator validates `lane_verdict:`
+    conditions against them, so a stale word is a startup error; `advance`
+    routes capital on `QUALIFIES` and blocks everything else, so a stale word
+    is a silent capital freeze; the report keys a label map on them, so a stale
+    word renders a blank badge. Three failure modes from one edit is the whole
+    argument for the words living where they are produced — and for these
+    assertions, which are what would catch the edit.
+    """
+
+    def test_the_evaluator_emits_exactly_the_exported_words(self):
+        """The constants are only worth importing if they are what comes out."""
+        assert LANE_VERDICTS == (QUALIFIES, NOT_QUALIFIED, INDETERMINATE)
+        assert qualifying()["verdict"] == QUALIFIES
+        assert qualifying(scores=make_scores(composite=4.9))["verdict"] == (
+            NOT_QUALIFIED
+        )
+        assert qualifying(scores={})["verdict"] == INDETERMINATE
+
+    def test_the_trigger_evaluator_validates_against_the_same_tuple(self):
+        from boundless100x.lifecycle import evaluator as trigger_evaluator
+
+        assert trigger_evaluator.LANE_VERDICTS is LANE_VERDICTS
+
+    def test_the_report_labels_every_verdict_that_can_arrive(self):
+        """A verdict with no label renders a blank badge, which reads as a
+        company nobody evaluated rather than as a missing entry in a map."""
+        from boundless100x.output import report_generator
+
+        assert set(report_generator.LANE_VERDICTS) == set(LANE_VERDICTS)

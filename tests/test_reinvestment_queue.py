@@ -324,6 +324,84 @@ class TestDurability:
         assert queue.data["revision"] == 1
 
 
+class TestTheCommitMechanicsAreOneImplementation:
+    """Two stores, one set of commit mechanics — and only the mechanics.
+
+    The queue keeps its own file, its own schema and its own validation; what
+    it shares with the watchlist is staging, the atomic write and the revision
+    counter, inherited from `watchlist._JsonStore` exactly as
+    `atomic_write_json` was already imported.
+
+    The counter is what makes this more than tidiness. `snapshot_state` decides
+    whether a routing proposal may be rendered by comparing **both** stores'
+    counters against the ones a snapshot captured, so a clamping rule that
+    disagreed between the two files would read a snapshot current against one
+    store and stale against the other — a proposal shown or withheld on the
+    strength of which file somebody last edited by hand.
+    """
+
+    @staticmethod
+    def both_stores(tmp_path, stored):
+        queue_path = tmp_path / "queue.json"
+        watchlist_path = tmp_path / "watchlist.json"
+        payload = {} if stored is None else {"revision": stored}
+        queue_path.write_text(json.dumps({"events": [], **payload}))
+        watchlist_path.write_text(json.dumps({"companies": {}, **payload}))
+        return (
+            ReinvestmentQueue(path=str(queue_path)),
+            WatchlistManager(path=str(watchlist_path)),
+        )
+
+    @pytest.mark.parametrize("stored,expected", [
+        (7, 7),
+        (0, 0),
+        (None, 0),          # written before the counter existed
+        (-3, 0),            # hand-edited into nonsense
+        ("4", 0),           # ditto, wrong type
+    ])
+    def test_both_stores_clamp_a_stored_counter_identically(
+        self, tmp_path, stored, expected
+    ):
+        """A missing or nonsensical revision restarts at zero rather than
+        raising: it is a staleness signal nobody can read yet, not a corrupt
+        store. One rule, so the two files cannot disagree about a snapshot."""
+        queue, watchlist = self.both_stores(tmp_path, stored)
+
+        assert queue.data["revision"] == expected
+        assert watchlist.data["revision"] == expected
+
+    @pytest.mark.parametrize("stored", [7, 0, None, -3, "4", True, [], 2.0])
+    def test_the_two_stores_agree_on_anything_a_file_can_hold(
+        self, tmp_path, stored
+    ):
+        """Agreement is the property that matters, and it is wider than the
+        documented cases: a hand-edited store can hold anything JSON can, and
+        whatever the two make of it, they must make the same thing of it."""
+        queue, watchlist = self.both_stores(tmp_path, stored)
+
+        assert queue.data["revision"] == watchlist.data["revision"]
+
+    def test_a_commit_on_either_store_advances_its_counter_by_one(self, tmp_path):
+        queue = ReinvestmentQueue(path=str(tmp_path / "queue.json"))
+        watchlist = WatchlistManager(path=str(tmp_path / "watchlist.json"))
+
+        record(queue, "ASTRAL")
+        watchlist.add("ASTRAL")
+
+        assert queue.data["revision"] == 1
+        assert watchlist.data["revision"] == 1
+
+    def test_the_queue_keeps_its_own_file_and_schema(self, tmp_path):
+        """The pinned decision, asserted: sharing the mechanics is not merging
+        the stores. An event that does not match is this module's loud error,
+        and the watchlist knows nothing about it."""
+        path = tmp_path / "queue.json"
+        path.write_text(json.dumps({"events": [{"kind": "nonsense"}]}))
+
+        with pytest.raises(ReinvestmentError):
+            ReinvestmentQueue(path=str(path))
+
+
 class TestStoreShape:
     def test_a_missing_file_loads_as_an_empty_queue(self, tmp_path):
         queue = ReinvestmentQueue(path=str(tmp_path / "nothing-here.json"))

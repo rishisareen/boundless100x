@@ -1,3 +1,43 @@
 {
-  "companies": {}
+  "companies": {
+    "ASTRAL": {
+      "added": "2026-08-07T12:04:33.214115",
+      "notes": "",
+      "lane": "core",
+      "state": "screen",
+      "checkpoints": [
+        {
+          "metric_id": "quarterly_pat_yoy_pct",
+          "comparator": "gte",
+          "threshold": 10.0,
+          "due_date": "2026-11-30",
+          "source": "llm"
+        },
+        {
+          "metric_id": "quarterly_opm_pct",
+          "comparator": "gte",
+          "threshold": 14.0,
+          "due_date": "2026-11-30",
+          "source": "llm"
+        },
+        {
+          "metric_id": "quarterly_revenue_yoy_pct",
+          "comparator": "gte",
+          "threshold": 12.0,
+          "due_date": "2026-11-30",
+          "source": "llm"
+        },
+        {
+          "metric_id": "promoter_holding_pct",
+          "comparator": "gte",
+          "threshold": 54.0,
+          "due_date": "2026-10-31",
+          "source": "llm"
+        }
+      ],
+      "kill_switch_status": {},
+      "last_score_snapshot": null,
+      "state_history": []
+    }
+  }
 }

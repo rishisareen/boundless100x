@@ -21,6 +21,15 @@ from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_de
 # blank. `lifecycle/friction.py` imports nothing from this layer, so the
 # direction is one-way.
 from boundless100x.lifecycle.friction import config_from as friction_config_from
+# The lane verdict words, from the evaluator that produces them. With a label
+# map keyed on literals, a rename that missed this file would render a blank
+# badge — the quietest of the three ways this vocabulary can break, because a
+# missing label reads as a company nobody evaluated rather than as a bug.
+from boundless100x.lifecycle.lane_gates import (
+    INDETERMINATE as LANE_INDETERMINATE,
+    NOT_QUALIFIED as LANE_NOT_QUALIFIED,
+    QUALIFIES as LANE_QUALIFIES,
+)
 # One statement of what the fast lane is called. `lifecycle/advance.py` and
 # `lifecycle/lane_view.py` both gate on this constant; a literal here would be a
 # third spelling with nothing keeping it in step, and it decides whether a whole
@@ -356,16 +365,20 @@ LANE_LABELS: dict[str, str] = {
 # re-rating candidate, which is the asymmetry the whole lane exists for — so a
 # reader must never meet "eligible" in this section and carry the other
 # question's meaning into it.
+#
+# The labels are this layer's own — presentation is not the evaluator's job —
+# but the *keys* are imported, so the map is guaranteed to cover the verdicts
+# that actually arrive.
 LANE_VERDICTS: dict[str, tuple[str, str, str]] = {
-    "qualifies": (
+    LANE_QUALIFIES: (
         "Qualifies for the fast lane", "good",
         "Clears every fast-lane entry gate",
     ),
-    "not_qualified": (
+    LANE_NOT_QUALIFIED: (
         "Does not qualify for the fast lane", "bad",
         "Fails at least one fast-lane entry gate",
     ),
-    "indeterminate": (
+    LANE_INDETERMINATE: (
         "Fast-lane qualification unknown", "neutral",
         "A fast-lane entry gate could not be evaluated from available data",
     ),

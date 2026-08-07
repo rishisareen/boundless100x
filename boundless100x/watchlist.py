@@ -134,6 +134,53 @@ def _revision_of(data: dict) -> int:
     return revision
 
 
+class _JsonStore:
+    """The commit mechanics every tracked JSON store in this system shares.
+
+    Two stores exist — this module's watchlist and `lifecycle/reinvestment.py`'s
+    event queue — and they stay two stores on purpose: different files,
+    different schemas, different validation, different questions. **Only the
+    commit mechanics are shared**, exactly as `atomic_write_json` already was,
+    and for the same reason: the argument is per-file and identical wherever it
+    applies, so two copies would be two things to keep in step.
+
+    The revision counter is why "would be" is not hypothetical. `snapshot_state`
+    decides whether a routing proposal may be rendered by comparing **both**
+    stores' counters against the ones a snapshot captured, so the clamping rule
+    — absent or negative restarts at zero — has to mean the same thing in both
+    files. Two copies of it, and a snapshot could read current against one store
+    and stale against the other, which is a proposal rendered or withheld on the
+    strength of which file somebody last edited by hand.
+
+    `_load` stays with the subclass. What a store *contains* and what makes an
+    entry valid is the part that is genuinely not shared, and a base class that
+    reached into either would be the merge this deliberately is not.
+    """
+
+    def __init__(self, path: str | Path | None, default_path: Path):
+        self.path = Path(path) if path else default_path
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        raise NotImplementedError
+
+    def _stage(self) -> dict:
+        """A deep copy of the store, safe to mutate before anything is committed."""
+        return copy.deepcopy(self.data)
+
+    def _commit(self, staged: dict) -> None:
+        """Persist a staged store, then adopt it — never the other way round.
+
+        The revision bumps here and nowhere else, so it counts durable commits
+        rather than attempts. A reader comparing revisions to decide whether
+        its view is current would otherwise be told a change happened that the
+        store never took.
+        """
+        staged["revision"] = _revision_of(self.data) + 1
+        atomic_write_json(self.path, staged)
+        self.data = staged
+
+
 def _new_entry(notes: str, lane: str) -> dict:
     return {
         "added": _now(),
@@ -147,12 +194,11 @@ def _new_entry(notes: str, lane: str) -> dict:
     }
 
 
-class WatchlistManager:
+class WatchlistManager(_JsonStore):
     """Reads and writes lifecycle state for tracked companies."""
 
     def __init__(self, path: str | None = None):
-        self.path = Path(path) if path else DEFAULT_WATCHLIST_PATH
-        self.data = self._load()
+        super().__init__(path, DEFAULT_WATCHLIST_PATH)
 
     # ── persistence ──
 
@@ -195,10 +241,6 @@ class WatchlistManager:
                     f"{ticker}: unknown catalyst status {catalyst.get('status')!r}"
                 )
 
-    def _stage(self) -> dict:
-        """A deep copy of the store, safe to mutate before anything is committed."""
-        return copy.deepcopy(self.data)
-
     def _stage_entry(self, ticker: str) -> tuple[dict, dict]:
         """A staged store and the entry inside it — the pair every setter mutates."""
         key = ticker.upper()
@@ -206,18 +248,6 @@ class WatchlistManager:
             raise WatchlistError(f"{ticker} is not on the watchlist")
         staged = self._stage()
         return staged, staged["companies"][key]
-
-    def _commit(self, staged: dict) -> None:
-        """Persist a staged store, then adopt it — never the other way round.
-
-        The revision bumps here and nowhere else, so it counts durable commits
-        rather than attempts. A reader comparing revisions to decide whether
-        its view is current would otherwise be told a change happened that the
-        store never took.
-        """
-        staged["revision"] = _revision_of(self.data) + 1
-        atomic_write_json(self.path, staged)
-        self.data = staged
 
     # ── membership ──
 

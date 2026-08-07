@@ -419,6 +419,123 @@ class TestBasis:
         assert reading["basis"] == "estimate"
 
 
+class TestReadingForExit:
+    """The one wrapper three surfaces reach `model_exit` through.
+
+    An exit proposal, a lane view and a confirmed sale each need the same three
+    steps — find the last `probe`, model from it, convert any failure into
+    unavailable-with-reason — and each used to spell them out. Two of the three
+    run on the same ticker in the same advance pass with the same arguments, so
+    the copies were both a drift risk and a second pass over the whole daily
+    price series. What the callers genuinely differ on is pinned below, because
+    that difference is the reason the parameters exist at all.
+    """
+
+    HISTORY = [
+        {"to": "probe", "at": "2026-03-02T09:15:00"},
+    ]
+
+    def entry(self, history=HISTORY):
+        return {"state_history": list(history)}
+
+    def test_a_frame_prices_the_position_from_its_last_probe(self):
+        """The 2nd's bar in, the 13th's bar out: 2.00 → 13.00."""
+        reading = friction.reading_for_exit(
+            self.entry(), fortnight_frame(), date(2026, 3, 13), SETTINGS
+        )
+
+        assert reading["available"] is True
+        assert reading["entry_price"] == pytest.approx(2.0)
+        assert reading["exit_price"] == pytest.approx(13.0)
+        assert reading["basis"] == "estimate"
+
+    def test_the_last_probe_dates_it_not_the_first(self):
+        """A re-entered position restarts the clock — `states.last_record_into`'s
+        rule, and this is the caller that turns it into a tax bracket."""
+        reading = friction.reading_for_exit(
+            self.entry([
+                {"to": "probe", "at": "2026-03-02T09:15:00"},
+                {"to": "exited", "at": "2026-03-04T09:15:00"},
+                {"to": "probe", "at": "2026-03-09T09:15:00"},
+            ]),
+            fortnight_frame(), date(2026, 3, 13), SETTINGS,
+        )
+
+        assert reading["entry_price"] == pytest.approx(9.0)
+
+    def test_a_proposal_with_no_probe_reports_no_reading_at_all(self):
+        """None, not a zero and not an unavailable payload: there is no modeled
+        position, which is a different fact from one nobody could price."""
+        assert friction.reading_for_exit(
+            self.entry([{"to": "watch", "at": "2026-03-02T09:15:00"}]),
+            fortnight_frame(), date(2026, 3, 13), SETTINGS,
+        ) is None
+
+    def test_a_recorded_sale_with_no_probe_says_why_there_is_no_figure(self):
+        """The opposite answer to the same fact, and deliberately so: the sale
+        goes into the books either way, so the record has to state the gap."""
+        reading = friction.reading_for_exit(
+            self.entry([{"to": "watch", "at": "2026-03-02T09:15:00"}]),
+            fortnight_frame(), date(2026, 3, 13), SETTINGS,
+            basis=friction.BASIS_RECORDED,
+            no_probe_reason="no probe transition in this company's history",
+        )
+
+        assert reading["available"] is False
+        assert "no probe transition" in reading["reason"]
+        assert reading["basis"] == "recorded"
+
+    def test_a_callable_price_source_is_not_called_without_a_probe(self):
+        """The confirmed-exit path fetches its own series. A company that never
+        held one must not pay for a network round trip to be told so."""
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            return fortnight_frame()
+
+        friction.reading_for_exit(
+            self.entry([{"to": "watch", "at": "2026-03-02T09:15:00"}]),
+            fetch, date(2026, 3, 13), SETTINGS,
+            no_probe_reason="never held",
+        )
+
+        assert calls == []
+
+    def test_a_failing_price_source_reads_unavailable_in_the_callers_words(self):
+        """The fetch sits inside the try because a fetch that failed is exactly
+        as unpriceable as a series that could not be read — and the sentence is
+        the caller's, since it reaches an append-only queue event."""
+        def fetch():
+            raise RuntimeError("the source refused")
+
+        reading = friction.reading_for_exit(
+            self.entry(), fetch, date(2026, 3, 13), SETTINGS,
+            basis=friction.BASIS_RECORDED,
+            failure_reason="the position could not be priced ({error})",
+        )
+
+        assert reading["available"] is False
+        assert reading["reason"] == (
+            "the position could not be priced (the source refused)"
+        )
+        assert reading["basis"] == "recorded"
+
+    def test_a_failure_never_escapes_to_the_caller(self):
+        """A kill-switch that fired, a report page and a sale that happened are
+        each worth more than the reading beside them."""
+        def fetch():
+            raise RuntimeError("boom")
+
+        reading = friction.reading_for_exit(
+            self.entry(), fetch, date(2026, 3, 13), SETTINGS
+        )
+
+        assert reading["available"] is False
+        assert "boom" in reading["reason"]
+        assert reading["basis"] == "estimate"
+
+
 # ── the advance() seam ────────────────────────────────────────────────────
 
 
@@ -469,6 +586,25 @@ class TestAdvanceAttachesTheReading:
         assert proposal["to"] == "exit_review"
         assert proposal["friction"]["available"] is True
         assert proposal["friction"]["basis"] == "estimate"
+
+    def test_the_lane_view_reports_the_very_reading_the_proposal_carries(
+        self, wm, evaluator
+    ):
+        """Identity, not equality — and identity is the assertion that matters.
+
+        The proposal's reading and the lane view's are the same position, from
+        the same entry, the same price series and the same `as_of`. Modeled
+        twice they were a second pass over the whole daily series for an answer
+        already in hand, and any drift between the two would be an owner
+        reading one net return in the terminal and another in the report.
+        """
+        entered = probed_position(wm)
+        outcome = advance_ticker(
+            exiting_service(entered), wm, "ZENSAR", evaluator, apply=True,
+            as_of=entered + timedelta(days=400),
+        )
+
+        assert outcome["lane_context"]["friction"] is outcome["proposal"]["friction"]
 
     def test_the_reading_reproduces_the_hand_computed_net(self, wm, evaluator):
         """100.00 -> 150.00 is 50.0% gross; less 1.00pp slippage is 49.0%;

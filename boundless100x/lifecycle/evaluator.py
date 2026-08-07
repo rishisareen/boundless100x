@@ -23,13 +23,14 @@ carrying the same idiom: an absent key means "every lane", exactly as
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import yaml
 
 from boundless100x.compute_engine.eligibility import COMPARATORS, _format_threshold
 from boundless100x.lifecycle import states as lifecycle_states
+from boundless100x.lifecycle.lane_gates import LANE_VERDICTS
 from boundless100x.watchlist import CATALYST_STATUSES, LANES
 
 logger = logging.getLogger(__name__)
@@ -59,13 +60,10 @@ CONDITION_KINDS = (
     _SINCE_STATE_ENTRY,
 )
 
-# The fast lane's verdict vocabulary, deliberately not the 100x one: a company
-# can easily be `eligible` for a hundredfold and `not_qualified` for a
-# re-rating today, and one word covering both would hide exactly that. Stated
-# here rather than imported because `lane_gates.py` declares it only inside
-# `LaneGateEvaluator.evaluate`'s docstring — if that module ever exports a
-# constant, this should read it instead of restating it.
-LANE_VERDICTS = ("qualifies", "not_qualified", "indeterminate")
+# `LANE_VERDICTS` is imported from `lane_gates` above, and re-exported here
+# because a `lane_verdict:` trigger is validated against it at construction —
+# a word this file does not recognise is a startup error, so the tuple it
+# checks against has to be the tuple the gate evaluator actually produces.
 
 # Metrics whose `raw_series` is that metric's own quantity over time, in the
 # same units as its threshold — the only ones `persist_years` can read.
@@ -86,27 +84,6 @@ SERIES_SAFE_METRICS = frozenset({
     "roe_5yr_avg",           # yearly RoE %
     "operating_margin_5yr",  # yearly OPM %
 })
-
-
-def _as_date(value) -> date | None:
-    """A calendar date from whatever the caller or the store happened to hold.
-
-    This is the one place two time formats meet. `as_of` is a `date`, as it is
-    throughout `lifecycle.checkpoints`; a `state_history` record's `at` is a
-    full ISO datetime, because `watchlist._now()` writes `datetime.now()`.
-    Anything unreadable comes back None so its caller can say *what* it could
-    not read, rather than quietly becoming a date nobody supplied.
-    """
-    if isinstance(value, datetime):  # checked first — datetime subclasses date
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value).date()
-        except ValueError:
-            return None
-    return None
 
 
 @dataclass(frozen=True)
@@ -353,7 +330,7 @@ class TriggerEvaluator:
             lane_gate_result=lane_gate_result,
             catalyst=catalyst,
             state_history=state_history,
-            as_of=_as_date(as_of) or date.today(),
+            as_of=lifecycle_states.as_date(as_of) or date.today(),
         )
 
         results: dict[str, dict] = {}
@@ -701,6 +678,14 @@ class TriggerEvaluator:
         Time is read against the `as_of` handed in rather than the wall clock,
         so a replay of an old decision reaches the same conclusion on any day
         it is run — the same reason `lifecycle.checkpoints` takes the parameter.
+
+        **Which record dates the clock is `states.last_record_into`'s answer,
+        not this function's.** The rule — last match, because re-entering a
+        state restarts the clock — is the same one that dates a holding period
+        and keys an `exit_id`, and the trigger that ends a stalled position is
+        the last place it should be restated in local code. A private copy here
+        would drift from the shared rule silently, and the symptom would be a
+        time stop firing on a stint that already ended.
         """
         target = condition[_SINCE_STATE_ENTRY]
         comparator = condition.get("comparator", "gte")
@@ -720,26 +705,19 @@ class TriggerEvaluator:
             outcome["detail"] = "no state history supplied — time in state unknown"
             return outcome
 
-        # History is append-only and written in order, so the *last* matching
-        # record is the current visit. Re-entering a state restarts the clock:
-        # a stint that ended is not what a time stop measures.
-        entries = [
-            record
-            for record in state_history
-            if isinstance(record, dict) and record.get("to") == target
-        ]
-        if not entries:
+        record = lifecycle_states.last_record_into(state_history, target)
+        if record is None:
             outcome["detail"] = f"never reached {target}"
             return outcome
 
-        entered = _as_date(entries[-1].get("at"))
+        entered = lifecycle_states.as_date(record.get("at"))
         if entered is None:
             # Deliberately not falling back to an earlier matching record: that
             # would date the stop from a previous visit and could end a
             # position months before its clock actually ran out.
             outcome["detail"] = (
                 f"the {target} transition carries an unreadable timestamp "
-                f"{entries[-1].get('at')!r}"
+                f"{record.get('at')!r}"
             )
             return outcome
 
@@ -750,7 +728,7 @@ class TriggerEvaluator:
             return outcome
 
         days = (as_of - entered).days
-        outcome["entered_at"] = entries[-1].get("at")
+        outcome["entered_at"] = record.get("at")
         outcome["value"] = float(days)
         outcome["passed"] = bool(compare(days, threshold))
         outcome["detail"] = (

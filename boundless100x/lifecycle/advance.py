@@ -78,7 +78,12 @@ from boundless100x.lifecycle.checkpoints import (
     summarise,
 )
 from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
-from boundless100x.lifecycle.lane_gates import LaneGateEvaluator
+from boundless100x.lifecycle.lane_gates import (
+    INDETERMINATE,
+    NOT_QUALIFIED,
+    QUALIFIES,
+    LaneGateEvaluator,
+)
 from boundless100x.watchlist import (
     APPLIED_AUTO,
     APPLIED_OWNER,
@@ -97,11 +102,6 @@ _PRECEDENCE = {
     lifecycle_states.DROPPED: 2,
 }
 _DEFAULT_PRECEDENCE = 10
-
-# The lane verdict that clears a re-rating candidate for capital. Stated as a
-# constant so the fail-closed check below reads as "only this one word", which
-# is the whole rule.
-_LANE_QUALIFIES = "qualifies"
 
 
 def _rank(to_state: str) -> int:
@@ -151,15 +151,22 @@ def _lane_gate_constraints(lane_gate_result: dict | None) -> list[str]:
     does not know it would emit no constraint at all: a fail-*open* that routes
     capital into a candidate which has just failed its own entry gates.
 
-    So this clears on one exact word and nothing else. `not_qualified`,
-    `indeterminate`, a result that was never produced, and any value nobody
+    So this clears on one exact word and nothing else. `NOT_QUALIFIED`,
+    `INDETERMINATE`, a result that was never produced, and any value nobody
     anticipated all block, each with its own reason. Unknown never routes.
+
+    The words are imported from `lane_gates` rather than spelled here, because
+    a rename that missed this file would not raise: the recognised branches
+    would simply stop matching and every fast-lane candidate would fall through
+    to the unrecognised-verdict block — routing blocked with a reason that
+    reads like a bug in the gates. A silent capital freeze is the quietest of
+    the three failure modes this vocabulary has, and the hardest to attribute.
     """
     if not lane_gate_result:
         return ["fast-lane entry gates were not evaluated"]
 
     verdict = lane_gate_result.get("verdict")
-    if verdict == _LANE_QUALIFIES:
+    if verdict == QUALIFIES:
         return []
 
     gates = lane_gate_result.get("gates") or {}
@@ -171,19 +178,19 @@ def _lane_gate_constraints(lane_gate_result: dict | None) -> list[str]:
             if gate_id in gates and gates[gate_id].get("reason")
         ]
 
-    if verdict == "not_qualified":
+    if verdict == NOT_QUALIFIED:
         return (
             reasons_for(lane_gate_result.get("failed", []))
             or ["fails at least one fast-lane entry gate"]
         )
-    if verdict == "indeterminate":
+    if verdict == INDETERMINATE:
         return (
             reasons_for(lane_gate_result.get("indeterminate", []))
             or ["a fast-lane entry gate could not be evaluated"]
         )
     return [
         f"fast-lane gate verdict {verdict!r} is not recognised — "
-        f"only {_LANE_QUALIFIES!r} clears a candidate for capital"
+        f"only {QUALIFIES!r} clears a candidate for capital"
     ]
 
 
@@ -260,47 +267,46 @@ def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict
     A failure computing the reading costs the reading, never the exit proposal.
     A kill-switch that fired must reach the owner whether or not a price series
     could be read beside it.
-    """
-    # The *last* transition into `probe`, for the reason
-    # `states.last_transition_into` states: history is append-only and in
-    # order, so re-entering a position restarts the clock, and dating a holding
-    # period from a stint that already ended would put it in the wrong tax
-    # bracket.
-    probe = lifecycle_states.last_transition_into(entry, lifecycle_states.PROBE)
-    if probe is None:
-        return None
 
-    try:
-        return friction_module.model_exit(
-            (result.data or {}).get("price"),
-            probe.get("at"),
-            # The same clock the rest of the run reads, so a replay of an old
-            # decision reproduces the figure it was decided on.
-            as_of or date.today(),
-            config=getattr(service, "config", {}),
-            basis=friction_module.BASIS_ESTIMATE,
-        )
-    except Exception as e:
-        logger.warning(f"{ticker}: friction reading could not be computed: {e}")
-        return {
-            **friction_module.unavailable(
-                f"the friction model could not be computed ({e})"
-            ),
-            "basis": friction_module.BASIS_ESTIMATE,
-        }
+    The probe lookup and the failure conversion are `friction.reading_for_exit`'s
+    — the same call the lane view and the confirmed-exit path make. What is left
+    here is the choice of the two dates, which is the only thing an exit
+    *proposal* decides differently from the other two.
+    """
+    return friction_module.reading_for_exit(
+        entry,
+        (result.data or {}).get("price"),
+        # The same clock the rest of the run reads, so a replay of an old
+        # decision reproduces the figure it was decided on.
+        as_of or date.today(),
+        config=getattr(service, "config", {}),
+        basis=friction_module.BASIS_ESTIMATE,
+        label=ticker,
+    )
 
 
 def _lane_context(
-    service, watchlist, ticker: str, result, as_of, lane_gate_result: dict | None
+    service,
+    watchlist,
+    ticker: str,
+    result,
+    as_of,
+    lane_gate_result: dict | None,
+    friction_estimate: dict | None = None,
 ) -> dict | None:
     """The lane view for this company, as it stands after the run's own transition.
 
     Assembled by `lifecycle/lane_view.py` — the same function the report calls —
     so a lane, a catalyst window and a modeled friction figure read identically
-    wherever they are shown. The lane-gate result is handed in rather than
-    recomputed: it was evaluated above against these exact readings, and a
-    second evaluation could disagree with the first if the registry changed
-    underneath the run.
+    wherever they are shown. **Two already-paid-for readings are handed in
+    rather than recomputed.** The lane-gate result was evaluated above against
+    these exact readings, and a second evaluation could disagree with the first
+    if the registry changed underneath the run. The friction estimate, when this
+    run proposed an exit, was modeled above from the same entry, the same price
+    series and the same `as_of` — so recomputing it would rebuild a frame over
+    the whole daily series to reach the number already attached to the proposal,
+    and any disagreement between the two would be an owner reading one net
+    return in the terminal and another in the report.
 
     Never raises. A view is a nice-to-have beside a proposal that may be moving
     money, and an advance run that failed because a display field could not be
@@ -313,6 +319,7 @@ def _lane_context(
             as_of,
             lane_gate_result,
             config=getattr(service, "config", {}),
+            friction_estimate=friction_estimate,
         )
     except Exception as e:
         logger.warning(f"{ticker}: the lane view could not be assembled: {e}")
@@ -461,6 +468,12 @@ def advance_ticker(
         ),
     )
 
+    # Modeled at most once per ticker, and only if something asks. The lane view
+    # below reads whatever this holds rather than modeling its own, so the
+    # proposal's evidence line and the report's lane section are the same
+    # reading and not two passes over the same price series.
+    friction_estimate = None
+
     proposal = candidates[0] if candidates else None
     if proposal:
         proposal["superseded"] = [c["trigger_id"] for c in candidates[1:]]
@@ -505,7 +518,9 @@ def advance_ticker(
         # line claiming a friction estimate that does not exist is worse than
         # a line that never mentioned one.
         if proposal["to"] == lifecycle_states.EXIT_REVIEW:
-            reading = _friction_for_exit(service, ticker, entry, result, as_of)
+            reading = friction_estimate = _friction_for_exit(
+                service, ticker, entry, result, as_of
+            )
             if reading is not None:
                 proposal["friction"] = reading
                 if reading.get("available"):
@@ -535,10 +550,12 @@ def advance_ticker(
         # report cannot describe one position two ways. Built **after** the
         # transition above and from a re-read entry, so it describes where the
         # company now stands rather than where it stood when the run began, and
-        # handed the lane-gate result already computed above rather than paying
-        # for a second evaluation. A failure costs the view, never the advance.
+        # handed both the lane-gate result and the friction estimate already
+        # computed above rather than paying for a second of either. A failure
+        # costs the view, never the advance.
         "lane_context": _lane_context(
-            service, watchlist, ticker, result, as_of, lane_gate_result
+            service, watchlist, ticker, result, as_of, lane_gate_result,
+            friction_estimate,
         ),
         # The run's only path from a per-ticker analysis to the concentration
         # reading: `result` is local to this function and never reaches the

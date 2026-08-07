@@ -110,40 +110,35 @@ def _friction_for_confirmed_exit(service, ticker: str, entry: dict, exit_date) -
     aborting a sale that already happened — is the failure this design refuses.
     An empty frame from a source that returned nothing is one of those gaps:
     `friction.model_exit` answers it with its own reason rather than a figure.
-    """
-    probe = lifecycle_states.last_transition_into(entry, lifecycle_states.PROBE)
-    if probe is None:
-        return {
-            **friction_module.unavailable(
-                "no probe transition in this company's history — there is no "
-                "recorded entry date to measure a holding period from"
-            ),
-            "basis": friction_module.BASIS_RECORDED,
-        }
 
-    try:
+    The probe lookup, the pricing and the failure conversion are
+    `friction.reading_for_exit`'s, shared with the two estimate paths. What this
+    path states for itself is what makes it the *recorded* one: a missing
+    `probe` is unavailable-with-reason rather than silence, because a sale going
+    into the books needs the record to say why there is no figure beside it;
+    and the price series is supplied as a **callable**, so the fetch happens
+    inside the same try that catches a pricing failure, and does not happen at
+    all when there is no `probe` to price from.
+    """
+    def fetch_price():
         suite = service.suite
-        price = suite.price_volume.fetch(
+        return suite.price_volume.fetch(
             ticker, years=suite.price_years, output_dir=suite.raw_data_dir
         )
-        return friction_module.model_exit(
-            price,
-            probe.get("at"),
-            exit_date,
-            config=getattr(service, "config", {}),
-            basis=friction_module.BASIS_RECORDED,
-        )
-    except Exception as e:
-        # The sale is being recorded regardless, so a broken fetch costs the
-        # reading and says so. Logged at warning because an exit with no
-        # figure beside it is worth noticing, even though it is not an error.
-        logger.warning(f"{ticker}: the exit could not be priced: {e}")
-        return {
-            **friction_module.unavailable(
-                f"the position could not be priced ({e})"
-            ),
-            "basis": friction_module.BASIS_RECORDED,
-        }
+
+    return friction_module.reading_for_exit(
+        entry,
+        fetch_price,
+        exit_date,
+        config=getattr(service, "config", {}),
+        basis=friction_module.BASIS_RECORDED,
+        no_probe_reason=(
+            "no probe transition in this company's history — there is no "
+            "recorded entry date to measure a holding period from"
+        ),
+        failure_reason="the position could not be priced ({error})",
+        label=ticker,
+    )
 
 
 def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:

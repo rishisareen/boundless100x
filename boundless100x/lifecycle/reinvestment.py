@@ -31,16 +31,21 @@ deployment late does not inflate the window it closes. Collapsing them into one
 field would make lateness in the *recording* look like lateness in the
 *deployment*.
 
-**Every commit is copy-on-write, through `atomic_write_json`.** Imported from
-`watchlist.py` rather than written a second time — the durability argument is
+**Every commit is copy-on-write, and the mechanics come from `watchlist.py`.**
+`ReinvestmentQueue` extends `watchlist._JsonStore` rather than restating the
+staging, the atomic write and the revision counter — the durability argument is
 per-file and identical wherever it applies, and two copies would be two things
-to keep in step. A mutator stages onto a deep copy, writes it, and adopts it
-only once the write returns. A crash mid-write leaves the previous store rather
-than truncated JSON; a failed write leaves `self.data` describing exactly what
-is on disk. The second is the more dangerous: a phantom event surviving in
-memory would let a same-process retry skip an append it believes already
-landed, and the exit would end up recorded in one store only — the precise
-disagreement the protocol exists to prevent.
+to keep in step. The counter makes that concrete: `snapshot_state` compares
+**both** stores' revisions, so a clamping rule that disagreed between the files
+would render a routing proposal current against one store and stale against the
+other. A mutator stages onto a deep copy, writes it, and adopts it only once the
+write returns. A crash mid-write leaves the previous store rather than truncated
+JSON; a failed write leaves `self.data` describing exactly what is on disk. The
+second is the more dangerous: a phantom event surviving in memory would let a
+same-process retry skip an append it believes already landed, and the exit would
+end up recorded in one store only — the precise disagreement the protocol exists
+to prevent. Only the mechanics are shared: the file, the schema and the
+validation are this module's own.
 
 The store also holds a **replaceable `latest_proposal` slot** beside the log:
 the whole-run routing view, which is a snapshot rather than a record and is
@@ -112,7 +117,7 @@ from pathlib import Path
 
 from boundless100x.lifecycle import portfolio
 from boundless100x.lifecycle import states as lifecycle_states
-from boundless100x.watchlist import APPLIED_OWNER, atomic_write_json
+from boundless100x.watchlist import APPLIED_OWNER, _JsonStore, _revision_of
 
 logger = logging.getLogger(__name__)
 
@@ -176,26 +181,6 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
-def _as_date(value) -> date | None:
-    """A calendar date from whatever the stores happen to hold, or None.
-
-    Exit dates are written as `str(as_of)` and transition timestamps as full
-    ISO datetimes, so an idle reading spans two differently shaped strings. Day
-    granularity is the honest resolution for both: the exit date is the day the
-    owner says they sold, not a fill time.
-    """
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value[:10])
-        except ValueError:
-            return None
-    return None
-
-
 def _days_between(start, end) -> int | None:
     """Whole days from one stored timestamp to another, or None if unreadable.
 
@@ -203,8 +188,16 @@ def _days_between(start, end) -> int | None:
     way: a zero-day idle reading means the proceeds were redeployed the same
     day, and an unreadable one means nobody can say. In a table those look
     identical.
+
+    Both ends go through `states.as_date`, which is the lifecycle layer's one
+    timestamp parser. Exit dates are written as `str(as_of)` and transition
+    timestamps as full ISO datetimes, so an idle reading spans two differently
+    shaped strings — the same two shapes a time stop reads, which is exactly why
+    one parser rather than a local copy: this store and the evaluator must not
+    disagree about whether a stored `at` is readable.
     """
-    first, second = _as_date(start), _as_date(end)
+    first = lifecycle_states.as_date(start)
+    second = lifecycle_states.as_date(end)
     if first is None or second is None:
         return None
     return (second - first).days
@@ -247,7 +240,7 @@ def eligible_deployments(entry: dict | None, exit_at) -> list[dict]:
     clocks: the exit carries the owner's stated sale date, the transition a
     wall-clock stamp.
     """
-    sold_on = _as_date(exit_at)
+    sold_on = lifecycle_states.as_date(exit_at)
     matches = []
     for record in (entry or {}).get("state_history") or []:
         if not isinstance(record, dict):
@@ -256,7 +249,7 @@ def eligible_deployments(entry: dict | None, exit_at) -> list[dict]:
             continue
         if record.get("applied_by") != APPLIED_OWNER:
             continue
-        moved_on = _as_date(record.get("at"))
+        moved_on = lifecycle_states.as_date(record.get("at"))
         if sold_on is not None and (moved_on is None or moved_on < sold_on):
             continue
         matches.append(record)
@@ -483,27 +476,18 @@ def _candidate_payload(outcome: dict, entry: dict, fired: dict | None) -> dict:
     }
 
 
-def _revision_of(data: dict) -> int:
-    """The store's commit counter, defaulting to zero for a store without one.
+class ReinvestmentQueue(_JsonStore):
+    """Reads and writes the exit / routing event log.
 
-    Absent on a file written before the counter existed, and hand-editable into
-    nonsense like anything else on disk — either way it restarts from zero
-    rather than raising. A missing revision is a staleness signal nobody can
-    read yet, not a corrupt queue. Mirrors `watchlist._revision_of` for the
-    same reason the write helper is shared: one argument, one behaviour.
+    A sibling store, not a second watchlist: its own file, its own schema, its
+    own validation, its own question. What it inherits is the commit mechanics
+    and nothing else — copy-on-write staging, the atomic write, and the revision
+    counter whose clamping rule `snapshot_state` compares *across* the two
+    stores and which therefore cannot be allowed to mean two things.
     """
-    revision = data.get("revision", 0)
-    if not isinstance(revision, int) or revision < 0:
-        return 0
-    return revision
-
-
-class ReinvestmentQueue:
-    """Reads and writes the exit / routing event log."""
 
     def __init__(self, path: str | None = None):
-        self.path = Path(path) if path else DEFAULT_QUEUE_PATH
-        self.data = self._load()
+        super().__init__(path, DEFAULT_QUEUE_PATH)
 
     # ── persistence ──
 
@@ -544,22 +528,6 @@ class ReinvestmentQueue:
                 f"queue has a single schema and no migration path — fix or remove "
                 f"the event rather than letting it be repaired silently."
             )
-
-    def _stage(self) -> dict:
-        """A deep copy of the store, safe to mutate before anything is committed."""
-        return copy.deepcopy(self.data)
-
-    def _commit(self, staged: dict) -> None:
-        """Persist a staged store, then adopt it — never the other way round.
-
-        The revision bumps here and nowhere else, so it counts durable commits
-        rather than attempts. A reader comparing revisions to decide whether
-        its view is current would otherwise be told a change happened that the
-        store never took.
-        """
-        staged["revision"] = _revision_of(self.data) + 1
-        atomic_write_json(self.path, staged)
-        self.data = staged
 
     # ── events ──
 
@@ -743,7 +711,7 @@ class ReinvestmentQueue:
         in its own `note`, because whoever meets the line is the person who has
         to run it.
         """
-        as_of = _as_date(as_of) or date.today()
+        as_of = lifecycle_states.as_date(as_of) or date.today()
         views = []
         for event in self.exits():
             ticker = event.get("ticker")
@@ -818,7 +786,7 @@ class ReinvestmentQueue:
         transitions: a company the loop just moved from `qualify` to `watch`
         should be ranked where it now is, not where it started the run.
         """
-        as_of_date = _as_date(as_of) or date.today()
+        as_of_date = lifecycle_states.as_date(as_of) or date.today()
         views = self.exit_views(watchlist, as_of_date)
         unrouted = [view for view in views if not view["closed"]]
         idle = [view for view in unrouted if view["complete"]]

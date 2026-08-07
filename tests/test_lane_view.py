@@ -285,6 +285,83 @@ class TestFriction:
         assert "gross_return_pct" not in reading
 
 
+class TestASuppliedEstimateIsUsedRatherThanRecomputed:
+    """The same seam `lane_gate_result` already is, and for the same reason.
+
+    On an exit-proposing ticker `advance_ticker` models this exact reading from
+    this exact entry, price series and `as_of` before it builds the view — so
+    modeling it again means rebuilding a frame over the whole daily series to
+    reach an answer already in hand, and a *disagreement* between the two means
+    the terminal's exit block and the report's lane section printing different
+    net returns for one position.
+    """
+
+    @pytest.fixture
+    def held(self, wm):
+        class Held:
+            as_of = date.today() + timedelta(days=HELD_DAYS)
+            price = doubled_price(date.today())
+
+        return Held()
+
+    # Visibly not what the live series would produce, so adoption and
+    # recomputation cannot both pass.
+    ALREADY = {
+        "available": True, "basis": friction_module.BASIS_ESTIMATE,
+        "gross_return_pct": 3.5, "net_return_pct": 2.1, "holding_days": 40,
+    }
+
+    def test_a_positioned_entry_adopts_the_supplied_reading(self, wm, held):
+        entry = tracked(wm, states=("qualify", "watch", "probe"))
+
+        context = build_lane_context(
+            entry, scored(held.price), held.as_of, friction_estimate=self.ALREADY
+        )
+
+        assert context["friction"] is self.ALREADY
+
+    def test_a_pre_position_entry_still_reports_no_reading(self, wm, held):
+        """The state dispatch runs first, and stays this module's question.
+
+        A kill-switch may propose an exit review from a state where no capital
+        is committed, so `advance` can hold an estimate for a company sitting at
+        `watch`. Whether there is a position to report is decided here, not by
+        whoever handed the reading in.
+        """
+        entry = tracked(wm, states=("qualify", "watch"))
+
+        context = build_lane_context(
+            entry, scored(held.price), held.as_of, friction_estimate=self.ALREADY
+        )
+
+        assert context["friction"] is None
+
+    def test_an_exited_entry_still_reports_what_was_recorded(self, wm, held):
+        """An estimate must never displace the payload of a sale that happened."""
+        recorded = {
+            "available": True, "basis": friction_module.BASIS_RECORDED,
+            "gross_return_pct": 12.5, "net_return_pct": 9.0,
+        }
+        tracked(wm, states=("qualify", "watch", "probe", "exit_review"))
+        wm.transition("ASTRAL", "exited", "owner_confirmed",
+                      evidence="sold", details=recorded)
+
+        context = build_lane_context(
+            wm.get("ASTRAL"), scored(held.price), held.as_of,
+            friction_estimate=self.ALREADY,
+        )
+
+        assert context["friction"]["gross_return_pct"] == 12.5
+
+    def test_supplying_nothing_computes_the_reading_as_before(self, wm, held):
+        """The CLI calls this fresh and has no estimate to hand in."""
+        entry = tracked(wm, states=("qualify", "watch", "probe"))
+
+        context = build_lane_context(entry, scored(held.price), held.as_of)
+
+        assert context["friction"]["gross_return_pct"] == pytest.approx(50.0)
+
+
 class TestTheCliGate:
     """`analyze` renders a lane section only for a company it is tracking.
 
