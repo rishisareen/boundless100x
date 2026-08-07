@@ -323,6 +323,28 @@ thresholds, and scoring the owner actually runs.
 
   Both reconstructions are marked as reconstructed wherever they surface, so
   no consumer can mistake one for a fetched figure.
+
+  **The share count has a second, independent derivation, and that closes the
+  hole in the guard.** `pat ÷ eps` off the annual frame gives shares
+  outstanding without touching face value or the balance sheet. Measured
+  across the corpus it is the *worse* estimator on its own — **16 of 22
+  within 2% against the equity-capital route's 20 of 22**, with RAIN at
+  +221% and IDEA's implied count moving 152% across five years, because EPS
+  is rounded, and basic-versus-diluted and consolidated-versus-standalone do
+  not always pair. So it does not replace the formula above.
+
+  What it does is fix a real weakness in the reconciliation guard as first
+  specified: **the stored `Market Cap` exists only at the corpus's latest
+  date, which is the one replay date the simulator never scores on.**
+  Everywhere the reconstruction is actually *used* there was nothing to check
+  it against. Two independent derivations of the same quantity are checkable
+  against each other at **every** annual row, so the guard runs at every
+  replay date rather than once at the end: agreement is evidence, and a
+  divergence beyond tolerance excludes the ticker at that date with both
+  figures named. The tickers where the two disagree today — RAIN, EDELWEISS,
+  IDEA — are exactly the ones a silent reconstruction would have scored
+  wrongest, and RAIN is already the outlier in the multiple check, which is
+  the corroboration worth having.
 - **KTD1 — The replay calls the production evaluators; nothing is
   reimplemented.** The backtest's KTD3 ("reuse the production engine on
   truncated inputs") applies one level up: a simulator with its own copy of
@@ -641,8 +663,17 @@ same skeleton:
 
 ### Phase A: Point-in-Time Mechanics
 
-### U0. Split `advance_ticker` into decision and effects
+### U0. Split `advance_ticker` into decision and effects — **LANDED (`2911b79`)**
 
+- **Status:** Shipped ahead of the rest of the phase. `decide()` is
+  `advance.py:376`, `advance_ticker` keeps its signature and performs the
+  writes, and the purity assertion below exists as
+  `TestTheDecisionCoreIsPure::test_it_decides_without_touching_a_store`.
+  Suite green at 1741 with no edit to any pre-existing test, which is the
+  behaviour-preservation evidence. **Still owed:** the verification line —
+  a cached ticker advanced before and after the split producing an identical
+  outcome dict. The unit description below is kept as the record of what was
+  built, not as work to do.
 - **Goal:** One statement of "given these readings, what should happen to
   this company next," callable by production and by the replay. Numbered 0
   for KTD0's reason — it precedes the simulator package and renumbering
@@ -719,17 +750,19 @@ same skeleton:
        `_current_multiple` figure instead, and the key is named so nobody can
        mistake the two. Non-positive EPS refuses, as `_current_multiple`
        already does.
-     - **The reconciliation guard.** At the corpus's *latest* date both the
-       rebuilt market cap and the stored one exist, and that is the only
-       place the reconstruction is checkable against truth. A per-ticker
-       check runs there and **fails the ticker into the exclusions with its
-       error** when the two disagree by more than a configured tolerance —
-       measured baseline is 20 of 22 within 2% (worst: EDELWEISS −2.4%,
-       KFINTECH +2.1%), so a 5% tolerance passes the corpus today while still
-       catching a formula that has gone wrong for a filer with partly-paid
-       shares, a face-value change, or an unusual capital structure. This is
-       what makes the owner's choice of KTD0(a) safe: without it the
-       reconstruction fails silently, which was the whole objection to it.
+     - **The reconciliation guard, at two levels.** *Against stored truth*,
+       at the corpus's latest date, where the fetched `Market Cap` exists —
+       measured baseline 20 of 22 within 2% (worst: EDELWEISS −2.4%,
+       KFINTECH +2.1%), so a 5% tolerance passes today while still catching a
+       formula gone wrong on partly-paid shares, a face-value change or an
+       unusual capital structure. *Against the independent `pat ÷ eps` share
+       count*, *at every replay date* — because the stored figure exists only
+       at the latest date, which is the one date the simulator never scores
+       on, so a latest-date-only guard checks the reconstruction exactly
+       where it is not used. A divergence beyond tolerance **fails the ticker
+       into the exclusions at that date with both figures named**. Together
+       these are what make KTD0(a) safe: without them the reconstruction
+       fails silently, which was the whole objection to it.
 
      Whichever way a field resolves, the *reason* it is absent travels with
      the truncated view rather than being re-derived by each consumer — a
@@ -862,10 +895,12 @@ same skeleton:
 - **Test scenarios:**
   - A proposal is never confirmed before its lag elapses; the scheduled
     date is recorded.
-  - A cap-breaching entry under the advisory posture is *not* skipped —
-    the breach is recorded with its cap and the buy proceeds, matching
-    production's advisory semantics (decision 5); the same entry under
-    the config-switched enforced posture is skipped and the cash drags.
+  - A cap-breaching entry under the **enforced** baseline posture is
+    withheld and the cash drags, matching what `advance --apply` does
+    (decision 5, as resettled). Under the config-switched `advisory` and
+    `override` postures the buy proceeds and the breach is recorded with
+    its cap — all three postures production can be run in, all three
+    reachable, and the baseline is the one production actually runs.
   - A valuation-saturation trigger resolves as review → full exit after
     the exit lag, and the event lands in the saturation count.
   - The catalyst policy fabricates a catalyst only for a candidate that
@@ -957,20 +992,48 @@ same skeleton:
   2. Benchmark (KTD9) computed alongside from the same pool, bars, and
      slippage; comparison table strategy-vs-benchmark, aggregate and per
      lane.
-  3. Exclusions and limitations blocks, following
+  3. **Gate coverage, reported per gate per window — not per run.** A
+     run-level "which gates were consulted" hides the shape of the problem,
+     because the gates do not go dark together. Even with KTD0's rebuild in
+     place, two of the fast lane's six are depth-bound rather than
+     metadata-bound: `growth_intact` needs `quarterly` (from Mar/Jun 2023)
+     and `institutional_accumulation` needs three adjacent shareholding
+     quarters (from Sep 2023). Across a replay window starting ~2020-09 that
+     leaves the fast lane **effectively measured on four of six gates for
+     roughly the first two-thirds of it — and one of those four is the
+     fabricated catalyst (KTD6), so three are genuinely evaluated.**
+
+     §9.2's battery is conjunctive and *is* the claim under test, so a
+     fast-lane entry taken on three real gates is not the entry the shipped
+     lane would have taken, and a reader must be able to see which. Every
+     `qualifies` verdict therefore carries the gates that actually decided
+     it, and the outputs carry a per-gate-per-replay-date coverage matrix.
+     This is named in the limitations block **from day one**, not derived
+     later from the indeterminate counts.
+  4. Exclusions and limitations blocks, following
      `backtest._describe_exclusions`/`_limitations`: never-eligible
      tickers, checkpoint-driven transitions excluded (counted), gate-
-     indeterminate readings deep in history (counted), stale-mark events
-     (counted); limitations restate survivorship/upper-bound (§14.6),
-     quarterly depth (§10 rev), every simulated-owner policy by name, and
-     the statistical-humility clause.
-  4. The full result dict is the artifact; a thin console renderer for
+     indeterminate readings (counted, and now attributable per gate per
+     window by 3), stale-mark events (counted), reconciliation failures
+     (KTD0's guard, counted with both share counts); limitations restate
+     survivorship/upper-bound (§14.6), quarterly depth (§10 rev), the
+     fast-lane gate-coverage caveat above, the rebuilt-multiple basis
+     divergence (KTD0), every simulated-owner policy by name, and the
+     statistical-humility clause.
+  5. The full result dict is the artifact; a thin console renderer for
      the CLI reads it.
 - **Test scenarios:**
   - A hand-computed micro run (fixture ledger) yields exactly the
     expected CAGR/drawdown/turnover.
   - Every exclusion kind is counted and rendered; the limitations block
     names each policy.
+  - **A fast-lane entry taken while two gates read indeterminate records
+    which four decided it**, and the coverage matrix shows those two dark
+    at that date — the assertion that a thin battery cannot be mistaken
+    for a full one.
+  - A window in which no fast-lane gate is fully computable reports the
+    lane as unmeasured with its reason, never as a lane with no
+    qualifying candidates — the same distinction `lane_gates.py` draws.
   - The artifact round-trips through JSON unchanged (the Phase 5 consumer
     reads it programmatically).
 
@@ -1041,7 +1104,12 @@ same skeleton:
 
 ## Definition of Done
 
-- All eight units merged with tests green (U0 plus U1–U7).
+- All eight units merged with tests green (U0 plus U1–U7). **U0 landed
+  early, in `2911b79`**; only its cached-ticker verification is outstanding.
+- **The fast lane's measured gate count is stated, not implied.** The
+  coverage matrix (U6.3) is in the artifact and the caveat is in the
+  limitations block, so no §9.2 result is read as resting on six gates when
+  three of them were evaluated.
 - **The decision core has exactly one statement.** No trigger precedence,
   kill-switch derivation, pace-evidence, friction-on-exit, concentration-gate
   or `moves_money` rule is written twice — the replay reaches them by calling
