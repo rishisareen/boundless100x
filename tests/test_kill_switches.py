@@ -4,6 +4,14 @@ A kill-switch that never fires is indistinguishable from a thesis that never
 broke, so these tests check both directions for every switch: it fires on a
 real breach, stays silent on a healthy company, and reads indeterminate when
 its inputs are missing.
+
+Phase 3 adds a second axis to that question — *which lane* a trigger applies
+to — and the split is asserted here in both directions because leaking either
+way is a distinct bug. The four core entry rules become core-only, so a
+re-rating candidate is never judged by the 100x gate set its own lane exists to
+replace; the six kill-switches and `fundamentals_deteriorated` stay universal,
+because §6.2 gives the fast lane its own way *in* and no way out of a
+fundamentals break.
 """
 
 import pytest
@@ -15,6 +23,7 @@ from boundless100x.lifecycle.evaluator import (
     load_triggers,
     validate_triggers,
 )
+from boundless100x.watchlist import LANES
 
 KILL_SWITCHES = (
     "capital_efficiency_break",
@@ -24,6 +33,45 @@ KILL_SWITCHES = (
     "governance_event",
     "checkpoints_failed",
 )
+
+# Universal by design, not by omission: no `lane` key, so both lanes are held
+# to every one of them. `fundamentals_deteriorated` joins the six because it is
+# the same rule pointed at a candidate rather than a position.
+UNIVERSAL_TRIGGERS = KILL_SWITCHES + ("fundamentals_deteriorated",)
+
+# The four the core lane keeps to itself. Each gates on the **100x** verdict or
+# the core valuation rule, and a lane with its own declared gate set must not
+# also be gated by another lane's.
+CORE_ONLY_TRIGGERS = (
+    "qualification_passed",
+    "qualification_failed",
+    "awaiting_entry_price",
+    "valuation_buy_zone",
+)
+
+# Everything that existed before lane filtering shipped. The core lane must see
+# exactly this set and nothing else — losing one would break the lane that has
+# live entries, gaining one would mean a fast-lane rule leaked across.
+PRE_PHASE3_TRIGGERS = UNIVERSAL_TRIGGERS + CORE_ONLY_TRIGGERS
+
+FAST_LANE_TRIGGERS = (
+    "fast_lane_qualification_passed",
+    "fast_lane_qualification_failed",
+    "fast_lane_awaiting_entry",
+    "fast_lane_buy_zone",
+    "fast_lane_target_reached",
+    "fast_lane_time_stop",
+    "fast_lane_catalyst_spent",
+)
+
+STATES_WITH_TRIGGERS = ("screen", "qualify", "watch", "probe", "scale")
+
+
+def origins(trigger_id: str, triggers: dict | None = None) -> list[str]:
+    """The origin states a shipped trigger declares."""
+    spec = (triggers if triggers is not None else load_triggers())[trigger_id]
+    declared = spec.get("from") or ["any"]
+    return [declared] if isinstance(declared, str) else list(declared)
 
 
 def metric(value=None, *, flags=None, series=None, error=None) -> MetricResult:
@@ -221,3 +269,164 @@ class TestShippedRegistry:
         triggers = load_triggers()
         for switch in KILL_SWITCHES:
             assert set(triggers[switch]["from"]) == {"probe", "scale"}
+
+
+class TestUniversalTriggersStayUniversal:
+    """Half one of the split: no fundamentals rule may be lane-scoped.
+
+    §6.2 is explicit that the fast lane never trades through a fundamentals
+    break, so these seven carry no `lane` key at all. Tested separately from
+    the core-only half because a leak in this direction — a kill-switch that
+    quietly stopped applying to one lane — is the failure mode this whole file
+    exists to catch, and it looks exactly like a thesis that never broke.
+    """
+
+    def test_no_universal_trigger_declares_a_lane(self):
+        triggers = load_triggers()
+        for trigger_id in UNIVERSAL_TRIGGERS:
+            assert "lane" not in triggers[trigger_id], (
+                f"{trigger_id} became lane-scoped — §6.2 requires the fast lane "
+                f"to have no way out of a fundamentals break"
+            )
+
+    def test_every_universal_trigger_is_evaluated_in_both_lanes(self, evaluator):
+        triggers = load_triggers()
+        for trigger_id in UNIVERSAL_TRIGGERS:
+            for origin in origins(trigger_id, triggers):
+                for lane in LANES:
+                    assert trigger_id in evaluator.applicable(origin, lane=lane)
+
+    def test_a_fundamentals_break_still_fires_on_a_fast_lane_position(self, evaluator):
+        """The rule stated as behaviour, not just as registry shape."""
+        metrics = healthy()
+        metrics["roiic"] = metric(6.0)
+        result = evaluator.evaluate("scale", metrics=metrics, lane="rerating")
+
+        assert "incremental_return_break" in result["fired"]
+        assert result["triggers"]["incremental_return_break"]["to"] == "exit_review"
+
+    def test_a_fast_lane_candidate_is_still_dropped_on_deterioration(self, evaluator):
+        metrics = healthy()
+        metrics["promoter_pledge"] = metric(20.0, flags=["promoter_pledge_red_flag"])
+        result = evaluator.evaluate("watch", metrics=metrics, lane="rerating")
+
+        assert "fundamentals_deteriorated" in result["fired"]
+
+
+class TestCoreEntryRulesAreCoreOnly:
+    """Half two: the four rules that must not reach the re-rating lane.
+
+    `qualification_failed` drops on the **100x** verdict, so left universal it
+    would drop a fast-lane candidate before its own gates were ever consulted;
+    `awaiting_entry_price` gates qualify→watch on the same verdict, stranding
+    it; `valuation_buy_zone` would open a position bypassing all six lane
+    gates. Each is checked at every origin state it declares.
+    """
+
+    def test_they_are_absent_from_the_fast_lane(self, evaluator):
+        triggers = load_triggers()
+        for trigger_id in CORE_ONLY_TRIGGERS:
+            for origin in origins(trigger_id, triggers):
+                assert trigger_id not in evaluator.applicable(origin, lane="rerating")
+
+    def test_they_still_apply_to_the_core_lane(self, evaluator):
+        triggers = load_triggers()
+        for trigger_id in CORE_ONLY_TRIGGERS:
+            for origin in origins(trigger_id, triggers):
+                assert trigger_id in evaluator.applicable(origin, lane="core")
+
+    def test_each_declares_the_core_lane_explicitly(self):
+        triggers = load_triggers()
+        for trigger_id in CORE_ONLY_TRIGGERS:
+            assert triggers[trigger_id]["lane"] == ["core"]
+
+
+class TestFastLanePathIsFastLaneOnly:
+    """The mirror image: the new path may not leak onto a core compounder."""
+
+    def test_every_fast_lane_trigger_is_declared(self):
+        triggers = load_triggers()
+        assert set(FAST_LANE_TRIGGERS) <= set(triggers)
+
+    def test_each_declares_the_rerating_lane(self):
+        triggers = load_triggers()
+        for trigger_id in FAST_LANE_TRIGGERS:
+            assert triggers[trigger_id]["lane"] == ["rerating"]
+
+    def test_none_are_applicable_to_a_core_entry(self, evaluator):
+        triggers = load_triggers()
+        for trigger_id in FAST_LANE_TRIGGERS:
+            for origin in origins(trigger_id, triggers):
+                assert trigger_id not in evaluator.applicable(origin, lane="core")
+
+    def test_the_lane_has_a_complete_pre_position_path(self, evaluator):
+        """screen → qualify → watch → probe, with a drop rule of its own.
+
+        A lane missing any one of these is worse than a lane with none: a
+        candidate would advance to a state nothing can move it out of, and sit
+        there looking like a considered decision.
+        """
+        for origin in ("screen", "qualify", "watch"):
+            applicable = evaluator.applicable(origin, lane="rerating")
+            assert any(t.startswith("fast_lane_") for t in applicable), origin
+
+    def test_no_fast_lane_trigger_sells_on_its_own(self):
+        """Same rule the core switches follow: exit_review, never exited."""
+        triggers = load_triggers()
+        for trigger_id in ("fast_lane_target_reached", "fast_lane_time_stop",
+                           "fast_lane_catalyst_spent"):
+            assert triggers[trigger_id]["to"] == "exit_review"
+            assert set(triggers[trigger_id]["from"]) == {"probe", "scale"}
+
+
+class TestCoreLaneUnchanged:
+    """The stop condition, asserted: the core lane loses nothing.
+
+    Lane filtering is the kind of change that can only be proved by what it
+    does *not* do. Two properties together are the proof: the core lane sees
+    exactly the pre-Phase-3 trigger set at every state, and every one of those
+    triggers reads the same with a core lane in hand as with no lane context at
+    all.
+    """
+
+    @pytest.mark.parametrize("state", STATES_WITH_TRIGGERS)
+    def test_the_core_lane_sees_exactly_the_pre_phase3_triggers(self, evaluator, state):
+        triggers = load_triggers()
+        expected = {
+            trigger_id
+            for trigger_id in PRE_PHASE3_TRIGGERS
+            if state in origins(trigger_id, triggers)
+        }
+        assert set(evaluator.applicable(state, lane="core")) == expected
+
+    @pytest.mark.parametrize("state", STATES_WITH_TRIGGERS)
+    @pytest.mark.parametrize("breach", [None, "roiic", "roce", "pledge", "pe"])
+    def test_every_pre_existing_trigger_reads_identically_for_a_core_entry(
+        self, evaluator, state, breach
+    ):
+        metrics = healthy()
+        if breach == "roiic":
+            metrics["roiic"] = metric(3.0)
+        elif breach == "roce":
+            metrics["roce_5yr_avg"] = metric(19.0, series=[25.0, 24.0, 12.0, 11.0])
+        elif breach == "pledge":
+            metrics["promoter_pledge"] = metric(18.0, flags=["promoter_pledge_red_flag"])
+        elif breach == "pe":
+            metrics["pe_vs_historical"] = metric(98.0)
+            metrics["reverse_dcf_growth"] = metric(45.0, flags=["reverse_dcf_overpriced"])
+
+        context = {
+            "metrics": metrics,
+            "scores": {"composite": 6.4, "elements": {}},
+            "eligibility": {"verdict": "eligible"},
+            "checkpoint_results": {"met": 1, "missed": 2, "due": 3, "total": 3},
+        }
+        unscoped = evaluator.evaluate(state, **context)["triggers"]
+        core = evaluator.evaluate(state, lane="core", **context)["triggers"]
+
+        for trigger_id in PRE_PHASE3_TRIGGERS:
+            if trigger_id not in unscoped:
+                continue
+            assert trigger_id in core, f"{trigger_id} vanished from the core lane"
+            assert core[trigger_id]["fired"] == unscoped[trigger_id]["fired"]
+            assert core[trigger_id]["reason"] == unscoped[trigger_id]["reason"]

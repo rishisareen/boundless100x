@@ -15,12 +15,44 @@
 #                  a MetricResult flag. `sources` names the metrics expected to
 #                  emit it — absence proves nothing if they did not run
 #   checkpoint:    a summary count over recorded checkpoint outcomes
+#   lane_verdict:  the fast lane's own gate verdict, from lane_gates.yaml
+#   catalyst_status:
+#                  the owner-recorded catalyst on the watchlist entry
+#   since_state_entry:
+#                  days since the most recent transition *into* a named state,
+#                  read from the append-only state history
 #
 # A condition whose inputs are missing is indeterminate, never a silent pass.
+#
+# `lane` is a second axis of applicability alongside `from`, and it carries the
+# same idiom: an absent key means "every lane", exactly as `from: [any]` means
+# "every origin state". The split between what is scoped and what is universal
+# is the load-bearing decision in this file — see the two section headers below.
 
 triggers:
 
-  # ── Pre-position transitions: no capital moves, so these auto-apply ──
+  # ── Core-lane pre-position transitions: no capital moves, so these
+  #    auto-apply ──
+  #
+  # All four are `lane: [core]`, and the scoping is deliberate rather than
+  # tidy-minded. v05 §9.2 gives the re-rating lane its own gate set, and a lane
+  # gated *additionally* by the core lane's rules does not have its own gate
+  # set. Concretely, left universal:
+  #   qualification_failed  drops on `verdict: not_eligible`, so a fast-lane
+  #                         candidate failing the **100x** gates would be
+  #                         dropped before its lane gates were ever consulted —
+  #                         and the fast lane explicitly does not require 100x
+  #                         candidacy (§9.1: it monetizes change, not duration)
+  #   awaiting_entry_price  gates qualify→watch on the same verdict, stranding
+  #                         a candidate in the state before the one its own
+  #                         buy-zone trigger fires from
+  #   qualification_passed  requires that verdict too, so the fast lane would
+  #                         have no way to become a candidate at all
+  #   valuation_buy_zone    would let a fast-lane entry open a position on the
+  #                         core valuation rule, bypassing all six lane gates
+  #
+  # The fundamentals kill-switches below stay universal, deliberately (§6.2):
+  # the fast lane gets its own way *in*, and no way out of a fundamentals break.
 
   qualification_passed:
     label: "Qualification passed"
@@ -30,6 +62,7 @@ triggers:
       lane floor.
     from: [screen]
     to: qualify
+    lane: [core]
     mode: all
     conditions:
       - { verdict: eligible }
@@ -43,6 +76,7 @@ triggers:
       lane rather than being marked avoid.
     from: [screen, qualify]
     to: dropped
+    lane: [core]
     mode: all
     conditions:
       - { verdict: not_eligible }
@@ -55,11 +89,12 @@ triggers:
       valuation band produce mediocre returns.
     from: [qualify]
     to: watch
+    lane: [core]
     mode: all
     conditions:
       - { verdict: eligible }
 
-  # ── Position-opening transition: proposed, never auto-applied ──
+  # ── Core-lane position-opening transition: proposed, never auto-applied ──
 
   valuation_buy_zone:
     label: "Valuation entered the buy zone"
@@ -68,6 +103,7 @@ triggers:
       fully paid for. This proposes a first tranche; the owner decides.
     from: [watch]
     to: probe
+    lane: [core]
     mode: all
     conditions:
       - { metric: pe_vs_historical, comparator: lte, threshold: 60 }
@@ -75,11 +111,153 @@ triggers:
       - flag_absent: reverse_dcf_overpriced
         sources: [reverse_dcf_growth]
 
-  # ── Core-lane kill-switches (v05 §6.1) ──
+  # ── The re-rating lane's complete path (v05 §9), all `lane: [rerating]` ──
+  #
+  # A lane needs a whole path or none: a candidate that can be advanced into a
+  # state nothing can move it out of sits there looking like a considered
+  # decision. So the fast lane declares its own screen→qualify, its own drop
+  # rule, its own qualify→watch, its own entry, and its own three exits.
+  #
+  # Notice what is absent from every one of them: a `verdict` condition. The
+  # 100x gates answer "could this plausibly hundred-bag?", and §9.1's fast lane
+  # monetizes a change in how a company is priced over 6-18 months — a
+  # different question, answered by lane_gates.yaml. Asking both would make the
+  # lane's own gate set decorative.
+  #
+  # Every threshold below is a STARTING POINT awaiting Phase 4/5 simulator
+  # evidence, exactly as the core lane's have been since Phase 1.
+
+  fast_lane_qualification_passed:
+    label: "Fast-lane candidate qualified"
+    rationale: >
+      A re-rating thesis still needs a company worth owning underneath it —
+      §9.2's "never trade junk". The bar is lighter than the core lane's
+      because candidacy here is not a claim about the next decade, only that
+      the business is sound enough for a mispricing to be worth acting on.
+      Entry itself is held to the full core-equivalent bar by the lane gates.
+    from: [screen]
+    to: qualify
+    lane: [rerating]
+    mode: all
+    conditions:
+      # STARTING POINT: below the core lane's 5.5 candidate bar, deliberately.
+      - { score: composite, comparator: gte, threshold: 5.0 }
+
+  fast_lane_qualification_failed:
+    label: "Fast-lane quality floor not met"
+    rationale: >
+      Below the lane's own floor the company is not a candidate, and the lane
+      needs to say so itself now that the core drop rule no longer applies to
+      it — otherwise a failing candidate sits in `screen` indefinitely, which
+      is indistinguishable from one nobody has got round to evaluating.
+    from: [screen, qualify]
+    to: dropped
+    lane: [rerating]
+    mode: all
+    conditions:
+      # STARTING POINT: the exact complement of the floor above, so a candidate
+      # is never both qualified and dropped, and never neither.
+      - { score: composite, comparator: lt, threshold: 5.0 }
+
+  fast_lane_awaiting_entry:
+    label: "Fast-lane candidate, awaiting its gates"
+    rationale: >
+      The quality floor still holds, so the company is worth watching for an
+      entry. Nothing about the mispricing is asserted here — that is the lane
+      gates' question, asked at watch→probe.
+    from: [qualify]
+    to: watch
+    lane: [rerating]
+    mode: all
+    conditions:
+      # STARTING POINT: the same floor as candidacy — this transition tests
+      # that quality has not decayed, not that it improved.
+      - { score: composite, comparator: gte, threshold: 5.0 }
+
+  fast_lane_buy_zone:
+    label: "Fast-lane gates cleared"
+    rationale: >
+      All six of §9.2's entry gates pass at once: quality floor, valuation
+      discount, growth intact, institutional accumulation, a named catalyst,
+      and tradeable liquidity. This proposes a first tranche; the owner
+      decides, exactly as in the core lane.
+    from: [watch]
+    to: probe
+    lane: [rerating]
+    mode: all
+    conditions:
+      # Deliberately not a copy of the gate list. Naming the gates here would
+      # be a second statement of what the lane requires, drifting from
+      # lane_gates.yaml the first time either side changed — with nothing to
+      # say which one the money actually followed.
+      - { lane_verdict: qualifies }
+
+  # ── Fast-lane exits (v05 §9.3) ──
+  #
+  # Each proposes `exit_review`, never a sale — the same rule the core
+  # kill-switches follow. These are lane-scoped because they express the fast
+  # lane's *thesis* ending; the fundamentals kill-switches below express a
+  # business breaking, and those apply to both lanes.
+
+  fast_lane_target_reached:
+    label: "Re-rating target reached"
+    rationale: >
+      The multiple has closed the gap the thesis was built on: Phase 2's
+      re-rating headroom now reads stretched, so what remains is a bet on
+      further expansion rather than the discount that justified entry.
+    from: [probe, scale]
+    to: exit_review
+    lane: [rerating]
+    mode: all
+    conditions:
+      # The stretched band is `rerating_headroom`'s own, already calibrated in
+      # valuation.py — a STARTING POINT there, inherited unchanged here rather
+      # than restated at a second threshold that could drift from it.
+      - flag_present: rerating_headroom_stretched
+        sources: [rerating_headroom]
+
+  fast_lane_time_stop:
+    label: "Re-rating time stop"
+    rationale: >
+      A thesis that said "this re-rates within 6-18 months" and has not is
+      wrong about something, whether or not the price has moved. The stop
+      exists because a fast-lane position quietly becoming a long-term hold is
+      how a lane's discipline dissolves — the horizon was the thesis.
+    from: [probe, scale]
+    to: exit_review
+    lane: [rerating]
+    mode: all
+    conditions:
+      # STARTING POINT: 545 days ≈ §9.1's outer 18-month horizon. Read against
+      # the run's `as_of`, so a replay reaches the same answer on any day.
+      - { since_state_entry: probe, comparator: gte, threshold: 545 }
+
+  fast_lane_catalyst_spent:
+    label: "Catalyst spent"
+    rationale: >
+      The named event has happened. Whatever the market did with it is now
+      known, and the reason for holding — a specific pending catalyst — no
+      longer exists. Holding on past this point is a new thesis, and a new
+      thesis deserves to be stated rather than inherited.
+    from: [probe, scale]
+    to: exit_review
+    lane: [rerating]
+    mode: all
+    conditions:
+      - { catalyst_status: spent }
+
+  # ── Universal kill-switches (v05 §6.1) ──
   #
   # Each moves a held position to `exit_review` — never an automatic sell. The
   # report states which switch fired and on what evidence; the owner decides.
   # Thresholds are starting points awaiting simulator evidence.
+  #
+  # **No `lane` key, and that is the point** (§6.2). The fast lane gets its own
+  # way in and no way out of a fundamentals break: a company whose incremental
+  # returns fell below its cost of capital is not a re-rating opportunity
+  # because a shorter horizon was intended for it. Adding a lane discriminator
+  # to any switch below would silence it for one lane, which reads exactly like
+  # a thesis that never broke.
 
   capital_efficiency_break:
     label: "Capital efficiency break"
