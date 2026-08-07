@@ -153,7 +153,19 @@ survived triage.
   `cli_lifecycle.py` holding the watchlist/queue surface, registered with
   `add_typer` the way the corpus group already is.
 
-- **`report_generator.py` is now the largest module** (1809 → 2095). The new
+- **~~`report_generator.py` is now the largest module~~** — **fixed**
+  (owner-requested, after Tranche 4). It had reached 2,110. Two things
+  inside it were not report *sections*: `report_vocabulary.py` takes the
+  ~400 lines of display vocabulary that grow every time a metric or flag
+  is added, and `report_charts.py` the ~400 lines of Plotly trace
+  assembly — every builder was already `self`-free, so the extraction was
+  mechanical rather than a judgement call. 1,337 lines stay: the class
+  that decides what a report contains. Names the suite imports are
+  re-exported, and three tests pin the boundaries, since a new label is
+  easiest to type beside the section that renders it. The original
+  follows.
+
+  It was the largest module (1809 → 2095). The new
   Lane & Friction surface is cleanly banner-delimited, so it does not read as a
   regression, but the next report section has no seam to land at.
 

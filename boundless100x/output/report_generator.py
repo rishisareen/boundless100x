@@ -9,8 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup
 
@@ -21,20 +19,38 @@ from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_de
 # blank. `lifecycle/friction.py` imports nothing from this layer, so the
 # direction is one-way.
 from boundless100x.lifecycle.friction import config_from as friction_config_from
-# The lane verdict words, from the evaluator that produces them. With a label
-# map keyed on literals, a rename that missed this file would render a blank
-# badge — the quietest of the three ways this vocabulary can break, because a
-# missing label reads as a company nobody evaluated rather than as a bug.
-from boundless100x.lifecycle.lane_gates import (
-    INDETERMINATE as LANE_INDETERMINATE,
-    NOT_QUALIFIED as LANE_NOT_QUALIFIED,
-    QUALIFIES as LANE_QUALIFIES,
-)
 # One statement of what the fast lane is called. `lifecycle/advance.py` and
 # `lifecycle/lane_view.py` both gate on this constant; a literal here would be a
 # third spelling with nothing keeping it in step, and it decides whether a whole
-# report section renders.
-from boundless100x.watchlist import RERATING_LANE
+# report section renders. Read from `lifecycle/states.py`, which is where the
+# lifecycle's vocabulary lives, rather than from the store that persists it.
+from boundless100x.lifecycle.states import RERATING_LANE
+
+# What the report *calls* things, and the figures it draws, each in its own
+# module. Re-exported here because this is where every one of these names was
+# published — `FLAG_ELEMENT_MAP`, `LANE_VERDICT_LABELS`, `FRICTION_*` and the
+# rest are imported from `report_generator` by the templates' callers and by the
+# test suite, and a caller that reaches for one here is not wrong about where it
+# means something.
+from boundless100x.output.report_charts import render_charts
+from boundless100x.output.report_vocabulary import (
+    BREAKEVEN_CAVEAT,
+    BREAKEVEN_ESTIMATE,
+    BREAKEVEN_STATEMENT,
+    ELEMENT_CONFIG,
+    FLAG_ELEMENT_MAP,
+    FLAG_LABELS,
+    FORWARD_SIGNALS,
+    FORWARD_SIGNALS_DISCLAIMER,
+    FORWARD_SIGNALS_ELEMENT,  # noqa: F401 - re-export; the tests import it here
+    FRICTION_BASIS_LABELS,
+    FRICTION_NOTE,
+    FRICTION_UNAVAILABLE_LABEL,
+    LANE_LABELS,
+    LANE_VERDICT_LABELS,
+    METRIC_DISPLAY_NAMES,
+    MOMENTUM_UNAVAILABLE_LABEL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,410 +67,6 @@ def _safe_numeric(val) -> float | None:
     except (ValueError, TypeError):
         return None
 
-
-# ── Human-readable flag labels ──
-# Maps raw flag strings to (display_label, sentiment) where sentiment ∈ {good, bad, neutral}
-FLAG_LABELS: dict[str, tuple[str, str]] = {
-    # Growth
-    "growth_quality_high_quality": ("High-Quality Growth", "good"),
-    "growth_quality_moderate": ("Moderate Growth Quality", "neutral"),
-    "growth_quality_low_quality": ("Low-Quality Growth", "bad"),
-    "very_short_history_unreliable": ("Very Short History — Unreliable", "bad"),
-    "bonus_split_adjusted": ("Bonus/Split Adjusted", "neutral"),
-    "high_dilution": ("Significant Equity Dilution", "bad"),
-    "minimal_dilution": ("Minimal Equity Dilution", "good"),
-    # Profitability
-    "consistently_high_roce": ("Consistently High RoCE", "good"),
-    "exceptional_roce": ("Exceptional RoCE (>25%)", "good"),
-    "improving_roce": ("Improving RoCE Trend", "good"),
-    "declining_roce": ("Declining RoCE Trend", "bad"),
-    "high_operating_margin": ("High Operating Margin", "good"),
-    "improving_margins": ("Improving Margins", "good"),
-    "cash_cow": ("Cash Cow — Strong Cash Conversion", "good"),
-    "cfi_dominated_by_acquisitions": ("Capex Dominated by Acquisitions", "bad"),
-    "volatile_tax_rate": ("Volatile Tax Rate", "neutral"),
-    # Valuation
-    "very_expensive_pe": ("Very Expensive PE (>80x)", "bad"),
-    "expensive_pe": ("Expensive PE (>50x)", "bad"),
-    "cheap_pe": ("Cheap PE (<15x)", "good"),
-    "attractively_valued_peg": ("Attractively Valued (PEG < 1)", "good"),
-    "expensive_peg": ("Expensive PEG (>2.5x)", "bad"),
-    "attractive_trailing_peg": ("Attractive Trailing PEG", "good"),
-    "pe_above_historical_75th": ("PE Above 75th Percentile — Expensive", "bad"),
-    "pe_below_historical_25th": ("PE Below 25th Percentile — Cheap", "good"),
-    "pe_band_legacy_price_basis": ("P/E Band Built on Adjusted Prices — Refetch to Correct", "neutral"),
-    "dcf_undervalued": ("DCF: Undervalued", "good"),
-    "dcf_overvalued": ("DCF: Overvalued", "bad"),
-    "negative_average_fcf": ("Negative Average Free Cash Flow", "bad"),
-    "negative_fcf_even_after_outlier_removal": ("Negative FCF Even After Outlier Removal", "bad"),
-    "reverse_dcf_overpriced": ("Market Overpricing Growth (Reverse DCF)", "bad"),
-    "reverse_dcf_underpriced": ("Market Underpricing Growth (Reverse DCF)", "good"),
-    "earnings_yield_above_gsec": ("Earnings Yield Beats G-Sec", "good"),
-    "gsec_more_attractive": ("G-Sec More Attractive Than Earnings Yield", "bad"),
-    # Leverage
-    "debt_risk": ("High Debt Risk", "bad"),
-    "virtually_debt_free": ("Virtually Debt-Free", "good"),
-    "low_interest_coverage": ("Weak Interest Coverage", "bad"),
-    "strong_interest_coverage": ("Strong Interest Coverage", "good"),
-    # Efficiency
-    "improving_working_capital": ("Improving Working Capital", "good"),
-    "worsening_working_capital": ("Worsening Working Capital", "bad"),
-    # Size
-    "small_cap": ("Small Cap", "neutral"),
-    "mid_cap": ("Mid Cap", "neutral"),
-    "large_cap": ("Large Cap", "neutral"),
-    "micro_cap": ("Micro Cap", "neutral"),
-    "low_institutional_ownership": ("Low Institutional Ownership", "neutral"),
-    "heavily_institutional": ("Heavily Institutional", "neutral"),
-    "under_researched": ("Under-Researched (<5 Analysts)", "neutral"),
-    "lightly_covered": ("Lightly Covered (5–10 Analysts)", "neutral"),
-    "promoter_increasing_stake": ("Promoter Increasing Stake", "good"),
-    "promoter_reducing_stake": ("Promoter Reducing Stake", "bad"),
-    "promoter_pledge_red_flag": ("Promoter Pledge — Red Flag", "bad"),
-    # Longevity
-    "wide_moat_cap": ("Wide Moat (Market Cap Proxy)", "good"),
-    "moderate_moat_cap": ("Moderate Moat (Market Cap Proxy)", "neutral"),
-    "highly_stable_margins": ("Highly Stable Margins", "good"),
-    "volatile_margins": ("Volatile Margins", "bad"),
-    "heavy_reinvestment": ("Heavy Reinvestment", "neutral"),
-    "consistent_fcf_generator": ("Consistent Free Cash Flow Generator", "good"),
-    "consistent_organic_fcf_generator": ("Consistent Organic FCF (Excl. M&A)", "good"),
-    # Composite
-    "possible_bonus_split": ("Possible Bonus/Split Event Detected", "neutral"),
-    # Forward signals (Phase 2, zero weight — see FORWARD_SIGNALS_ELEMENT)
-    "rerating_headroom_favourable": ("Re-rating Headroom — Favourable", "good"),
-    "rerating_headroom_stretched": ("Re-rating Headroom — Stretched", "bad"),
-    "quarterly_growth_accelerating": ("Quarterly Growth Accelerating", "good"),
-    "quarterly_growth_decelerating": ("Quarterly Growth Decelerating", "bad"),
-    "tam_from_superseded_report": (
-        "TAM Read From a Superseded Report", "neutral"
-    ),
-    # Phase 3 fast-lane input, also zero weight. `good` because accumulation is
-    # the direction the lane's flow gate rewards — but the label says what was
-    # counted rather than what it implies, since the metric moves no score.
-    "institutional_accumulation_rising": ("FII + DII Accumulating", "good"),
-}
-
-# ── Metric-to-element mapping with display labels ──
-# Used for SQGLP score drill-down: maps metric_id → (element, display_name)
-METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
-    # Size
-    "market_cap": ("size", "Market Cap"),
-    "institutional_holding": ("size", "FII + DII Holding"),
-    "analyst_coverage": ("size", "Analyst Coverage"),
-    "daily_turnover_ratio": ("size", "Daily Turnover Ratio"),
-    # Quality Business
-    "roce_5yr_avg": ("quality_business", "RoCE 5yr Avg"),
-    "roiic": ("quality_business", "ROIIC (Incremental Capital)"),
-    "capital_reinvestment_rate": ("quality_business", "Capital Reinvestment Rate"),
-    "roe_5yr_avg": ("quality_business", "ROE 5yr Avg"),
-    "operating_margin_5yr": ("quality_business", "OPM 5yr Avg"),
-    "dupont_margin": ("quality_business", "DuPont: Net Margin"),
-    "dupont_turnover": ("quality_business", "DuPont: Asset Turnover"),
-    "dupont_equity_multiplier": ("quality_business", "DuPont: Equity Multiplier"),
-    "cash_conversion": ("quality_business", "Cash Conversion"),
-    "fcf_yield": ("quality_business", "FCF Yield"),
-    "debt_equity": ("quality_business", "Debt/Equity"),
-    "interest_coverage": ("quality_business", "Interest Coverage"),
-    "working_capital_days_trend": ("quality_business", "Working Capital Days"),
-    # Quality Management
-    "promoter_holding_trend": ("quality_management", "Promoter Holding Trend"),
-    "promoter_pledge": ("quality_management", "Promoter Pledge %"),
-    "owner_operator_signal": ("quality_management", "Owner-Operator Signal"),
-    "equity_dilution": ("quality_management", "Equity Dilution 10yr"),
-    "dividend_consistency": ("quality_management", "Dividend Consistency"),
-    "effective_tax_rate_variance": ("quality_management", "Tax Rate Consistency"),
-    # Growth
-    "revenue_cagr_5yr": ("growth", "Revenue CAGR 5yr"),
-    "pat_cagr_5yr": ("growth", "PAT CAGR 5yr"),
-    "eps_cagr_5yr": ("growth", "EPS CAGR 5yr"),
-    "pat_cagr_3yr": ("growth", "PAT CAGR 3yr"),
-    "operating_leverage": ("growth", "Operating Leverage"),
-    "financial_leverage_ratio": ("growth", "Financial Leverage"),
-    "growth_quality_grade": ("growth", "Growth Quality Grade"),
-    "revenue_growth_consistency": ("growth", "Revenue Growth Consistency"),
-    "revenue_cagr_3yr": ("growth", "Revenue CAGR 3yr"),
-    "ebit_cagr_5yr": ("growth", "EBIT CAGR 5yr"),
-    "ebit_cagr_3yr": ("growth", "EBIT CAGR 3yr"),
-    "price_lever_signal": ("growth", "Real Revenue Growth (unscored)"),
-    # Longevity
-    "roce_consistency": ("longevity", "RoCE >15% Years"),
-    "cap_proxy": ("longevity", "CAP Proxy"),
-    "revenue_growth_streak": ("longevity", "Growth Streak"),
-    "gross_margin_stability": ("longevity", "Margin Stability"),
-    "reinvestment_rate": ("longevity", "Reinvestment Rate (Capex/Depn)"),
-    "sector_tailwind": ("longevity", "Sector Tailwind"),
-    "fcf_consistency": ("longevity", "FCF+ Years"),
-    # Price
-    "pe_ttm": ("price", "PE TTM"),
-    "peg_ratio": ("price", "PEG Ratio"),
-    "trailing_peg": ("price", "Trailing PEG"),
-    "ev_ebitda": ("price", "EV/EBITDA"),
-    "pe_vs_historical": ("price", "P/E vs Traded History"),
-    "dcf_margin_of_safety": ("price", "DCF Margin of Safety"),
-    "reverse_dcf_growth": ("price", "Reverse DCF Implied"),
-    "earnings_yield_vs_gsec": ("price", "EY Spread vs G-Sec"),
-}
-
-# ── Flag-to-SQGLP element mapping ──
-# Maps raw flag strings to their SQGLP element for per-section grouping.
-#
-# **Registration is not optional for a Phase 2 flag** (KTD6). The lookup below
-# falls back to "composite" for anything unrecognised, so a zero-weight
-# forward-signal metric's flag would otherwise render as an SQGLP signal on a
-# ticker whose score did not move — R7's four listed quantities would all still
-# hold while the report said something new about the composite. Every flag a
-# forward-signal metric emits is mapped to FORWARD_SIGNALS_ELEMENT, which is
-# deliberately not an SQGLP element key, so the per-element template loops
-# never pick it up.
-FORWARD_SIGNALS_ELEMENT = "forward_signals"
-
-FLAG_ELEMENT_MAP: dict[str, str] = {
-    # Growth
-    "growth_quality_high_quality": "growth",
-    "growth_quality_moderate": "growth",
-    "growth_quality_low_quality": "growth",
-    "very_short_history_unreliable": "growth",
-    "bonus_split_adjusted": "growth",
-    "high_dilution": "growth",
-    "minimal_dilution": "growth",
-    # Quality Business (Profitability + Leverage + Efficiency)
-    "consistently_high_roce": "quality_business",
-    "exceptional_roce": "quality_business",
-    "improving_roce": "quality_business",
-    "declining_roce": "quality_business",
-    "high_operating_margin": "quality_business",
-    "improving_margins": "quality_business",
-    "cash_cow": "quality_business",
-    "cfi_dominated_by_acquisitions": "quality_business",
-    "volatile_tax_rate": "quality_business",
-    "debt_risk": "quality_business",
-    "virtually_debt_free": "quality_business",
-    "low_interest_coverage": "quality_business",
-    "strong_interest_coverage": "quality_business",
-    "improving_working_capital": "quality_business",
-    "worsening_working_capital": "quality_business",
-    # Price (Valuation)
-    "very_expensive_pe": "price",
-    "expensive_pe": "price",
-    "cheap_pe": "price",
-    "attractively_valued_peg": "price",
-    "expensive_peg": "price",
-    "attractive_trailing_peg": "price",
-    "pe_above_historical_75th": "price",
-    "pe_below_historical_25th": "price",
-    "dcf_undervalued": "price",
-    "dcf_overvalued": "price",
-    "negative_average_fcf": "price",
-    "negative_fcf_even_after_outlier_removal": "price",
-    "reverse_dcf_overpriced": "price",
-    "reverse_dcf_underpriced": "price",
-    "earnings_yield_above_gsec": "price",
-    "gsec_more_attractive": "price",
-    # Size
-    "small_cap": "size",
-    "mid_cap": "size",
-    "large_cap": "size",
-    "micro_cap": "size",
-    "low_institutional_ownership": "size",
-    "heavily_institutional": "size",
-    "under_researched": "size",
-    "lightly_covered": "size",
-    # Quality Management
-    "promoter_increasing_stake": "quality_management",
-    "promoter_reducing_stake": "quality_management",
-    "promoter_pledge_red_flag": "quality_management",
-    # Longevity
-    "wide_moat_cap": "longevity",
-    "moderate_moat_cap": "longevity",
-    "highly_stable_margins": "longevity",
-    "volatile_margins": "longevity",
-    "heavy_reinvestment": "longevity",
-    "consistent_fcf_generator": "longevity",
-    "consistent_organic_fcf_generator": "longevity",
-    # Composite
-    "possible_bonus_split": "composite",
-    # Forward signals (Phase 2, zero weight)
-    "rerating_headroom_favourable": FORWARD_SIGNALS_ELEMENT,
-    "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,
-    "quarterly_growth_accelerating": FORWARD_SIGNALS_ELEMENT,
-    "quarterly_growth_decelerating": FORWARD_SIGNALS_ELEMENT,
-    "tam_from_superseded_report": FORWARD_SIGNALS_ELEMENT,
-    # Phase 3 (zero weight). Registered here rather than under `size` although
-    # `institutional_accumulation_streak` lives in size.yaml: the rule is about
-    # what moved the score, and this metric moved nothing. Under `size` the
-    # report would show a new Size signal on a ticker whose Size score is
-    # unchanged.
-    "institutional_accumulation_rising": FORWARD_SIGNALS_ELEMENT,
-}
-
-# ── Forward signals (Phase 2, zero weight) ──
-#
-# Every one of these carries `weight: 0`, which means the scorer never gives it
-# a score. So the number is all the reader gets, and a bare number is not
-# signal: nobody can tell whether +40 is good news without recomputing the
-# metric. R8 exists for that reason, and this table is how it is satisfied —
-# each signal declares its direction of goodness, what it means in one line,
-# and the bands that turn its value into a reading.
-#
-# `bands` is walked in order and the first threshold the value reaches wins;
-# `low_label` catches everything below all of them. Thresholds here are
-# STARTING POINTS, like every other number this phase introduces. A metric that
-# supplies its own `metadata["band"]` overrides this — `rerating_headroom`
-# does, because its bands are owner-editable in the metric's YAML params and a
-# tuned band must win over a default declared here.
-FORWARD_SIGNALS: dict[str, dict] = {
-    "rerating_headroom": {
-        "name": "Re-rating Headroom",
-        "format": "{:+.0f}%",
-        "direction": "higher is better",
-        "meaning": (
-            "How far above today's traded multiple the company's own RoCE, "
-            "growth and consistency would justify."
-        ),
-        "bands": [(25.0, "favourable"), (-25.0, "fair")],
-        "low_label": "stretched",
-    },
-    "promises_kept_ratio": {
-        "name": "Promises Kept",
-        "format": "{:.0f}%",
-        "direction": "higher is better",
-        "meaning": (
-            "Share of management's own due targets that the accounts later met. "
-            "Promises not yet due are excluded from both sides."
-        ),
-        "bands": [(80.0, "credible"), (50.0, "mixed")],
-        "low_label": "unreliable",
-    },
-    "tam_runway": {
-        "name": "TAM Runway",
-        "format": "{:.0f} yrs",
-        "direction": "higher is better",
-        "meaning": (
-            "Years at the current growth rate before revenue meets the "
-            "addressable market management describes."
-        ),
-        "bands": [(15.0, "long"), (7.0, "adequate")],
-        "low_label": "short",
-    },
-    "quarterly_momentum": {
-        "name": "Quarterly Growth Momentum",
-        "format": "{:+.1f}pp",
-        "direction": "higher is better",
-        "meaning": (
-            "Change between consecutive year-over-year growth figures — whether "
-            "growth is speeding up, not how fast it is."
-        ),
-        "bands": [(2.0, "accelerating"), (-2.0, "steady")],
-        "low_label": "decelerating",
-    },
-}
-
-FORWARD_SIGNALS_DISCLAIMER = (
-    "These signals inform the thesis but do not contribute to the SQGLP "
-    "composite. They carry zero weight, receive no score, and are excluded "
-    "from the coverage denominator."
-)
-
-MOMENTUM_UNAVAILABLE_LABEL = "Not enough history yet"
-
-
-# ── Lane & Friction (Phase 3) ──
-# Everything below renders only when the caller supplied a `lane_context`,
-# which only a watchlisted ticker has. A company analysed outside the watchlist
-# renders exactly what it rendered before this section existed (KTD9).
-
-LANE_LABELS: dict[str, str] = {
-    "core": "Core — the compounder lane",
-    "rerating": "Re-rating — the fast lane",
-}
-
-# The fast lane's verdict vocabulary, kept **out of** the 100x badge's words on
-# purpose. `not_qualified` and `not_eligible` are different findings about
-# different questions — a company can fail every 100x gate and still be a sound
-# re-rating candidate, which is the asymmetry the whole lane exists for — so a
-# reader must never meet "eligible" in this section and carry the other
-# question's meaning into it.
-#
-# The labels are this layer's own — presentation is not the evaluator's job —
-# but the *keys* are imported, so the map is guaranteed to cover the verdicts
-# that actually arrive.
-#
-# `_LABELS`, not `LANE_VERDICTS`: that name already belongs to `lane_gates`,
-# where it is the *vocabulary* — a tuple of the three verdict strings. One name
-# for two incompatible types across two modules is a reader's problem before it
-# is anyone else's, and the two are imported into the same test file.
-LANE_VERDICT_LABELS: dict[str, tuple[str, str, str]] = {
-    LANE_QUALIFIES: (
-        "Qualifies for the fast lane", "good",
-        "Clears every fast-lane entry gate",
-    ),
-    LANE_NOT_QUALIFIED: (
-        "Does not qualify for the fast lane", "bad",
-        "Fails at least one fast-lane entry gate",
-    ),
-    LANE_INDETERMINATE: (
-        "Fast-lane qualification unknown", "neutral",
-        "A fast-lane entry gate could not be evaluated from available data",
-    ),
-}
-
-FRICTION_UNAVAILABLE_LABEL = "Modeled friction unavailable"
-
-# `recorded` says the two dates stopped moving, never that the figure stopped
-# being a model — so both labels lead with the same word.
-FRICTION_BASIS_LABELS: dict[str, str] = {
-    "estimate": "Modeled estimate — the exit date is still moving",
-    "recorded": "Modeled at the recorded exit — the dates are fixed, the figure is still a model",
-}
-
-# No backticks: one string reaches an HTML template that renders no markdown
-# and a markdown template that does, so anything only one of them understands
-# shows up as punctuation in the other.
-FRICTION_NOTE = (
-    "Every figure here is a model. The holding period runs from the probe "
-    "confirmation date rather than a broker fill, the prices are market bars "
-    "rather than trade prices, and no cost basis is recorded anywhere in this "
-    "system."
-)
-
-# §8.2's break-even framing, for the fast lane only.
-#
-# **No hurdle is computed, and that is a decision rather than an omission.** A
-# capital-gains rate applies to a gain; it is not a number of return points, so
-# turning "20% STCG and 100bps round trip" into a single percentage the lane
-# must beat would require an assumed holding period, an assumed turnover rate
-# and an assumed alternative — three numbers nobody has supplied. A figure
-# derived from invented inputs would be read as a threshold, and the fast lane
-# would then look "accelerated" when it was merely busier. Phase 4's simulator
-# derives one from owner cost assumptions; until then this states the roadmap's
-# rough estimate as an estimate, with the rates it rests on listed beside it.
-BREAKEVEN_ESTIMATE = "6–10 percentage points more per cycle"
-
-BREAKEVEN_STATEMENT = (
-    "A re-rating round trip pays capital-gains tax and slippage that a held "
-    "position never pays, so it has to earn more just to come out level. The "
-    "roadmap's rough estimate for that difference is 6–10 percentage points "
-    "more per cycle — an estimate, stated with the assumptions it rests on."
-)
-
-BREAKEVEN_CAVEAT = (
-    "No hurdle number is computed here. A tax rate applies to a gain, not to a "
-    "number of return points, so any single figure would be arithmetic these "
-    "inputs do not support — the Phase 4 simulator derives one from owner cost "
-    "assumptions."
-)
-
-
-# ── SQGLP element display config ──
-ELEMENT_CONFIG: dict[str, dict] = {
-    "size": {"label": "Size", "short": "S", "weight": "10%"},
-    "quality_business": {"label": "Quality — Business", "short": "QB", "weight": "20%"},
-    "quality_management": {"label": "Quality — Management", "short": "QM", "weight": "10%"},
-    "growth": {"label": "Growth", "short": "G", "weight": "25%"},
-    "longevity": {"label": "Longevity", "short": "L", "weight": "20%"},
-    "price": {"label": "Price", "short": "P", "weight": "15%"},
-}
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -634,6 +246,14 @@ class ReportGenerator:
 
     # ── HTML ──
 
+    def _render_charts(self, result) -> dict:
+        """The figures this report embeds. Built in `report_charts`.
+
+        A method rather than a direct call at the one call site, because it is
+        the seam a test patches to render a report with no charts in it.
+        """
+        return render_charts(result)
+
     def _render_html(self, result, charts: dict, growth_decomposition: dict | None = None,
                      executive_summary: dict | None = None,
                      financial_snapshot: list | None = None,
@@ -746,156 +366,9 @@ class ReportGenerator:
 
     # ── Charts ──
 
-    def _render_charts(self, result) -> dict:
-        charts = {}
 
-        # SQGLP radar removed — element scores table is sufficient
 
-        ratios = result.data.get("ratios")
-        if ratios is not None and not ratios.empty:
-            charts["roce_trend"] = self._roce_trend_chart(ratios)
 
-        price = result.data.get("price")
-        metrics = result.metrics
-        if price is not None and not price.empty:
-            charts["pe_band"] = self._pe_band_chart(price, metrics)
-
-        charts["growth"] = self._growth_chart(metrics)
-
-        # Shareholding: uses HTML table now, no chart needed
-
-        # Feature 4: DCF gauge
-        dcf_chart = self._dcf_visualization(result)
-        if dcf_chart:
-            charts["dcf_gauge"] = dcf_chart
-
-        # Feature 5: Cash flow quality
-        cf_chart = self._cashflow_quality_chart(result)
-        if cf_chart:
-            charts["cashflow_quality"] = cf_chart
-
-        # Feature 7: Historical PE band
-        pe_hist = self._pe_band_chart_historical(result)
-        if pe_hist:
-            charts["pe_band_historical"] = pe_hist
-
-        return charts
-
-    def _roce_trend_chart(self, ratios) -> str:
-        import pandas as pd
-        if "roce" not in ratios.columns or "year" not in ratios.columns:
-            return ""
-
-        df = ratios[~ratios["year"].astype(str).str.contains("TTM", case=False, na=False)].copy()
-        df["roce_num"] = pd.to_numeric(df["roce"], errors="coerce")
-        df = df.dropna(subset=["roce_num"])
-
-        if df.empty:
-            return ""
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df["year"].astype(str),
-            y=df["roce_num"],
-            mode="lines+markers",
-            name="RoCE %",
-            line=dict(color="#2563eb", width=2),
-            marker=dict(size=8),
-        ))
-        # Add 15% threshold line
-        fig.add_hline(y=15, line_dash="dash", line_color="#dc2626",
-                      annotation_text="15% threshold")
-        fig.update_layout(
-            title="RoCE Trend (10yr)",
-            yaxis_title="RoCE %",
-            margin=dict(l=50, r=30, t=50, b=30),
-            height=350,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
-
-    def _pe_band_chart(self, price, metrics: dict) -> str:
-        import pandas as pd
-        pe_result = metrics.get("pe_vs_historical")
-        if not pe_result or not pe_result.ok:
-            return ""
-
-        meta = pe_result.metadata or {}
-        percentile = pe_result.value
-        pe_current = metrics.get("pe_ttm")
-        if not pe_current or not pe_current.ok:
-            return ""
-
-        # Simple PE gauge chart
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=pe_current.value,
-            title={"text": f"PE TTM ({percentile:.0f}th percentile)"},
-            gauge=dict(
-                axis=dict(range=[0, min(pe_current.value * 2, 150)]),
-                bar=dict(color="#2563eb"),
-                steps=[
-                    dict(range=[0, meta.get("p25", 30)], color="#dcfce7"),
-                    dict(range=[meta.get("p25", 30), meta.get("p75", 60)], color="#fef9c3"),
-                    dict(range=[meta.get("p75", 60), min(pe_current.value * 2, 150)], color="#fecaca"),
-                ],
-                threshold=dict(
-                    line=dict(color="#dc2626", width=2),
-                    value=meta.get("median", 45),
-                    thickness=0.75,
-                ),
-            ),
-        ))
-        fig.update_layout(
-            margin=dict(l=30, r=30, t=50, b=20),
-            height=300,
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
-
-    def _growth_chart(self, metrics: dict) -> str:
-        labels = []
-        values = []
-
-        growth_metrics = [
-            ("revenue_cagr_5yr", "Rev CAGR 5yr"),
-            ("pat_cagr_5yr", "PAT CAGR 5yr"),
-            ("pat_cagr_3yr", "PAT CAGR 3yr"),
-            ("eps_cagr_5yr", "EPS CAGR 5yr"),
-        ]
-
-        for mid, label in growth_metrics:
-            result = metrics.get(mid)
-            if result and result.ok and isinstance(result.value, (int, float)):
-                labels.append(label)
-                values.append(result.value)
-
-        if not labels:
-            return ""
-
-        colors = ["#2563eb" if v >= 15 else "#f59e0b" if v >= 0 else "#dc2626" for v in values]
-
-        fig = go.Figure(go.Bar(
-            x=labels,
-            y=values,
-            marker_color=colors,
-            text=[f"{v:.1f}%" for v in values],
-            textposition="outside",
-        ))
-        fig.add_hline(y=15, line_dash="dash", line_color="#16a34a",
-                      annotation_text="15% compounder threshold")
-        fig.update_layout(
-            title="Growth Metrics",
-            yaxis_title="CAGR %",
-            margin=dict(l=50, r=30, t=50, b=30),
-            height=350,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
-
-    # ── Growth Decomposition ──
 
     def _compute_growth_decomposition(self, result) -> dict | None:
         """The 4-lever decomposition, preferring the one the service computed.
@@ -1660,43 +1133,6 @@ class ReportGenerator:
 
     # ── Feature 4: DCF Visualization ──
 
-    def _dcf_visualization(self, result) -> str:
-        """Create a Plotly gauge chart for DCF margin of safety."""
-        dcf = result.metrics.get("dcf_margin_of_safety")
-        if not dcf or not dcf.ok or dcf.value is None:
-            return ""
-
-        margin_pct = dcf.value
-        # Clamp display range
-        display_val = max(-50, min(50, margin_pct))
-
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=display_val,
-            number={"suffix": "%"},
-            title={"text": "DCF Margin of Safety"},
-            gauge=dict(
-                axis=dict(range=[-50, 50], tickvals=[-50, -25, 0, 25, 50]),
-                bar=dict(color="#2563eb" if margin_pct >= 0 else "#dc2626"),
-                steps=[
-                    dict(range=[-50, -10], color="#fecaca"),
-                    dict(range=[-10, 0], color="#fef9c3"),
-                    dict(range=[0, 20], color="#dcfce7"),
-                    dict(range=[20, 50], color="#bbf7d0"),
-                ],
-                threshold=dict(
-                    line=dict(color="#16a34a", width=2),
-                    value=0,
-                    thickness=0.75,
-                ),
-            ),
-        ))
-        fig.update_layout(
-            margin=dict(l=30, r=30, t=50, b=20),
-            height=300,
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
 
     def _build_dcf_summary(self, result) -> dict:
         """Build DCF summary data for template rendering."""
@@ -1722,63 +1158,6 @@ class ReportGenerator:
 
     # ── Feature 5: Cash Flow Quality ──
 
-    def _cashflow_quality_chart(self, result) -> str:
-        """Create a dual-line Plotly chart: CFO vs PAT over 10 years."""
-        financials = result.data.get("financials")
-        cashflow = result.data.get("cashflow")
-        if financials is None or cashflow is None:
-            return ""
-
-        def _annual(df):
-            if df is None or df.empty or "year" not in df.columns:
-                return pd.DataFrame()
-            mask = df["year"].astype(str).str.startswith("Mar", na=False)
-            return df[mask].copy()
-
-        df_fin = _annual(financials)
-        df_cf = _annual(cashflow)
-
-        if df_fin.empty or df_cf.empty or "pat" not in df_fin.columns or "cfo" not in df_cf.columns:
-            return ""
-
-        # Merge on year
-        merged = pd.merge(
-            df_fin[["year", "pat"]],
-            df_cf[["year", "cfo"]],
-            on="year", how="inner",
-        )
-        merged["pat_num"] = pd.to_numeric(merged["pat"], errors="coerce")
-        merged["cfo_num"] = pd.to_numeric(merged["cfo"], errors="coerce")
-        merged = merged.dropna(subset=["pat_num", "cfo_num"])
-
-        if len(merged) < 3:
-            return ""
-
-        years = merged["year"].astype(str)
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=years, y=merged["cfo_num"], name="CFO",
-            mode="lines+markers",
-            line=dict(color="#2563eb", width=2),
-            marker=dict(size=6),
-        ))
-        fig.add_trace(go.Scatter(
-            x=years, y=merged["pat_num"], name="PAT",
-            mode="lines+markers",
-            line=dict(color="#16a34a", width=2),
-            marker=dict(size=6),
-        ))
-        fig.add_hline(y=0, line_dash="dash", line_color="#94a3b8")
-        fig.update_layout(
-            title="CFO vs PAT (Cash Flow Quality)",
-            yaxis_title="INR Crores",
-            margin=dict(l=50, r=30, t=50, b=30),
-            height=350,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
 
     def _build_cashflow_quality(self, result) -> dict:
         """Build cash flow quality summary metrics."""
@@ -1835,158 +1214,6 @@ class ReportGenerator:
 
     # ── Feature 7: Historical PE Band Chart ──
 
-    def _pe_band_chart_historical(self, result) -> str:
-        """Create a price chart with PE-band lines using interpolated annual EPS.
-
-        Shows stock price overlaid with coloured PE-band lines (EPS × N).
-        EPS is linearly interpolated between fiscal year-ends for smooth bands.
-        """
-        price_df = result.data.get("price")
-        financials = result.data.get("financials")
-        if price_df is None or price_df.empty or financials is None or financials.empty:
-            return ""
-
-        # --- Extract annual EPS ---
-        def _annual(df):
-            if "year" not in df.columns:
-                return pd.DataFrame()
-            mask = df["year"].astype(str).str.startswith("Mar", na=False)
-            return df[mask].copy()
-
-        df_fin = _annual(financials)
-        if df_fin.empty or "eps" not in df_fin.columns:
-            return ""
-
-        df_fin["eps_num"] = pd.to_numeric(df_fin["eps"], errors="coerce")
-        df_fin = df_fin.dropna(subset=["eps_num"])
-        df_fin = df_fin[df_fin["eps_num"] > 0]
-
-        if len(df_fin) < 3:
-            return ""
-
-        # Parse fiscal year end dates (e.g., "Mar 2023" → 2023-03-31)
-        eps_dates = pd.to_datetime(df_fin["year"], format="%b %Y", errors="coerce") + pd.offsets.MonthEnd(0)
-        eps_series = pd.Series(df_fin["eps_num"].values, index=eps_dates).sort_index()
-
-        # --- Standardize price data ---
-        if isinstance(price_df.index, pd.DatetimeIndex):
-            prices = price_df.copy()
-        elif "date" in price_df.columns:
-            prices = price_df.copy()
-            prices["date"] = pd.to_datetime(prices["date"], errors="coerce")
-            prices = prices.set_index("date")
-        elif "Date" in price_df.columns:
-            prices = price_df.copy()
-            prices["Date"] = pd.to_datetime(prices["Date"], errors="coerce")
-            prices = prices.set_index("Date")
-        else:
-            return ""
-
-        close_col = None
-        for col in ["Close", "close", "Adj Close"]:
-            if col in prices.columns:
-                close_col = col
-                break
-        if close_col is None:
-            return ""
-
-        prices = prices[[close_col]].dropna()
-        prices.columns = ["close"]
-        prices["close"] = pd.to_numeric(prices["close"], errors="coerce")
-        prices = prices.dropna().sort_index()
-
-        if len(prices) < 100:
-            return ""
-
-        # --- Interpolate EPS to daily (smooth, not step-function) ---
-        # Reindex to daily price dates, then interpolate between annual values
-        daily_eps = eps_series.reindex(
-            eps_series.index.union(prices.index)
-        ).interpolate(method="time")
-        daily_eps = daily_eps.reindex(prices.index).dropna()
-
-        if len(daily_eps) < 100:
-            return ""
-
-        aligned = prices.loc[daily_eps.index].copy()
-        aligned["eps"] = daily_eps.values
-
-        # --- Determine PE band multiples ---
-        # Use actual trailing PE to pick sensible bands
-        aligned["pe"] = aligned["close"] / aligned["eps"]
-        pe_clipped = aligned["pe"].clip(upper=100)
-        pe_median = float(pe_clipped.median())
-
-        candidate_bands = [5, 8, 10, 12, 15, 20, 25, 30, 40, 50]
-        price_max = float(aligned["close"].max())
-        eps_max = float(aligned["eps"].max())
-
-        # Select bands whose MAX band price (across all years) stays within 1.5× price max.
-        # This ensures bands visually bracket the price, not dwarf it.
-        selected_bands = [
-            n for n in candidate_bands
-            if eps_max * n <= price_max * 1.8
-        ]
-        # Ensure at least one band above the price too
-        if not selected_bands:
-            selected_bands = [n for n in candidate_bands if n <= pe_median * 2]
-        if not selected_bands:
-            selected_bands = [10, 15, 20]
-        if len(selected_bands) > 5:
-            step = max(1, len(selected_bands) // 5)
-            selected_bands = selected_bands[::step][:5]
-
-        # --- Build chart ---
-        band_colors = ["#22c55e", "#84cc16", "#eab308", "#f97316", "#ef4444"]
-
-        # Convert to plain lists for reliable Plotly serialization
-        x_dates = aligned.index.strftime("%Y-%m-%d").tolist()
-        y_close = aligned["close"].tolist()
-
-        fig = go.Figure()
-
-        # PE band lines (drawn first so price is on top)
-        for i, n in enumerate(selected_bands):
-            band_vals = (aligned["eps"] * n).tolist()
-            color = band_colors[i % len(band_colors)]
-            fig.add_trace(go.Scatter(
-                x=x_dates, y=band_vals,
-                name=f"{n}x PE", mode="lines",
-                line=dict(width=1.5, color=color, dash="dot"),
-            ))
-
-        # Price line on top (solid, prominent)
-        fig.add_trace(go.Scatter(
-            x=x_dates, y=y_close,
-            name="Price", mode="lines",
-            line=dict(color="#2563eb", width=2.5),
-        ))
-
-        # Current PE annotation
-        current_pe = float(aligned["pe"].iloc[-1])
-        fig.add_annotation(
-            x=x_dates[-1], y=y_close[-1],
-            text=f"PE: {current_pe:.1f}x",
-            showarrow=True, arrowhead=2, arrowsize=1,
-            ax=40, ay=-30,
-            font=dict(size=11, color="#2563eb"),
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="#2563eb",
-            borderwidth=1,
-        )
-
-        fig.update_layout(
-            title=dict(text="Historical PE Band Chart", font=dict(size=16)),
-            yaxis_title="Price (₹)",
-            margin=dict(l=50, r=30, t=50, b=50),
-            height=450,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.18, font_size=11),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            hovermode="x unified",
-        )
-
-        return pio.to_html(fig, include_plotlyjs=False, full_html=False)
 
     def _build_pe_band_summary(self, result) -> dict:
         """Build PE band summary for markdown."""

@@ -40,7 +40,7 @@ from pathlib import Path
 import pytest
 
 from boundless100x.lifecycle import friction as friction_module
-from boundless100x.output import report_generator
+from boundless100x.output import report_charts, report_generator
 from boundless100x.output.report_generator import (
     FRICTION_UNAVAILABLE_LABEL,
     ReportGenerator,
@@ -492,11 +492,19 @@ class TestTheGoldenSeesChartsStopRendering:
     """
 
     def dashboard(self, tmp_path, dead_charts=False, monkeypatch=None):
+        """A rendered dashboard, optionally with every chart builder silenced.
+
+        Patched on `report_charts`, which is where the builders are defined —
+        they were never methods in anything but name, and none of them touched
+        `self`. `render_charts` calls them as module globals, so rebinding them
+        there is what a real failure would look like: a builder returning `""`
+        because its data contract moved.
+        """
         if dead_charts:
-            for builder in ("_roce_trend_chart", "_pe_band_chart",
-                            "_growth_chart", "_cashflow_quality_chart"):
+            for builder in ("roce_trend_chart", "pe_band_chart",
+                            "growth_chart", "cashflow_quality_chart"):
                 monkeypatch.setattr(
-                    ReportGenerator, builder, lambda self, *a, **k: ""
+                    report_charts, builder, lambda *a, **k: ""
                 )
         generator = ReportGenerator(output_dir=str(tmp_path))
         report_dir = Path(generator.generate(make_result("TEST"), formats=["html"]))

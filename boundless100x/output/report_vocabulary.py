@@ -1,0 +1,446 @@
+"""What the report *calls* things — labels, bands, and the sentences it repeats.
+
+Four hundred lines of pure vocabulary: the human-readable name for every flag,
+the display name and element for every metric, the interpretation bands the
+Forward Signals section reads a bare number through, the lane and verdict
+labels, and the friction and break-even wording R5 requires beside every
+figure. No logic, no rendering, no I/O — only what a reader sees.
+
+It is a module of its own because it is the part of the report layer that
+**grows every time anything else does**. A new metric adds a display name; a
+new flag adds a label and an element; a new zero-weight signal adds a band. All
+of that accumulated in front of `ReportGenerator`, so the class that renders a
+report sat six hundred lines below the top of its own file and the diff for
+"added a metric" and the diff for "changed how a section renders" landed in the
+same place.
+
+Three of these carry rules rather than only text, and the rules live with them:
+
+**`FLAG_ELEMENT_MAP` falls back to `composite`** (KTD6), so a flag nobody
+registered renders as an SQGLP signal on a ticker whose score did not move.
+Phase 3 shipped one unregistered and proved the point; the test that catches it
+now derives the flag set from the registry rather than matching id prefixes.
+
+**`LANE_VERDICT_LABELS` is keyed on the evaluator's own constants**, imported
+rather than spelled again — a rename that missed this file would render a blank
+badge, which reads as a company nobody evaluated rather than as a bug.
+
+**The friction and break-even wording is not decoration.** Every figure the
+lane section shows is a modeled estimate resting on a `probe` confirmation date
+rather than a fill, and market bars rather than trade prices; the sentences
+here are what stop it being read as money that was made.
+
+`report_generator.py` imports every name it uses and re-exports the ones its
+callers already reached for there, so nothing moves out from under anybody.
+"""
+
+from boundless100x.lifecycle.lane_gates import (
+    INDETERMINATE as LANE_INDETERMINATE,
+    NOT_QUALIFIED as LANE_NOT_QUALIFIED,
+    QUALIFIES as LANE_QUALIFIES,
+)
+
+# ── Human-readable flag labels ──
+# Maps raw flag strings to (display_label, sentiment) where sentiment ∈ {good, bad, neutral}
+FLAG_LABELS: dict[str, tuple[str, str]] = {
+    # Growth
+    "growth_quality_high_quality": ("High-Quality Growth", "good"),
+    "growth_quality_moderate": ("Moderate Growth Quality", "neutral"),
+    "growth_quality_low_quality": ("Low-Quality Growth", "bad"),
+    "very_short_history_unreliable": ("Very Short History — Unreliable", "bad"),
+    "bonus_split_adjusted": ("Bonus/Split Adjusted", "neutral"),
+    "high_dilution": ("Significant Equity Dilution", "bad"),
+    "minimal_dilution": ("Minimal Equity Dilution", "good"),
+    # Profitability
+    "consistently_high_roce": ("Consistently High RoCE", "good"),
+    "exceptional_roce": ("Exceptional RoCE (>25%)", "good"),
+    "improving_roce": ("Improving RoCE Trend", "good"),
+    "declining_roce": ("Declining RoCE Trend", "bad"),
+    "high_operating_margin": ("High Operating Margin", "good"),
+    "improving_margins": ("Improving Margins", "good"),
+    "cash_cow": ("Cash Cow — Strong Cash Conversion", "good"),
+    "cfi_dominated_by_acquisitions": ("Capex Dominated by Acquisitions", "bad"),
+    "volatile_tax_rate": ("Volatile Tax Rate", "neutral"),
+    # Valuation
+    "very_expensive_pe": ("Very Expensive PE (>80x)", "bad"),
+    "expensive_pe": ("Expensive PE (>50x)", "bad"),
+    "cheap_pe": ("Cheap PE (<15x)", "good"),
+    "attractively_valued_peg": ("Attractively Valued (PEG < 1)", "good"),
+    "expensive_peg": ("Expensive PEG (>2.5x)", "bad"),
+    "attractive_trailing_peg": ("Attractive Trailing PEG", "good"),
+    "pe_above_historical_75th": ("PE Above 75th Percentile — Expensive", "bad"),
+    "pe_below_historical_25th": ("PE Below 25th Percentile — Cheap", "good"),
+    "pe_band_legacy_price_basis": ("P/E Band Built on Adjusted Prices — Refetch to Correct", "neutral"),
+    "dcf_undervalued": ("DCF: Undervalued", "good"),
+    "dcf_overvalued": ("DCF: Overvalued", "bad"),
+    "negative_average_fcf": ("Negative Average Free Cash Flow", "bad"),
+    "negative_fcf_even_after_outlier_removal": ("Negative FCF Even After Outlier Removal", "bad"),
+    "reverse_dcf_overpriced": ("Market Overpricing Growth (Reverse DCF)", "bad"),
+    "reverse_dcf_underpriced": ("Market Underpricing Growth (Reverse DCF)", "good"),
+    "earnings_yield_above_gsec": ("Earnings Yield Beats G-Sec", "good"),
+    "gsec_more_attractive": ("G-Sec More Attractive Than Earnings Yield", "bad"),
+    # Leverage
+    "debt_risk": ("High Debt Risk", "bad"),
+    "virtually_debt_free": ("Virtually Debt-Free", "good"),
+    "low_interest_coverage": ("Weak Interest Coverage", "bad"),
+    "strong_interest_coverage": ("Strong Interest Coverage", "good"),
+    # Efficiency
+    "improving_working_capital": ("Improving Working Capital", "good"),
+    "worsening_working_capital": ("Worsening Working Capital", "bad"),
+    # Size
+    "small_cap": ("Small Cap", "neutral"),
+    "mid_cap": ("Mid Cap", "neutral"),
+    "large_cap": ("Large Cap", "neutral"),
+    "micro_cap": ("Micro Cap", "neutral"),
+    "low_institutional_ownership": ("Low Institutional Ownership", "neutral"),
+    "heavily_institutional": ("Heavily Institutional", "neutral"),
+    "under_researched": ("Under-Researched (<5 Analysts)", "neutral"),
+    "lightly_covered": ("Lightly Covered (5–10 Analysts)", "neutral"),
+    "promoter_increasing_stake": ("Promoter Increasing Stake", "good"),
+    "promoter_reducing_stake": ("Promoter Reducing Stake", "bad"),
+    "promoter_pledge_red_flag": ("Promoter Pledge — Red Flag", "bad"),
+    # Longevity
+    "wide_moat_cap": ("Wide Moat (Market Cap Proxy)", "good"),
+    "moderate_moat_cap": ("Moderate Moat (Market Cap Proxy)", "neutral"),
+    "highly_stable_margins": ("Highly Stable Margins", "good"),
+    "volatile_margins": ("Volatile Margins", "bad"),
+    "heavy_reinvestment": ("Heavy Reinvestment", "neutral"),
+    "consistent_fcf_generator": ("Consistent Free Cash Flow Generator", "good"),
+    "consistent_organic_fcf_generator": ("Consistent Organic FCF (Excl. M&A)", "good"),
+    # Composite
+    "possible_bonus_split": ("Possible Bonus/Split Event Detected", "neutral"),
+    # Forward signals (Phase 2, zero weight — see FORWARD_SIGNALS_ELEMENT)
+    "rerating_headroom_favourable": ("Re-rating Headroom — Favourable", "good"),
+    "rerating_headroom_stretched": ("Re-rating Headroom — Stretched", "bad"),
+    "quarterly_growth_accelerating": ("Quarterly Growth Accelerating", "good"),
+    "quarterly_growth_decelerating": ("Quarterly Growth Decelerating", "bad"),
+    "tam_from_superseded_report": (
+        "TAM Read From a Superseded Report", "neutral"
+    ),
+    # Phase 3 fast-lane input, also zero weight. `good` because accumulation is
+    # the direction the lane's flow gate rewards — but the label says what was
+    # counted rather than what it implies, since the metric moves no score.
+    "institutional_accumulation_rising": ("FII + DII Accumulating", "good"),
+}
+
+# ── Metric-to-element mapping with display labels ──
+# Used for SQGLP score drill-down: maps metric_id → (element, display_name)
+METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
+    # Size
+    "market_cap": ("size", "Market Cap"),
+    "institutional_holding": ("size", "FII + DII Holding"),
+    "analyst_coverage": ("size", "Analyst Coverage"),
+    "daily_turnover_ratio": ("size", "Daily Turnover Ratio"),
+    # Quality Business
+    "roce_5yr_avg": ("quality_business", "RoCE 5yr Avg"),
+    "roiic": ("quality_business", "ROIIC (Incremental Capital)"),
+    "capital_reinvestment_rate": ("quality_business", "Capital Reinvestment Rate"),
+    "roe_5yr_avg": ("quality_business", "ROE 5yr Avg"),
+    "operating_margin_5yr": ("quality_business", "OPM 5yr Avg"),
+    "dupont_margin": ("quality_business", "DuPont: Net Margin"),
+    "dupont_turnover": ("quality_business", "DuPont: Asset Turnover"),
+    "dupont_equity_multiplier": ("quality_business", "DuPont: Equity Multiplier"),
+    "cash_conversion": ("quality_business", "Cash Conversion"),
+    "fcf_yield": ("quality_business", "FCF Yield"),
+    "debt_equity": ("quality_business", "Debt/Equity"),
+    "interest_coverage": ("quality_business", "Interest Coverage"),
+    "working_capital_days_trend": ("quality_business", "Working Capital Days"),
+    # Quality Management
+    "promoter_holding_trend": ("quality_management", "Promoter Holding Trend"),
+    "promoter_pledge": ("quality_management", "Promoter Pledge %"),
+    "owner_operator_signal": ("quality_management", "Owner-Operator Signal"),
+    "equity_dilution": ("quality_management", "Equity Dilution 10yr"),
+    "dividend_consistency": ("quality_management", "Dividend Consistency"),
+    "effective_tax_rate_variance": ("quality_management", "Tax Rate Consistency"),
+    # Growth
+    "revenue_cagr_5yr": ("growth", "Revenue CAGR 5yr"),
+    "pat_cagr_5yr": ("growth", "PAT CAGR 5yr"),
+    "eps_cagr_5yr": ("growth", "EPS CAGR 5yr"),
+    "pat_cagr_3yr": ("growth", "PAT CAGR 3yr"),
+    "operating_leverage": ("growth", "Operating Leverage"),
+    "financial_leverage_ratio": ("growth", "Financial Leverage"),
+    "growth_quality_grade": ("growth", "Growth Quality Grade"),
+    "revenue_growth_consistency": ("growth", "Revenue Growth Consistency"),
+    "revenue_cagr_3yr": ("growth", "Revenue CAGR 3yr"),
+    "ebit_cagr_5yr": ("growth", "EBIT CAGR 5yr"),
+    "ebit_cagr_3yr": ("growth", "EBIT CAGR 3yr"),
+    "price_lever_signal": ("growth", "Real Revenue Growth (unscored)"),
+    # Longevity
+    "roce_consistency": ("longevity", "RoCE >15% Years"),
+    "cap_proxy": ("longevity", "CAP Proxy"),
+    "revenue_growth_streak": ("longevity", "Growth Streak"),
+    "gross_margin_stability": ("longevity", "Margin Stability"),
+    "reinvestment_rate": ("longevity", "Reinvestment Rate (Capex/Depn)"),
+    "sector_tailwind": ("longevity", "Sector Tailwind"),
+    "fcf_consistency": ("longevity", "FCF+ Years"),
+    # Price
+    "pe_ttm": ("price", "PE TTM"),
+    "peg_ratio": ("price", "PEG Ratio"),
+    "trailing_peg": ("price", "Trailing PEG"),
+    "ev_ebitda": ("price", "EV/EBITDA"),
+    "pe_vs_historical": ("price", "P/E vs Traded History"),
+    "dcf_margin_of_safety": ("price", "DCF Margin of Safety"),
+    "reverse_dcf_growth": ("price", "Reverse DCF Implied"),
+    "earnings_yield_vs_gsec": ("price", "EY Spread vs G-Sec"),
+}
+
+# ── Flag-to-SQGLP element mapping ──
+# Maps raw flag strings to their SQGLP element for per-section grouping.
+#
+# **Registration is not optional for a Phase 2 flag** (KTD6). The lookup below
+# falls back to "composite" for anything unrecognised, so a zero-weight
+# forward-signal metric's flag would otherwise render as an SQGLP signal on a
+# ticker whose score did not move — R7's four listed quantities would all still
+# hold while the report said something new about the composite. Every flag a
+# forward-signal metric emits is mapped to FORWARD_SIGNALS_ELEMENT, which is
+# deliberately not an SQGLP element key, so the per-element template loops
+# never pick it up.
+FORWARD_SIGNALS_ELEMENT = "forward_signals"
+
+FLAG_ELEMENT_MAP: dict[str, str] = {
+    # Growth
+    "growth_quality_high_quality": "growth",
+    "growth_quality_moderate": "growth",
+    "growth_quality_low_quality": "growth",
+    "very_short_history_unreliable": "growth",
+    "bonus_split_adjusted": "growth",
+    "high_dilution": "growth",
+    "minimal_dilution": "growth",
+    # Quality Business (Profitability + Leverage + Efficiency)
+    "consistently_high_roce": "quality_business",
+    "exceptional_roce": "quality_business",
+    "improving_roce": "quality_business",
+    "declining_roce": "quality_business",
+    "high_operating_margin": "quality_business",
+    "improving_margins": "quality_business",
+    "cash_cow": "quality_business",
+    "cfi_dominated_by_acquisitions": "quality_business",
+    "volatile_tax_rate": "quality_business",
+    "debt_risk": "quality_business",
+    "virtually_debt_free": "quality_business",
+    "low_interest_coverage": "quality_business",
+    "strong_interest_coverage": "quality_business",
+    "improving_working_capital": "quality_business",
+    "worsening_working_capital": "quality_business",
+    # Price (Valuation)
+    "very_expensive_pe": "price",
+    "expensive_pe": "price",
+    "cheap_pe": "price",
+    "attractively_valued_peg": "price",
+    "expensive_peg": "price",
+    "attractive_trailing_peg": "price",
+    "pe_above_historical_75th": "price",
+    "pe_below_historical_25th": "price",
+    "dcf_undervalued": "price",
+    "dcf_overvalued": "price",
+    "negative_average_fcf": "price",
+    "negative_fcf_even_after_outlier_removal": "price",
+    "reverse_dcf_overpriced": "price",
+    "reverse_dcf_underpriced": "price",
+    "earnings_yield_above_gsec": "price",
+    "gsec_more_attractive": "price",
+    # Size
+    "small_cap": "size",
+    "mid_cap": "size",
+    "large_cap": "size",
+    "micro_cap": "size",
+    "low_institutional_ownership": "size",
+    "heavily_institutional": "size",
+    "under_researched": "size",
+    "lightly_covered": "size",
+    # Quality Management
+    "promoter_increasing_stake": "quality_management",
+    "promoter_reducing_stake": "quality_management",
+    "promoter_pledge_red_flag": "quality_management",
+    # Longevity
+    "wide_moat_cap": "longevity",
+    "moderate_moat_cap": "longevity",
+    "highly_stable_margins": "longevity",
+    "volatile_margins": "longevity",
+    "heavy_reinvestment": "longevity",
+    "consistent_fcf_generator": "longevity",
+    "consistent_organic_fcf_generator": "longevity",
+    # Composite
+    "possible_bonus_split": "composite",
+    # Forward signals (Phase 2, zero weight)
+    "rerating_headroom_favourable": FORWARD_SIGNALS_ELEMENT,
+    "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,
+    "quarterly_growth_accelerating": FORWARD_SIGNALS_ELEMENT,
+    "quarterly_growth_decelerating": FORWARD_SIGNALS_ELEMENT,
+    "tam_from_superseded_report": FORWARD_SIGNALS_ELEMENT,
+    # Phase 3 (zero weight). Registered here rather than under `size` although
+    # `institutional_accumulation_streak` lives in size.yaml: the rule is about
+    # what moved the score, and this metric moved nothing. Under `size` the
+    # report would show a new Size signal on a ticker whose Size score is
+    # unchanged.
+    "institutional_accumulation_rising": FORWARD_SIGNALS_ELEMENT,
+}
+
+# ── Forward signals (Phase 2, zero weight) ──
+#
+# Every one of these carries `weight: 0`, which means the scorer never gives it
+# a score. So the number is all the reader gets, and a bare number is not
+# signal: nobody can tell whether +40 is good news without recomputing the
+# metric. R8 exists for that reason, and this table is how it is satisfied —
+# each signal declares its direction of goodness, what it means in one line,
+# and the bands that turn its value into a reading.
+#
+# `bands` is walked in order and the first threshold the value reaches wins;
+# `low_label` catches everything below all of them. Thresholds here are
+# STARTING POINTS, like every other number this phase introduces. A metric that
+# supplies its own `metadata["band"]` overrides this — `rerating_headroom`
+# does, because its bands are owner-editable in the metric's YAML params and a
+# tuned band must win over a default declared here.
+FORWARD_SIGNALS: dict[str, dict] = {
+    "rerating_headroom": {
+        "name": "Re-rating Headroom",
+        "format": "{:+.0f}%",
+        "direction": "higher is better",
+        "meaning": (
+            "How far above today's traded multiple the company's own RoCE, "
+            "growth and consistency would justify."
+        ),
+        "bands": [(25.0, "favourable"), (-25.0, "fair")],
+        "low_label": "stretched",
+    },
+    "promises_kept_ratio": {
+        "name": "Promises Kept",
+        "format": "{:.0f}%",
+        "direction": "higher is better",
+        "meaning": (
+            "Share of management's own due targets that the accounts later met. "
+            "Promises not yet due are excluded from both sides."
+        ),
+        "bands": [(80.0, "credible"), (50.0, "mixed")],
+        "low_label": "unreliable",
+    },
+    "tam_runway": {
+        "name": "TAM Runway",
+        "format": "{:.0f} yrs",
+        "direction": "higher is better",
+        "meaning": (
+            "Years at the current growth rate before revenue meets the "
+            "addressable market management describes."
+        ),
+        "bands": [(15.0, "long"), (7.0, "adequate")],
+        "low_label": "short",
+    },
+    "quarterly_momentum": {
+        "name": "Quarterly Growth Momentum",
+        "format": "{:+.1f}pp",
+        "direction": "higher is better",
+        "meaning": (
+            "Change between consecutive year-over-year growth figures — whether "
+            "growth is speeding up, not how fast it is."
+        ),
+        "bands": [(2.0, "accelerating"), (-2.0, "steady")],
+        "low_label": "decelerating",
+    },
+}
+
+FORWARD_SIGNALS_DISCLAIMER = (
+    "These signals inform the thesis but do not contribute to the SQGLP "
+    "composite. They carry zero weight, receive no score, and are excluded "
+    "from the coverage denominator."
+)
+
+MOMENTUM_UNAVAILABLE_LABEL = "Not enough history yet"
+
+
+# ── Lane & Friction (Phase 3) ──
+# Everything below renders only when the caller supplied a `lane_context`,
+# which only a watchlisted ticker has. A company analysed outside the watchlist
+# renders exactly what it rendered before this section existed (KTD9).
+
+LANE_LABELS: dict[str, str] = {
+    "core": "Core — the compounder lane",
+    "rerating": "Re-rating — the fast lane",
+}
+
+# The fast lane's verdict vocabulary, kept **out of** the 100x badge's words on
+# purpose. `not_qualified` and `not_eligible` are different findings about
+# different questions — a company can fail every 100x gate and still be a sound
+# re-rating candidate, which is the asymmetry the whole lane exists for — so a
+# reader must never meet "eligible" in this section and carry the other
+# question's meaning into it.
+#
+# The labels are this layer's own — presentation is not the evaluator's job —
+# but the *keys* are imported, so the map is guaranteed to cover the verdicts
+# that actually arrive.
+#
+# `_LABELS`, not `LANE_VERDICTS`: that name already belongs to `lane_gates`,
+# where it is the *vocabulary* — a tuple of the three verdict strings. One name
+# for two incompatible types across two modules is a reader's problem before it
+# is anyone else's, and the two are imported into the same test file.
+LANE_VERDICT_LABELS: dict[str, tuple[str, str, str]] = {
+    LANE_QUALIFIES: (
+        "Qualifies for the fast lane", "good",
+        "Clears every fast-lane entry gate",
+    ),
+    LANE_NOT_QUALIFIED: (
+        "Does not qualify for the fast lane", "bad",
+        "Fails at least one fast-lane entry gate",
+    ),
+    LANE_INDETERMINATE: (
+        "Fast-lane qualification unknown", "neutral",
+        "A fast-lane entry gate could not be evaluated from available data",
+    ),
+}
+
+FRICTION_UNAVAILABLE_LABEL = "Modeled friction unavailable"
+
+# `recorded` says the two dates stopped moving, never that the figure stopped
+# being a model — so both labels lead with the same word.
+FRICTION_BASIS_LABELS: dict[str, str] = {
+    "estimate": "Modeled estimate — the exit date is still moving",
+    "recorded": "Modeled at the recorded exit — the dates are fixed, the figure is still a model",
+}
+
+# No backticks: one string reaches an HTML template that renders no markdown
+# and a markdown template that does, so anything only one of them understands
+# shows up as punctuation in the other.
+FRICTION_NOTE = (
+    "Every figure here is a model. The holding period runs from the probe "
+    "confirmation date rather than a broker fill, the prices are market bars "
+    "rather than trade prices, and no cost basis is recorded anywhere in this "
+    "system."
+)
+
+# §8.2's break-even framing, for the fast lane only.
+#
+# **No hurdle is computed, and that is a decision rather than an omission.** A
+# capital-gains rate applies to a gain; it is not a number of return points, so
+# turning "20% STCG and 100bps round trip" into a single percentage the lane
+# must beat would require an assumed holding period, an assumed turnover rate
+# and an assumed alternative — three numbers nobody has supplied. A figure
+# derived from invented inputs would be read as a threshold, and the fast lane
+# would then look "accelerated" when it was merely busier. Phase 4's simulator
+# derives one from owner cost assumptions; until then this states the roadmap's
+# rough estimate as an estimate, with the rates it rests on listed beside it.
+BREAKEVEN_ESTIMATE = "6–10 percentage points more per cycle"
+
+BREAKEVEN_STATEMENT = (
+    "A re-rating round trip pays capital-gains tax and slippage that a held "
+    "position never pays, so it has to earn more just to come out level. The "
+    "roadmap's rough estimate for that difference is 6–10 percentage points "
+    "more per cycle — an estimate, stated with the assumptions it rests on."
+)
+
+BREAKEVEN_CAVEAT = (
+    "No hurdle number is computed here. A tax rate applies to a gain, not to a "
+    "number of return points, so any single figure would be arithmetic these "
+    "inputs do not support — the Phase 4 simulator derives one from owner cost "
+    "assumptions."
+)
+
+
+# ── SQGLP element display config ──
+ELEMENT_CONFIG: dict[str, dict] = {
+    "size": {"label": "Size", "short": "S", "weight": "10%"},
+    "quality_business": {"label": "Quality — Business", "short": "QB", "weight": "20%"},
+    "quality_management": {"label": "Quality — Management", "short": "QM", "weight": "10%"},
+    "growth": {"label": "Growth", "short": "G", "weight": "25%"},
+    "longevity": {"label": "Longevity", "short": "L", "weight": "20%"},
+    "price": {"label": "Price", "short": "P", "weight": "15%"},
+}
+
