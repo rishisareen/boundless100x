@@ -11,20 +11,40 @@ import pandas as pd
 import pytest
 
 from boundless100x import score_history
+from boundless100x import watchlist as watchlist_module
 from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.lifecycle import reinvestment as reinvestment_module
 
 
 @pytest.fixture(autouse=True)
-def isolate_score_history(tmp_path, monkeypatch):
-    """No test may write the real score history.
+def isolate_live_stores(tmp_path, monkeypatch):
+    """No test may write a store the owner's real decisions live in.
 
-    `service.analyze()` records every scored run, and that log is git-tracked
-    and append-only by contract — a test run must never leave synthetic
-    composites in it. Redirecting the module default catches tests that reach
-    scoring without thinking about persistence at all.
+    Three files qualify, and the argument is the same for all of them.
+    `service.analyze()` records every scored run in the score history, which is
+    git-tracked and append-only by contract — a test run must never leave
+    synthetic composites in it. `watchlist.json` holds live positions, and the
+    reinvestment queue holds real sales and where their proceeds went; neither
+    is generated state that can be rebuilt, and the queue is not even
+    gitignored, so damage to it would be committed alongside whatever caused
+    it.
+
+    Redirecting the **module defaults** is what makes this catch the case worth
+    catching. Every CLI entry point constructs these stores with no path at
+    all, so a test that exercises a command without thinking about persistence
+    reaches the real file by default rather than by mistake. Per-test
+    monkeypatches that redirect them again are harmless and stay where they
+    are: they name the path the test then asserts against.
     """
     monkeypatch.setattr(
         score_history, "DEFAULT_HISTORY_PATH", tmp_path / "score_history.jsonl"
+    )
+    monkeypatch.setattr(
+        watchlist_module, "DEFAULT_WATCHLIST_PATH", tmp_path / "watchlist.json"
+    )
+    monkeypatch.setattr(
+        reinvestment_module, "DEFAULT_QUEUE_PATH",
+        tmp_path / "reinvestment_queue.json",
     )
 
 

@@ -226,6 +226,36 @@ class TestExitCommand:
         assert "unavailable" in result.output.lower()
         assert stores.wm().get("ASTRAL")["state"] == "exited"
 
+    def test_a_store_write_failure_is_a_message_and_a_recovery_instruction(
+        self, run, stores, reviewed, monkeypatch
+    ):
+        """`confirm_exit` lets an exception escape step 3 on purpose — the queue
+        event is already durable, so re-running reconciles.
+
+        That design only helps if the owner is told to re-run. A traceback at
+        the moment two stores disagree is the one moment they need a single
+        fact and a single command, so the surface catches what the operation
+        deliberately does not.
+        """
+        from boundless100x.watchlist import WatchlistManager
+
+        def disk_full(*args, **kwargs):
+            raise OSError("[Errno 28] No space left on device")
+
+        monkeypatch.setattr(WatchlistManager, "transition", disk_full)
+
+        result = run("watchlist", "exit", "ASTRAL",
+                     "--as-of", str(reviewed + timedelta(days=400)))
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "No space left on device" in result.output
+        assert "watchlist exit ASTRAL" in result.output
+        assert "watchlist queue" in result.output
+        # The queue event landed before the transition was attempted; that is
+        # the state the instruction reconciles from.
+        assert len(stores.q().exits()) == 1
+
     def test_a_refusal_names_the_state_and_says_nothing_was_recorded(
         self, run, stores, monkeypatch
     ):
@@ -414,8 +444,16 @@ class TestAdvanceRoutingLine:
         return captured.get()
 
     def stored(self, **overrides) -> dict:
+        """A routing view exactly as `advance._routing` returns one.
+
+        `status` and `errors` are carried because the real payload always
+        carries them — the snapshot dict is spread into every branch of
+        `_routing` — and because they are what decides whether a candidate may
+        be named at all.
+        """
         payload = {
             "available": True, "persisted": True, "persist_reason": "",
+            "status": "current", "errors": [],
             "proposal": {"ticker": "ZENSAR", "lane": "rerating"},
             "reason": "", "blocked": [],
         }
@@ -453,6 +491,97 @@ class TestAdvanceRoutingLine:
         assert "1 candidate(s) blocked" in text
         assert "ASTRAL" in text
         assert "watchlist queue" in text
+
+    def test_a_partial_run_names_nobody_and_says_which_ticker_failed(self, stores):
+        """The withheld side is the fail-closed one, and both surfaces take it.
+
+        `snapshot_state` refuses to render a `partial` snapshot's proposal, so
+        a line printed seconds earlier from the same stored bytes must refuse
+        it too — otherwise `advance` names a candidate that `watchlist queue`
+        will not, which is the disagreement this whole helper exists to avoid.
+        """
+        text = self.render(self.stored(status="partial", errors=["SPLPETRO"]))
+
+        assert "ZENSAR" not in text
+        assert "SPLPETRO" in text
+        assert "watchlist advance" in text
+
+    def test_errored_tickers_withhold_the_candidate_whatever_the_status_says(
+        self, stores
+    ):
+        """`snapshot_state` reads `partial` on a non-empty `errors` list alone;
+        so does this, or the two disagree on a hand-edited snapshot."""
+        text = self.render(self.stored(errors=["SPLPETRO"]))
+
+        assert "ZENSAR" not in text
+        assert "SPLPETRO" in text
+
+    def test_a_view_carrying_no_status_names_nobody(self, stores):
+        """Fail closed: a payload that cannot prove the run finished is not one
+        to name a destination for capital from."""
+        payload = self.stored()
+        payload.pop("status")
+
+        assert "ZENSAR" not in self.render(payload)
+
+    def test_a_partial_run_still_counts_its_blocked_candidates(self, stores):
+        """The blocked list is a true statement about what the run saw, and
+        stays true when the ranking built on it may not be shown."""
+        text = self.render(self.stored(
+            status="partial", errors=["SPLPETRO"], blocked=[{"ticker": "ASTRAL"}]
+        ))
+
+        assert "1 candidate(s) blocked" in text
+        assert "ASTRAL" in text
+
+
+class TestAdvanceWhenTheQueueCannotBeRead:
+    """A fault in the *routing* store must not stop companies being re-scored.
+
+    `advance._routing` is built to degrade — `queue=None` reports routing
+    unavailable-with-reason and the run continues. Constructing the queue
+    inline as an argument defeated that: `_load` raises on unreadable JSON
+    before `advance()` is ever entered, so a corrupt routing file took the
+    kill-switches down with it.
+    """
+
+    def test_the_run_still_advances_and_reports_routing_unavailable(
+        self, run, stores, monkeypatch
+    ):
+        from tests.test_lifecycle_advance import StubService
+
+        stores.wm().add("ASTRAL")
+        stores.queue.write_text('{"events": [ this is not json')
+        monkeypatch.setattr(
+            "boundless100x.service.Boundless100xService",
+            lambda *a, **k: StubService(),
+        )
+
+        result = run("watchlist", "advance")
+
+        assert result.exit_code == 0
+        assert "ASTRAL" in result.output
+        assert "routing" in result.output.lower()
+        assert "unavailable" in result.output.lower()
+
+    def test_the_watchlist_still_records_what_the_run_decided(
+        self, run, stores, monkeypatch
+    ):
+        """The point of degrading rather than aborting: the lifecycle work of
+        the run survives a fault in a store it only reports from."""
+        from tests.test_lifecycle_advance import StubService
+
+        wm = stores.wm()
+        wm.add("ASTRAL")
+        stores.queue.write_text("{")
+        monkeypatch.setattr(
+            "boundless100x.service.Boundless100xService",
+            lambda *a, **k: StubService(),
+        )
+
+        run("watchlist", "advance")
+
+        assert stores.wm().get("ASTRAL")["last_score_snapshot"] is not None
 
 
 # ── watchlist queue route ───────────────────────────────────────────────────

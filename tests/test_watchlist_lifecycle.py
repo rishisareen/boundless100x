@@ -10,6 +10,8 @@ describing a state that was never durable.
 """
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -19,9 +21,32 @@ from boundless100x.service import AnalysisResult
 from boundless100x.watchlist import (
     APPLIED_AUTO,
     APPLIED_OWNER,
+    StoreConflictError,
     WatchlistError,
     WatchlistManager,
+    atomic_write_json,
 )
+
+
+def fsync_recorder(monkeypatch, refuse_directories: bool = False) -> list[bool]:
+    """Record whether each `os.fsync` call was on a directory, in order.
+
+    Returns the list it appends to. `refuse_directories` makes the directory
+    call raise `OSError`, standing in for the platforms and filesystems that
+    will not let a directory be opened or synced at all.
+    """
+    calls: list[bool] = []
+    real_fsync = os.fsync
+
+    def recording(fd):
+        is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        calls.append(is_directory)
+        if is_directory and refuse_directories:
+            raise OSError("directory fsync is not supported here")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording)
+    return calls
 
 
 @pytest.fixture
@@ -57,6 +82,51 @@ def scored(composite=6.4, verdict="eligible") -> AnalysisResult:
         scores={"composite": composite, "elements": {"growth": 7.1}},
         eligibility={"verdict": verdict},
     )
+
+
+class TestTheAutouseIsolationCoversEveryLiveStore:
+    """No test may write a store the owner's real decisions live in.
+
+    `conftest` already redirected the score history on the argument that an
+    autouse fixture "catches tests that reach scoring without thinking about
+    persistence at all". The watchlist holds live positions and the
+    reinvestment queue holds real sales, and **every CLI entry point
+    constructs both with no path** — so one future test that forgets to
+    redirect writes the owner's actual files. The queue is not even
+    gitignored, so the damage would be committed alongside the change that
+    caused it.
+
+    The fixture is the fix; this is the assertion that it is still in place.
+    """
+
+    def test_all_three_module_defaults_point_inside_the_test_directory(
+        self, tmp_path
+    ):
+        from boundless100x import score_history
+        from boundless100x import watchlist as watchlist_module
+        from boundless100x.lifecycle import reinvestment as reinvestment_module
+
+        for module, attribute in (
+            (score_history, "DEFAULT_HISTORY_PATH"),
+            (watchlist_module, "DEFAULT_WATCHLIST_PATH"),
+            (reinvestment_module, "DEFAULT_QUEUE_PATH"),
+        ):
+            default = Path(getattr(module, attribute))
+            assert default.parent == tmp_path, f"{attribute} is not isolated"
+
+    def test_a_store_built_with_no_path_writes_inside_the_test_directory(
+        self, tmp_path
+    ):
+        """The construction every CLI command actually makes."""
+        from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
+
+        WatchlistManager().add("ASTRAL")
+        queue = ReinvestmentQueue()
+        queue.write_proposal({"status": "current"})
+
+        assert Path(WatchlistManager().path).parent == tmp_path
+        assert Path(queue.path).parent == tmp_path
+        assert (tmp_path / "watchlist.json").exists()
 
 
 class TestMembership:
@@ -372,6 +442,139 @@ class TestDurability:
         assert wm.data["revision"] == 0
         wm.transition("ASTRAL", "qualify", "t")
         assert wm.data["revision"] == 1
+
+
+class TestThePublishIsAsDurableAsTheData:
+    """Syncing the bytes is only half of it — the rename publishes them.
+
+    `os.replace` is a directory metadata change, and an unsynced one can still
+    be sitting in the OS cache when the power goes. `exit.py`'s whole
+    crash-safety argument is that the queue event is durable *before* the
+    transition is attempted; two unsynced renames can be made durable in the
+    opposite order, which produces an `exited` entry with no queue event —
+    the one direction the protocol calls unrecoverable, because the repair
+    path checks for `exit_review` and would refuse.
+    """
+
+    def test_the_directory_is_synced_after_the_file(self, tmp_path, monkeypatch):
+        calls = fsync_recorder(monkeypatch)
+        path = tmp_path / "store.json"
+
+        atomic_write_json(path, {"companies": {}})
+
+        # False is the temp file's data, True its directory — and the order is
+        # the point: syncing the directory before the replace would prove
+        # nothing about the replace.
+        assert calls == [False, True]
+        assert json.loads(path.read_text()) == {"companies": {}}
+
+    def test_a_filesystem_that_refuses_a_directory_sync_still_writes(
+        self, tmp_path, monkeypatch
+    ):
+        """Some platforms and filesystems will not open a directory at all.
+        Losing the extra guarantee is acceptable; losing the write is not."""
+        calls = fsync_recorder(monkeypatch, refuse_directories=True)
+        path = tmp_path / "store.json"
+
+        atomic_write_json(path, {"companies": {"ASTRAL": entry_on_disk()}})
+
+        assert True in calls, "the directory sync was never attempted"
+        assert json.loads(path.read_text())["companies"]["ASTRAL"]["lane"] == "core"
+        assert list(tmp_path.glob("*.tmp")) == [], "a refused sync left a temp file"
+
+    def test_a_store_written_through_the_manager_syncs_its_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """Not just the helper in isolation — the path every commit takes."""
+        wm = WatchlistManager(path=str(tmp_path / "watchlist.json"))
+        calls = fsync_recorder(monkeypatch)
+
+        wm.add("ASTRAL")
+
+        assert calls == [False, True]
+
+
+class TestASupersededWriterIsRefused:
+    """A lost update is silent, and the counter that should catch it agrees.
+
+    `_commit` rewrites the whole document from the copy loaded at
+    construction. Two writers that both loaded revision 5 both write revision
+    6, the loser's change disappears, and the store on disk looks perfectly
+    consistent afterwards — nothing anywhere says a decision was dropped. The
+    workflow reaches it: `watchlist advance` holds both stores open across a
+    fetch loop that takes minutes, and `watchlist exit` is a separate command.
+
+    Refusing is not locking. The window between the re-read and the replace is
+    still open; what closes is the far wider one between loading a store and
+    committing to it, and a refusal the caller can retry from a fresh load is
+    strictly better than a write nobody knows they lost.
+    """
+
+    def test_the_second_writer_raises_rather_than_clobbering(self, tmp_path):
+        path = str(tmp_path / "watchlist.json")
+        first = WatchlistManager(path=path)
+        first.add("ASTRAL")
+
+        # Loaded here, superseded on the next line — the shape of every
+        # long-running command that reads early and writes late.
+        second = WatchlistManager(path=path)
+        first.add("BAJFINANCE")
+
+        with pytest.raises(StoreConflictError):
+            second.add("TCS")
+
+        assert WatchlistManager(path=path).tickers() == ["ASTRAL", "BAJFINANCE"]
+
+    def test_the_refusal_names_the_file_and_both_revisions(self, tmp_path):
+        path = str(tmp_path / "watchlist.json")
+        first = WatchlistManager(path=path)
+        first.add("ASTRAL")
+        second = WatchlistManager(path=path)
+        first.add("BAJFINANCE")
+
+        with pytest.raises(StoreConflictError) as raised:
+            second.add("TCS")
+
+        message = str(raised.value)
+        assert "watchlist.json" in message
+        assert "1" in message and "2" in message
+
+    def test_a_fresh_load_can_retry_the_refused_change(self, tmp_path):
+        """The refusal has to leave a way forward, or it is just a new failure."""
+        path = str(tmp_path / "watchlist.json")
+        first = WatchlistManager(path=path)
+        first.add("ASTRAL")
+        second = WatchlistManager(path=path)
+        first.add("BAJFINANCE")
+
+        with pytest.raises(StoreConflictError):
+            second.add("TCS")
+        WatchlistManager(path=path).add("TCS")
+
+        assert WatchlistManager(path=path).tickers() == [
+            "ASTRAL", "BAJFINANCE", "TCS",
+        ]
+
+    def test_repeated_commits_from_one_instance_are_untouched(self, tmp_path):
+        """The common case: one writer, many commits. Nothing may change here."""
+        wm = WatchlistManager(path=str(tmp_path / "watchlist.json"))
+        wm.add("ASTRAL")
+        wm.transition("ASTRAL", "qualify", "t")
+        wm.set_checkpoints("ASTRAL", [{"metric_id": "quarterly_opm_pct"}])
+
+        assert wm.data["revision"] == 3
+
+    def test_a_store_whose_file_vanished_still_commits(self, tmp_path):
+        """Nothing on disk is nothing to lose — this is a refusal about lost
+        updates, not a demand that the file be where it was."""
+        path = tmp_path / "watchlist.json"
+        wm = WatchlistManager(path=str(path))
+        wm.add("ASTRAL")
+        path.unlink()
+
+        wm.add("BAJFINANCE")
+
+        assert WatchlistManager(path=str(path)).tickers() == ["ASTRAL", "BAJFINANCE"]
 
 
 class TestSchemaEnforcement:

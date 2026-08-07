@@ -129,6 +129,10 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "tam_from_superseded_report": (
         "TAM Read From a Superseded Report", "neutral"
     ),
+    # Phase 3 fast-lane input, also zero weight. `good` because accumulation is
+    # the direction the lane's flow gate rewards — but the label says what was
+    # counted rather than what it implies, since the metric moves no score.
+    "institutional_accumulation_rising": ("FII + DII Accumulating", "good"),
 }
 
 # ── Metric-to-element mapping with display labels ──
@@ -276,6 +280,12 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "quarterly_growth_accelerating": FORWARD_SIGNALS_ELEMENT,
     "quarterly_growth_decelerating": FORWARD_SIGNALS_ELEMENT,
     "tam_from_superseded_report": FORWARD_SIGNALS_ELEMENT,
+    # Phase 3 (zero weight). Registered here rather than under `size` although
+    # `institutional_accumulation_streak` lives in size.yaml: the rule is about
+    # what moved the score, and this metric moved nothing. Under `size` the
+    # report would show a new Size signal on a ticker whose Size score is
+    # unchanged.
+    "institutional_accumulation_rising": FORWARD_SIGNALS_ELEMENT,
 }
 
 # ── Forward signals (Phase 2, zero weight) ──

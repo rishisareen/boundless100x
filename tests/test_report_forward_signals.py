@@ -12,18 +12,120 @@ faked weight or would silently drop every one of these. It stays untouched, and
 the new section says in as many words that nothing in it moved the composite.
 """
 
+import ast
+import importlib
+import inspect
 import re
+import textwrap
 
 import pytest
 
+from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.output.report_generator import (
+    FLAG_ELEMENT_MAP,
+    FLAG_LABELS,
     FORWARD_SIGNALS,
     FORWARD_SIGNALS_DISCLAIMER,
     FORWARD_SIGNALS_ELEMENT,
     ReportGenerator,
 )
 from tests.conftest import make_result, make_scores
+
+
+# ── Reading the registry for what a zero-weight metric can flag ──
+#
+# KTD6's rule is about *every* zero-weight metric, and the test that enforced
+# it filtered on two hardcoded id prefixes — which is exactly why Phase 3's
+# `institutional_accumulation_streak` shipped with an unregistered flag and a
+# green suite. The prefix list was a convention nobody was reminded to extend.
+# These helpers ask the engine instead, so a new zero-weight metric is caught
+# on the run after it is added rather than on the day somebody remembers.
+
+
+def _literal_strings(node) -> set[str]:
+    """String constants inside a literal list, tuple, conditional or concat.
+
+    Deliberately literal-only. An f-string flag cannot be known statically, and
+    guessing at one would put a fabricated id in front of an assertion; the
+    zero-weight metrics emit none, and a scored metric that does is not this
+    rule's business.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return set().union(*(_literal_strings(e) for e in node.elts)) if node.elts else set()
+    if isinstance(node, ast.IfExp):
+        return _literal_strings(node.body) | _literal_strings(node.orelse)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _literal_strings(node.left) | _literal_strings(node.right)
+    return set()
+
+
+def emitted_flags(func) -> set[str]:
+    """Every flag string a compute function can put in its `MetricResult`.
+
+    Read off the source rather than by running the metric, because reaching
+    every flag branch would mean a fixture per branch — and a branch nobody
+    built a fixture for is precisely the one that ships unregistered.
+
+    Three shapes appear in `builtin/`, and all three are collected: appending
+    to a list whose name mentions flags, assigning a literal list to one
+    (including `band, flags = "favourable", [...]`, which is how
+    `rerating_headroom` does it), and passing one straight to `flags=`.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    found: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            called = node.func
+            if (
+                isinstance(called, ast.Attribute)
+                and called.attr in ("append", "extend")
+                and isinstance(called.value, ast.Name)
+                and "flag" in called.value.id
+            ):
+                for arg in node.args:
+                    found |= _literal_strings(arg)
+            for keyword in node.keywords:
+                if keyword.arg and "flag" in keyword.arg:
+                    found |= _literal_strings(keyword.value)
+
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and "flag" in target.id:
+                    found |= _literal_strings(node.value)
+                elif isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple):
+                    for name, value in zip(target.elts, node.value.elts):
+                        if isinstance(name, ast.Name) and "flag" in name.id:
+                            found |= _literal_strings(value)
+
+    return found
+
+
+def zero_weight_metrics() -> dict[str, dict]:
+    """Every registered metric the scorer will never give a score to."""
+    return {
+        metric_id: config
+        for metric_id, config in ComputeEngine().metrics.items()
+        if float((config.get("scoring") or {}).get("weight") or 0) == 0
+    }
+
+
+def metric_function(config: dict):
+    module = importlib.import_module(
+        f"boundless100x.compute_engine.metrics.{config['module']}"
+    )
+    return getattr(module, config["function"])
+
+
+def zero_weight_flags() -> dict[str, set[str]]:
+    """`{metric_id: flags it can emit}` for every zero-weight metric."""
+    return {
+        metric_id: emitted_flags(metric_function(config))
+        for metric_id, config in zero_weight_metrics().items()
+    }
 
 
 def signal_metrics(**overrides) -> dict:
@@ -248,15 +350,81 @@ class TestSeparationFromTheSqglpDrilldown:
             assert config["name"] not in rendered
 
     def test_no_forward_signal_flag_is_attributed_to_an_sqglp_element(self, generator):
-        """KTD6: FLAG_ELEMENT_MAP falls back to 'composite' for anything unmapped."""
-        flags = generator._collect_flags(signal_metrics())
-        phase_two = [
-            f for f in flags
-            if f["raw"].startswith(("rerating_headroom_", "quarterly_growth_"))
-        ]
+        """KTD6: FLAG_ELEMENT_MAP falls back to 'composite' for anything unmapped.
 
-        assert phase_two
-        assert all(f["element"] == FORWARD_SIGNALS_ELEMENT for f in phase_two)
+        The membership test is the registry's own answer rather than an id
+        prefix — a prefix filter passes silently the moment a zero-weight
+        metric is added whose flags do not match it.
+        """
+        flags = generator._collect_flags(signal_metrics())
+        emitted = set().union(*zero_weight_flags().values())
+        zero_weight = [f for f in flags if f["raw"] in emitted]
+
+        assert zero_weight
+        assert all(f["element"] == FORWARD_SIGNALS_ELEMENT for f in zero_weight)
+
+    def test_every_zero_weight_metrics_flags_are_registered_in_both_maps(self):
+        """KTD6, asked of the registry rather than of a naming convention.
+
+        `FLAG_ELEMENT_MAP` falls back to `"composite"` and `FLAG_LABELS` falls
+        back to a title-cased guess, so an unregistered flag does not fail —
+        it renders as an SQGLP signal, with an invented label, on a ticker
+        whose score did not move. Nothing about that looks wrong in a report.
+
+        This is therefore the one place the rule can be made mechanical: every
+        metric the scorer will never score, every flag its implementation can
+        emit, present as a key in both maps. Phase 3's
+        `institutional_accumulation_streak` is why — it shipped unregistered
+        under a test that filtered on two hardcoded Phase 2 id prefixes.
+        """
+        unregistered = {
+            metric_id: sorted(
+                flag for flag in flags
+                if flag not in FLAG_ELEMENT_MAP or flag not in FLAG_LABELS
+            )
+            for metric_id, flags in zero_weight_flags().items()
+        }
+        offenders = {mid: flags for mid, flags in unregistered.items() if flags}
+
+        assert offenders == {}, (
+            f"zero-weight metrics emit flags registered in neither "
+            f"FLAG_ELEMENT_MAP nor FLAG_LABELS: {offenders}"
+        )
+
+    def test_no_zero_weight_flag_resolves_to_an_sqglp_element(self):
+        """Registered is not enough — registered *where* is the rule.
+
+        `composite` is a legitimate destination for a scored metric's flag and
+        is also the fallback, so a zero-weight flag mapped there would be
+        indistinguishable from one nobody mapped at all.
+        """
+        for metric_id, flags in zero_weight_flags().items():
+            for flag in flags:
+                assert FLAG_ELEMENT_MAP[flag] == FORWARD_SIGNALS_ELEMENT, (
+                    f"{metric_id} emits {flag!r}, which renders under "
+                    f"{FLAG_ELEMENT_MAP[flag]!r}"
+                )
+
+    def test_the_scanner_finds_the_flags_it_is_known_to_find(self):
+        """The assertions above are only worth their green if this is not blind.
+
+        A source scanner that quietly stops matching would make an empty
+        offenders dict mean "nothing to check" rather than "nothing wrong", so
+        the shapes actually used in `builtin/` are pinned here: an append loop,
+        a tuple assignment, and a conditional passed straight to `flags=`.
+        """
+        found = zero_weight_flags()
+
+        assert found["rerating_headroom"] == {
+            "rerating_headroom_favourable", "rerating_headroom_stretched",
+        }
+        assert found["quarterly_momentum"] == {
+            "quarterly_growth_accelerating", "quarterly_growth_decelerating",
+        }
+        assert found["tam_runway"] == {"tam_from_superseded_report"}
+        assert found["institutional_accumulation_streak"] == {
+            "institutional_accumulation_rising"
+        }
 
     def test_a_forward_signal_flag_does_not_render_under_an_element_heading(self, generator):
         result = result_with()

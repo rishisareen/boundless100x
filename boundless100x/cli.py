@@ -920,10 +920,32 @@ def watchlist_exit(
         except ValueError:
             raise typer.BadParameter(f"--as-of {as_of!r} is not a YYYY-MM-DD date")
 
-    outcome = confirm_exit(
-        WatchlistManager(), ReinvestmentQueue(), ticker,
-        Boundless100xService(), when,
-    )
+    try:
+        outcome = confirm_exit(
+            WatchlistManager(), ReinvestmentQueue(), ticker,
+            Boundless100xService(), when,
+        )
+    except Exception as e:
+        # `confirm_exit` lets an exception escape its third step deliberately:
+        # the queue event is already durable at that point, so the situation is
+        # exactly the recoverable window and re-running the command completes
+        # it. That argument only helps somebody who is told to re-run — and a
+        # traceback at the moment two stores disagree is the worst possible
+        # thing to hand them. So the operation keeps raising and the surface
+        # says what to do about it.
+        symbol = escape(ticker.upper())
+        logger.error(f"{ticker.upper()}: the exit could not be completed: {e}")
+        console.print(
+            f"\n[red]{symbol}: the exit could not be completed — "
+            f"{escape(str(e))}[/red]"
+        )
+        console.print(
+            f"[yellow]Re-run `watchlist exit {symbol}` — it recomputes "
+            f"the same exit id, adopts the queued date and figures rather than "
+            f"re-pricing the sale, and completes the transition. "
+            f"`watchlist queue` shows whether the queue event landed.[/yellow]"
+        )
+        raise typer.Exit(1)
 
     if not outcome["ok"]:
         # The refusal already says which state the entry is in and that nothing
@@ -1151,9 +1173,27 @@ def watchlist_advance(
     # The production store, so the run's routing view is derived from the real
     # event log and written back to it. Without a queue the run still advances;
     # routing simply reports itself unavailable — see `advance._routing`.
-    result = advance(
-        svc, wm, apply=apply, quarterly=quarterly, queue=ReinvestmentQueue()
-    )
+    #
+    # Built inside a guard rather than inline as an argument, because `_load`
+    # raises on unreadable JSON or an invalid event and an exception there
+    # would escape before `advance()` was ever entered — taking the designed
+    # degradation path with it. A fault in the *routing* store would then stop
+    # every tracked company from being re-scored, kill-switches included, which
+    # trades the whole run for the one reading that is allowed to be missing.
+    try:
+        queue = ReinvestmentQueue()
+    except Exception as e:
+        from rich.markup import escape
+
+        logger.error(f"The reinvestment queue could not be read: {e}")
+        console.print(
+            f"[yellow]Reinvestment routing unavailable: the queue could not be "
+            f"read ({escape(str(e))}). The advance below is unaffected; fix or "
+            f"remove the queue file to restore routing.[/yellow]\n"
+        )
+        queue = None
+
+    result = advance(svc, wm, apply=apply, quarterly=quarterly, queue=queue)
     outcomes, errors = result["outcomes"], result["errors"]
 
     # Say when the corpus's valuation tightened entry, before showing what did
@@ -1230,11 +1270,30 @@ def _print_routing_result(routing) -> None:
     happened instead, so that what the owner reads here and what
     `watchlist queue` will show them tomorrow cannot disagree.
 
+    **And only when the run finished.** `_routing` stamps `status: partial` the
+    moment any ticker's analysis fails, and `reinvestment.snapshot_state`
+    refuses to render a partial snapshot's proposal — so naming one here would
+    have this line and a `watchlist queue` run seconds later disagree about the
+    *same stored bytes*, which is precisely what the paragraph above says
+    cannot happen. The condition is read off the snapshot rather than
+    hand-written a second time: `status` must be `current` and `errors` must be
+    empty, exactly the two questions `snapshot_state` asks before it sets
+    `renders_proposal`. A payload carrying no `status` at all cannot prove its
+    run finished, so it fails closed with the rest.
+
+    Resolving it through `snapshot_state` itself would be the tidier call, but
+    the honest comparison it makes needs the *live* store revisions, and this
+    call site holds neither store — feeding it the snapshot's own captured
+    counters would compare a number against itself and report `current`
+    unconditionally, which is worse than not asking.
+
     An unavailable view says so with its reason. A run that quietly printed
     nothing would be indistinguishable from one where the queue was empty, and
     those are different facts.
     """
     from rich.markup import escape
+
+    from boundless100x.lifecycle import reinvestment
 
     if not routing:
         return
@@ -1252,8 +1311,28 @@ def _print_routing_result(routing) -> None:
         )
         return
 
+    errored = [str(ticker) for ticker in routing.get("errors") or []]
     proposal = routing.get("proposal")
-    if proposal:
+    if routing.get("status") != reinvestment.SNAPSHOT_CURRENT or errored:
+        # Name the tickers that failed, because they are the thing to go and
+        # fix — and say which command rebuilds the ranking once they do.
+        detail = (
+            f"this run could not evaluate {', '.join(errored)}"
+            if errored else
+            f"this run's view does not record a completed pass "
+            f"(status: {routing.get('status')!r})"
+        )
+        # Two lines rather than one long one: a wrapped console splits mid-word,
+        # and the words most worth not splitting are the command to run.
+        console.print(
+            f"\n[dim]Reinvestment: no candidate named — {escape(detail)}, so "
+            f"the ranking was built on an incomplete field.[/dim]"
+        )
+        console.print(
+            "  [dim]`watchlist queue` withholds this proposal too — re-run "
+            "`watchlist advance` once every tracked company evaluates.[/dim]"
+        )
+    elif proposal:
         console.print(
             f"\n[bold]Reinvestment:[/bold] proceeds → "
             f"[cyan]{escape(str(proposal.get('ticker')))}[/cyan] "
@@ -1490,7 +1569,15 @@ def _print_exit_friction(outcomes) -> None:
     A reading that could not be computed is shown *with its reason* rather than
     omitted, for the reason the whole codebase treats gaps this way: a missing
     line and a silent zero look identical, and only one of them is honest.
+
+    Escaped like every other site that renders `describe`. The unavailable
+    branch interpolates an arbitrary exception message, so a bracketed fragment
+    would be swallowed as markup — the same silent truncation `_evidence_cell`
+    exists to prevent — and a closing form would raise `MarkupError` here,
+    aborting the run *after* its transitions had already been committed.
     """
+    from rich.markup import escape
+
     from boundless100x.lifecycle import friction
 
     exits = [
@@ -1508,8 +1595,8 @@ def _print_exit_friction(outcomes) -> None:
         reading = o["proposal"]["friction"]
         colour = "yellow" if reading.get("available") else "dim"
         console.print(
-            f"  [cyan]{o['ticker']}[/cyan] "
-            f"[{colour}]{friction.describe(reading)}[/{colour}]"
+            f"  [cyan]{escape(str(o['ticker']))}[/cyan] "
+            f"[{colour}]{escape(friction.describe(reading))}[/{colour}]"
         )
     console.print(
         "[dim]Holding period is measured from the `probe` confirmation date, "

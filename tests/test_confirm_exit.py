@@ -36,7 +36,11 @@ import pytest
 from boundless100x import score_history
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.lifecycle.advance import advance
-from boundless100x.lifecycle.evaluator import TriggerEvaluator, load_triggers
+from boundless100x.lifecycle.evaluator import (
+    TriggerEvaluator,
+    load_triggers,
+    validate_triggers,
+)
 from boundless100x.lifecycle.exit import confirm_exit
 from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
 from boundless100x.watchlist import WatchlistManager
@@ -489,6 +493,43 @@ class TestTransitionDetails:
 
 class TestExitedIsUnreachableByAnyOtherPath:
     """The invariant KTD10 rests on, asserted from both ends."""
+
+    def sale_trigger(self) -> dict:
+        """The registry entry nobody should be able to declare."""
+        return {
+            "price_target_hit": {
+                "label": "Sell on target",
+                "from": ["scale"],
+                "to": lifecycle_states.EXITED,
+                "conditions": [
+                    {"metric": "pe_ttm", "comparator": "gte", "threshold": 80}
+                ],
+            }
+        }
+
+    def test_a_declared_exited_destination_is_a_registry_error(self):
+        """Making the invariant structural rather than conventional.
+
+        The two tests below rest entirely on the current contents of a YAML
+        file — and editing that file is the *documented* way transitions are
+        added. `is_state("exited")` is True, so `to: exited` validated happily,
+        and such a trigger under `--apply` would write `exited` with no queue
+        event: the reverse ordering `exit.py` calls unrecoverable by
+        construction, because the repair path looks for `exit_review` and would
+        refuse the retry that could fix it.
+        """
+        errors = validate_triggers(self.sale_trigger())
+
+        assert any("exited" in error for error in errors)
+        assert any("watchlist exit" in error for error in errors)
+        assert any("lifecycle/exit.py" in error for error in errors)
+
+    def test_construction_raises_on_a_registry_that_declares_exited(self):
+        with pytest.raises(ValueError, match="validation failed"):
+            TriggerEvaluator(self.sale_trigger())
+
+    def test_the_shipped_registry_still_validates_clean(self):
+        assert validate_triggers(load_triggers()) == []
 
     def test_no_declared_trigger_names_exited_as_its_destination(self):
         offenders = [

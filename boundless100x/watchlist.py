@@ -76,8 +76,40 @@ class WatchlistError(ValueError):
     """A stored entry does not match the schema."""
 
 
+class StoreConflictError(RuntimeError):
+    """The store on disk moved on since this instance loaded it.
+
+    Not a schema fault, which is why it is neither `WatchlistError` nor
+    `ReinvestmentError`: the document is fine, the *writer* is stale. Raised
+    by `_JsonStore._commit`, and the way out is always the same — reload the
+    store and redo the change against what is actually there.
+    """
+
+
 def _now() -> str:
     return datetime.now().isoformat()
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Make a rename in this directory durable, where the platform allows it.
+
+    Its own function so the `except OSError` cannot accidentally swallow a
+    failure from the write itself: everything in here is the *extra*
+    guarantee, and the file it publishes is already on disk by the time this
+    runs. Opening a directory for reading is not portable — Windows refuses,
+    and some filesystems do too — so a refusal is logged and the write stands.
+    """
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError as e:
+        logger.debug(f"Could not open {directory} to fsync the rename: {e}")
+        return
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        logger.debug(f"Could not fsync {directory} after the rename: {e}")
+    finally:
+        os.close(fd)
 
 
 def atomic_write_json(path: Path | str, data: object) -> None:
@@ -88,6 +120,20 @@ def atomic_write_json(path: Path | str, data: object) -> None:
     reintroduce the copy this exists to avoid. The store therefore only ever
     holds a fully written document: either the old one or the new one, never
     the first few hundred bytes of the new one.
+
+    **Both the data and the publication are synced.** Syncing the file proves
+    its bytes reached the disk; the `os.replace` that makes them *the store* is
+    a directory metadata change, and an unsynced one can still be in the OS
+    cache when the power goes. That matters beyond one file: `exit.py`'s
+    crash-safety argument is that the queue event is durable before the
+    transition is attempted, and two unsynced renames can be made durable in
+    the opposite order — producing an `exited` entry with no queue event, the
+    one direction the exit protocol calls unrecoverable.
+
+    The directory sync is best-effort by necessity: some platforms and
+    filesystems refuse to open a directory for reading at all. A failure there
+    costs the extra guarantee and is logged; it must never cost the write,
+    which has already completed.
 
     Shared rather than private because the durability argument is per-file and
     identical wherever the argument applies.
@@ -109,6 +155,7 @@ def atomic_write_json(path: Path | str, data: object) -> None:
         if path.exists():
             os.chmod(temp_name, path.stat().st_mode & 0o777)
         os.replace(temp_name, path)
+        _fsync_directory(path.parent)
     except BaseException:
         # Leave nothing behind to be mistaken for a store: the caller keeps
         # the previous file, and a stray half-written sibling would only
@@ -168,6 +215,28 @@ class _JsonStore:
         """A deep copy of the store, safe to mutate before anything is committed."""
         return copy.deepcopy(self.data)
 
+    def _on_disk_revision(self) -> int | None:
+        """The counter the file currently holds, or None if there is no file.
+
+        Read fresh rather than remembered, because the whole question this
+        answers is what somebody *else* did in the meantime.
+        """
+        if not self.path.exists():
+            return None
+        try:
+            with open(self.path) as f:
+                return _revision_of(json.load(f))
+        except (OSError, ValueError) as e:
+            # Unreadable is not proof of safety. The constructor validated this
+            # file, so something changed it since, and overwriting whatever is
+            # there now on the strength of a copy loaded before that happened is
+            # exactly the destruction this check exists to prevent.
+            raise StoreConflictError(
+                f"{self.path} could not be re-read before committing ({e}), so "
+                f"this write cannot be shown not to discard someone else's — "
+                f"reload the store and repeat the change"
+            ) from e
+
     def _commit(self, staged: dict) -> None:
         """Persist a staged store, then adopt it — never the other way round.
 
@@ -175,8 +244,37 @@ class _JsonStore:
         rather than attempts. A reader comparing revisions to decide whether
         its view is current would otherwise be told a change happened that the
         store never took.
+
+        **A superseded writer is refused rather than allowed to win.** This
+        method rewrites the whole document from the copy loaded at
+        construction, so two processes that both loaded revision 5 both write
+        revision 6 and the loser's change vanishes — with a counter that reads
+        perfectly consistent afterwards, which makes the loss invisible to the
+        one mechanism built to detect superseded state. The documented workflow
+        reaches it: `watchlist advance` holds both stores open across a
+        minutes-long fetch loop, and `watchlist exit` is a separate command.
+        So the on-disk counter is re-read immediately before the write and must
+        still be the one this instance loaded.
+
+        **This closes the lost-update window, not the race.** Two processes can
+        still pass the check and reach `os.replace` in either order; what is
+        gone is the far wider window between loading a store and committing to
+        it. Deliberately not a lock: a lock file is state that outlives the
+        process holding it, and a stale one would block the exit command at
+        precisely the moment it is needed. A refusal the caller can retry from
+        a fresh load is the smaller promise, honestly kept.
         """
-        staged["revision"] = _revision_of(self.data) + 1
+        loaded = _revision_of(self.data)
+        current = self._on_disk_revision()
+        if current is not None and current != loaded:
+            raise StoreConflictError(
+                f"{self.path} is at revision {current}; this instance loaded "
+                f"revision {loaded} and its write would discard everything "
+                f"committed since. Nothing was written — reload the store and "
+                f"repeat the change against what is on disk."
+            )
+
+        staged["revision"] = loaded + 1
         atomic_write_json(self.path, staged)
         self.data = staged
 

@@ -391,6 +391,29 @@ class TestTheCommitMechanicsAreOneImplementation:
         assert queue.data["revision"] == 1
         assert watchlist.data["revision"] == 1
 
+    def test_a_superseded_writer_is_refused_on_the_queue_too(self, tmp_path):
+        """The lost-update refusal lives in `_commit`, so both stores have it.
+
+        It matters most here. An exit event silently overwritten is a sale that
+        happened and is recorded nowhere, and `exit_is_complete` would then read
+        the watchlist's `exited` transition against no queue event at all — the
+        unrecoverable direction KTD10's ordering exists to rule out.
+        """
+        from boundless100x.watchlist import StoreConflictError
+
+        path = str(tmp_path / "queue.json")
+        first = ReinvestmentQueue(path=path)
+        record(first, "ASTRAL")
+
+        second = ReinvestmentQueue(path=path)
+        record(first, "BAJFINANCE", exit_id="BAJFINANCE:2026-08-02T10:00:00")
+
+        with pytest.raises(StoreConflictError):
+            record(second, "TCS", exit_id="TCS:2026-08-03T10:00:00")
+
+        recorded = [e["ticker"] for e in ReinvestmentQueue(path=path).exits()]
+        assert recorded == ["ASTRAL", "BAJFINANCE"]
+
     def test_the_queue_keeps_its_own_file_and_schema(self, tmp_path):
         """The pinned decision, asserted: sharing the mechanics is not merging
         the stores. An event that does not match is this module's loud error,

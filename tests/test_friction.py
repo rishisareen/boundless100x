@@ -730,6 +730,31 @@ class TestAdvanceAttachesTheReading:
 
         assert "unavailable" in captured.get().lower()
 
+    def test_an_unavailable_reason_carrying_brackets_still_renders(self):
+        """The reason is an interpolated exception message, so it is arbitrary.
+
+        Rich reads a leading `[` as a style tag: an unescaped fragment is
+        swallowed exactly as `_evidence_cell` was added to prevent, and a
+        closing form like `[/x]` raises `MarkupError` — which would abort
+        `watchlist advance` *after* its transitions had already been committed.
+        This is the only one of `describe`'s four render sites that was not
+        escaped.
+        """
+        from boundless100x import cli
+
+        reading = {
+            "available": False,
+            "reason": "the position could not be priced (KeyError: [/adj_close])",
+        }
+        with cli.console.capture() as captured:
+            cli._print_exit_friction(
+                [{"ticker": "ZENSAR", "proposal": {"friction": reading}}]
+            )
+        text = captured.get()
+
+        assert "[/adj_close]" in text
+        assert "ZENSAR" in text
+
     def test_the_cli_prints_nothing_when_no_proposal_carries_a_reading(self):
         from boundless100x import cli
 

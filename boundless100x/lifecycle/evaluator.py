@@ -138,6 +138,26 @@ def validate_triggers(
         destination = spec.get("to")
         if not lifecycle_states.is_state(destination):
             errors.append(f"{trigger_id}: unknown destination state {destination!r}")
+        elif destination == lifecycle_states.EXITED:
+            # `exited` is a real state, so `is_state` passes it — and that was
+            # the whole guard. The invariant that nothing but `confirm_exit`
+            # produces `exited` therefore rested on the current *contents* of
+            # triggers.yaml, which is the documented place transitions are
+            # added. Declared here, such a trigger under `--apply` would write
+            # the transition with no queue event: the reverse of KTD10's
+            # ordering, which `exit.py` calls unrecoverable by construction
+            # because the repair path checks for `exit_review` and would refuse
+            # the retry that could fix it. Structural rather than conventional,
+            # for the same reason every other check in this function exists.
+            errors.append(
+                f"{trigger_id}: `exited` cannot be a declared destination — no "
+                f"metric can observe that the owner sold, so the sale is "
+                f"recorded by `watchlist exit` (lifecycle/exit.py), which "
+                f"writes the queue event before the transition. A trigger "
+                f"reaching `exited` would skip that event and leave the two "
+                f"stores unrecoverably disagreed. Propose "
+                f"{lifecycle_states.EXIT_REVIEW!r} instead."
+            )
 
         origins = spec.get("from") or []
         if isinstance(origins, str):
