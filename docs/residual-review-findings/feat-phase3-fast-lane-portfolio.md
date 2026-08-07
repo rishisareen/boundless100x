@@ -155,3 +155,38 @@ survived triage.
 - **`advance_ticker` is never run against the degraded result the real service
   produces on a fetch failure** — `service.analyze` catches its own exceptions
   and returns empty scores rather than raising, while the test stub raises.
+
+## Second-pass review (2026-08-07)
+
+An independent re-review of `5ae71fc..6960a76` after the phase closed. It
+confirmed the findings above against the code and the green suite (1583), and
+added three more, none blocking.
+
+- **The checkpoint past-dating check does not follow the run clock.**
+  `record_from_pass2` gained an `as_of` parameter (`checkpoints.py`), but its
+  only production caller, `record_checkpoints` (`advance.py`), never passes
+  one, so the validation falls back to `date.today()` — and the `{today}` the
+  pass-2 prompt states is wall-clock too. On a live run these coincide, but a
+  backdated `--as-of` replay validates `due_date`s against the wrong "today":
+  the one seam where the phase's otherwise-rigorous "same clock the rest of
+  the run reads" discipline (threaded correctly through the evaluator,
+  friction, and the time stops) does not reach. The fix is one parameter
+  through two signatures.
+
+- **The accumulation streak fails closed but silently on a reordered file.**
+  `compute_institutional_accumulation_trend` walks backward assuming
+  oldest-first `shareholding.csv` order (verified true of the corpus today).
+  If a refetch ever wrote newest-first, the adjacency check breaks the walk at
+  the first step and the metric returns `0` — a *fail*, not an error — so the
+  gate reads "no accumulation" indefinitely rather than indeterminate. The
+  safe direction, but inconsistent with the module's own loudness rule; a
+  "periods must be ascending, else error" check would close it.
+
+- **No decay exit from `watch` in either lane.** `fast_lane_qualification_
+  failed` covers `screen`/`qualify` only, mirroring the core lane's
+  pre-existing gap: a candidate whose composite decays below the floor while
+  sitting in `watch` is never dropped — only `fundamentals_deteriorated` can
+  remove it. Symmetric rather than a regression, but the fast lane's "complete
+  path" claim is slightly overstated: a stalled `watch` entry is
+  indistinguishable from a considered one, the same criticism the drop rule's
+  own rationale levels at `screen`.
