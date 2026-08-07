@@ -805,6 +805,18 @@ counts are non-zero in every section, so the gate is still gating — governance
 notably harder than before, which costs nothing because `governance` is gated
 for reporting and never submitted.
 
+Per sub-metric, which is the cut that decides what each one can actually read
+(`REQUIRED_SECTIONS`, so `tam_runway` counts its ranked `chairman` fallback):
+
+| Sub-metric | Before | After |
+|---|---|---|
+| `promises_kept_ratio` | 11/29 report-years, 10 codes | **24/54, 11 codes** |
+| `capex_pipeline` | 11/29 report-years, 10 codes | **24/54, 11 codes** |
+| `tam_runway` | 17/29 report-years, 14 codes | **33/54, 15 codes** |
+
+The before column reproduces Phase 2's recorded figures exactly, which is the
+check that this measurement uses the same instrument.
+
 ### The extraction sweep
 
 The population that can be *attempted* went from effectively one ticker to
