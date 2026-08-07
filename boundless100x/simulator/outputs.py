@@ -910,6 +910,19 @@ def gate_coverage_matrix(records: list[dict] | None) -> dict:
 # ── 4. Exclusions and limitations (R8, backtest idiom) ────────────────
 
 
+def _attr_or_key(obj, name: str):
+    """Read `name` off a dataclass instance or a duck-typed dict, whichever
+    `obj` is — the same attribute-then-`.get` fallback this module's Input
+    Contract #5 documents (a test may hand in the real `UniverseResult`/
+    `ReplayCalendar` dataclass or a plain dict shaped the same way). `None`
+    when `obj` is `None` or carries neither.
+    """
+    value = getattr(obj, name, None)
+    if value is None and isinstance(obj, dict):
+        value = obj.get(name)
+    return value
+
+
 def describe_exclusions(
     *,
     universe_result=None,
@@ -924,10 +937,7 @@ def describe_exclusions(
     exclusions: list[dict] = []
 
     # 1. Never-eligible tickers (KTD8).
-    excluded_map = getattr(universe_result, "excluded", None)
-    if excluded_map is None and isinstance(universe_result, dict):
-        excluded_map = universe_result.get("excluded")
-    excluded_map = excluded_map or {}
+    excluded_map = _attr_or_key(universe_result, "excluded") or {}
     exclusions.append({
         "category": "never_eligible_tickers",
         "count": len(excluded_map),
@@ -1030,15 +1040,8 @@ def build_limitations(
     """
     owner_settings = owner.config_from(config)
 
-    battery_complete = getattr(calendar_result, "battery_complete", None)
-    if battery_complete is None and isinstance(calendar_result, dict):
-        battery_complete = calendar_result.get("battery_complete")
-    battery_complete = battery_complete or {}
-
-    battery_detail = getattr(calendar_result, "battery_detail", None)
-    if battery_detail is None and isinstance(calendar_result, dict):
-        battery_detail = calendar_result.get("battery_detail")
-    battery_detail = battery_detail or {}
+    battery_complete = _attr_or_key(calendar_result, "battery_complete") or {}
+    battery_detail = _attr_or_key(calendar_result, "battery_detail") or {}
 
     def _fmt_battery(lane: str) -> str:
         value = battery_complete.get(lane)

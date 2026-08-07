@@ -659,6 +659,34 @@ def run_replay(
             # the `watch` this buy zone was read against may no longer be
             # the company's state. Nothing is bought against a stale read.
             return
+
+        # The cap is checked HERE, at settlement, not at proposal time —
+        # `decide()`'s own `concentration_gate` call (inside the per-ticker
+        # loop, days before this runs) reads occupancy as it stood then, and
+        # a second proposal scheduled the same date would have read the
+        # identical stale, pre-either-settlement count. Re-checked live,
+        # immediately before the write, so a sibling settlement processed
+        # earlier in this same `due` batch is already visible here — the
+        # production rule CLAUDE.md states ("a cap is checked before the
+        # transition, not counted after it... an applying run changes the
+        # occupancy it is checking") applied at the moment this loop actually
+        # changes it, not only at the moment a proposal was merely accepted.
+        # Only when this transition would ADD a name, exactly `decide()`'s
+        # own test: a `scale` follow-on tranche into an already-positioned
+        # ticker changes no count.
+        if (
+            proposal["to"] in lifecycle_states.POSITIONED
+            and item["from_state"] not in lifecycle_states.POSITIONED
+        ):
+            cap_reasons = concentration_gate(lane, ticker_sectors.get(ticker))
+            if cap_reasons and not override_caps:
+                owner_decisions.append({
+                    "date": str(at_date), "kind": "cap_withheld",
+                    "ticker": ticker, "lane": lane, "to": proposal["to"],
+                    "reasons": cap_reasons,
+                })
+                return
+
         bar = resolved_bar(ticker, at_date)
         if bar is None:
             errors.append({
@@ -682,22 +710,48 @@ def run_replay(
         entry = watchlist.get(ticker)
         if entry is None:
             return
+        if entry["state"] != item["from_state"] and entry["state"] != EXIT_REVIEW:
+            # Neither still positioned as proposed, nor already in review —
+            # overtaken by something else since scheduling. Nothing to do.
+            return
+
+        # Resolved and validated BEFORE any durable write. `confirm_exit`
+        # below performs KTD10's three-store write (queue event, the
+        # EXIT_REVIEW->EXITED transition, the confirmation stamp) — once it
+        # succeeds, the watchlist and queue agree the sale happened, and
+        # nothing here can undo that. `price_bars.bar_on_or_before` filters
+        # NaN/estimated-alias rows but not a non-positive close (a real,
+        # if rare, corpus data artifact), and `Ledger.sell`'s own
+        # `_bar_price` guard raises on exactly that — checked too late if it
+        # runs after `confirm_exit`, leaving the watchlist/queue saying
+        # "exited" while the ledger still holds the position for the rest of
+        # the run. Validating here first, matching `settle_entry`'s own
+        # order, means a bad bar refuses the WHOLE settlement — no
+        # transition, no confirm_exit, nothing written — rather than leaving
+        # the two stores disagreed.
+        bar = resolved_bar(ticker, at_date)
+        if bar is None or bar["price"] <= 0:
+            errors.append({
+                "ticker": ticker, "date": str(at_date),
+                "error": (
+                    f"exit due for {at_date} but no usable positive price bar "
+                    f"exists on or before it — settlement refused, nothing written"
+                ),
+            })
+            return
 
         # `decide()` always runs with `apply=False`, so `exit_review` itself
         # was never written when the proposal fired — this settlement writes
         # it now, mirroring what `advance_ticker` would have written under
         # `apply=True` at proposal time, just later, once the owner's lag
-        # has elapsed.
+        # has elapsed. Skipped when already in `exit_review` (the `elif`
+        # above already refused every other stale state).
         if entry["state"] == item["from_state"]:
             watchlist.transition(
                 ticker, EXIT_REVIEW, proposal["trigger_id"],
                 evidence=proposal["evidence"], applied_by=APPLIED_OWNER,
                 at=at_date.isoformat(),
             )
-        elif entry["state"] != EXIT_REVIEW:
-            # Neither still positioned as proposed, nor already in review —
-            # overtaken by something else since scheduling. Nothing to do.
-            return
 
         raw_price = price_frames.get(ticker)
         truncated_price = (
@@ -716,19 +770,11 @@ def run_replay(
         # Separately and independently (R5/KTD5): `confirm_exit`'s own
         # friction reading and the ledger's cash settlement are two
         # intentionally distinct models, never reconciled against each
-        # other. The bar is the confirmed date's own, exactly as an entry's
-        # bar is resolved at settlement.
-        bar = resolved_bar(ticker, at_date)
-        if bar is not None:
-            fraction = item.get("sell_fraction") or 1.0
-            reason = f"{proposal.get('trigger_id', '')}: {proposal.get('evidence', '')}"
-            for settlement in ledger.sell(ticker, fraction, bar, reason, config):
-                trade_log.append({**settlement, "kind": "sell"})
-        else:
-            errors.append({
-                "ticker": ticker, "date": str(at_date),
-                "error": f"exit confirmed for {at_date} but no usable price bar exists on or before it — the lifecycle transition landed but the ledger holds no matching sale",
-            })
+        # other. The bar is the confirmed date's own, already validated above.
+        fraction = item.get("sell_fraction") or 1.0
+        reason = f"{proposal.get('trigger_id', '')}: {proposal.get('evidence', '')}"
+        for settlement in ledger.sell(ticker, fraction, bar, reason, config):
+            trade_log.append({**settlement, "kind": "sell"})
 
         # KTD3: schedule the routing of this exit's proceeds, over
         # production's own ranking (`ReinvestmentQueue.propose_routing`).
@@ -758,6 +804,22 @@ def run_replay(
             # routing lag elapsed — proceeds stay in cash (a longer idle
             # reading), never a buy into a candidate that has since left.
             return
+
+        # Same live re-check as `settle_entry`, and for the identical
+        # reason: only when this routing would move the candidate INTO a
+        # positioned state (from CANDIDATE_STATES) does it add a name the
+        # cap counts. A routed buy into an already-positioned candidate
+        # (funding a further tranche) changes no count and is not gated.
+        if entry["state"] in CANDIDATE_STATES:
+            cap_reasons = concentration_gate(lane, ticker_sectors.get(candidate))
+            if cap_reasons and not override_caps:
+                owner_decisions.append({
+                    "date": str(at_date), "kind": "cap_withheld",
+                    "ticker": candidate, "lane": lane, "to": PROBE,
+                    "reasons": cap_reasons,
+                })
+                return  # proceeds stay in cash; idle_days keeps counting
+
         bar = resolved_bar(candidate, at_date)
         if bar is None:
             errors.append({
@@ -851,7 +913,17 @@ def run_replay(
                     "date": cutoff, "ticker": ticker, "lane_gate_result": decision["lane_gates"],
                 })
 
-                watchlist.set_kill_switch_status(ticker, decision["kill_switch_status"])
+                # Written only when it actually changed — every write is a
+                # full store commit (atomic_write_json: temp file, fsync,
+                # rename, revision bump), and re-running it for every ticker
+                # on every replay date when nothing moved is pure overhead
+                # across a run that can reach hundreds of (ticker, date)
+                # pairs. `entry` is re-read fresh (not the pre-loop `entry`
+                # local, which a same-loop `watchlist.transition` above may
+                # have already staled) so the comparison is against what is
+                # actually on disk right now.
+                if (watchlist.get(ticker) or {}).get("kill_switch_status") != decision["kill_switch_status"]:
+                    watchlist.set_kill_switch_status(ticker, decision["kill_switch_status"])
 
                 proposal = decision["proposal"]
                 outcomes_this_date.append({
