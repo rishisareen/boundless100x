@@ -960,3 +960,32 @@ where 7 of them previously sat on a raw close**, which reads a 1:5 split as an
 - **SPLPETRO's P&L shape.** One ticker whose Screener table mixes June and March
   period ends, so the dominant-label rule discards its only recent annual row.
   Out of scope here because the rule is load-bearing for scored metrics.
+
+### Post-review addendum (2026-08-07)
+
+A simplification pass and an eight-reviewer code review ran over the phase diff
+after the measurements above were taken. Two consequences a reader of this
+record needs:
+
+**The stored extraction sidecars are invalidated.** The review found three
+validator defects — a rupee unit could ground beside a foreign currency marker,
+the required period fields were unbounded free text, and a non-string `section`
+raised out of the whole pass — and fixing them changed which entries survive.
+`SCHEMA_VERSION` went 7 → 8 accordingly, which is what that number is for. The
+58 entries counted above were validated under 7 and are a superset of what 8
+accepts, so **the yield figures stand as measured but need one re-sweep
+(~$0.29 for the 11 extracted tickers) to be reproducible on disk.** That
+re-sweep and the four never-swept tickers are the same command.
+
+**Three "green surface" defects were fixed in the operational commands**, none
+of which affects the measurements: a refetch whose sources all failed reported
+`ok` and marked itself complete; `restore` could delete the corpus and the
+snapshot together; and the resume log never expired, so a second `corpus
+refetch` silently did nothing. The corpus refetch this record describes
+completed before those fixes and its audit was verified by hand, so the numbers
+are unaffected — but anyone repeating the operation should do it on the fixed
+code.
+
+Phase 2's R7 re-proof was re-run after every change and still holds:
+byte-identical across 22 tickers, `registry_hash` unmoved at `1d9f30d09df3`,
+`forward_signal_hash` moving to `7e4415c78c48`.
