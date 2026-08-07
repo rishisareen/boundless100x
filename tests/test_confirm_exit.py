@@ -212,18 +212,19 @@ class TestRefusals:
 
     def test_a_completed_exit_is_refused_and_appends_nothing(self, wm, queue):
         """The second run of a *successful* exit, as opposed to a retry of a
-        crashed one: the state is now `exited`, so there is nothing to
-        complete."""
+        crashed one: the record is whole — transition and stamp both — so there
+        is nothing left to complete and the run must not invent something."""
         entered = reviewed_position(wm)
         service = priced_service(entered)
         confirm_exit(wm, queue, "ASTRAL", service, entered + timedelta(days=400))
+        written = list(queue.events())
 
         outcome = confirm_exit(wm, queue, "ASTRAL", service,
                                entered + timedelta(days=500))
 
         assert outcome["ok"] is False
         assert "exited" in outcome["reason"]
-        assert len(queue.events()) == 1
+        assert queue.events() == written
         assert len(wm.get("ASTRAL")["state_history"]) == 3
 
     def test_an_untracked_ticker_is_refused(self, wm, queue):
@@ -316,6 +317,147 @@ class TestCrashRecovery:
         assert len(exits) == 1
         assert exits[0]["details"] == queue.exits()[0]["friction"]
         assert wm.get("ASTRAL")["state"] == "exited"
+
+
+class TestTheStampWindow:
+    """The window between step 3 and step 4 — transition written, stamp not.
+
+    The shallowest of the crash windows and the one that used to be a dead end.
+    The sale is complete in both stores and only the queue's record of the
+    agreement is missing, but the entry now sits in `exited` — a state
+    `confirm_exit` refused outright, so the one command that could finish the
+    record refused on the very state it was being asked to finish, and the
+    proceeds stayed unroutable with `watchlist queue` reporting nothing
+    outstanding.
+
+    The interruption is applied to `record_confirmation` rather than to a
+    hand-written store, so this asserts the *ordering* too: if the stamp were
+    written before the transition, the entry would still be in `exit_review`
+    here and the assertions below would be describing a different window.
+    """
+
+    def interrupted(self, wm, queue, entered, monkeypatch) -> str:
+        def stamp_that_never_lands(*args, **kwargs):
+            raise RuntimeError("power cut after the transition")
+
+        monkeypatch.setattr(queue, "record_confirmation", stamp_that_never_lands)
+        with pytest.raises(RuntimeError):
+            confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                         entered + timedelta(days=400))
+        monkeypatch.undo()
+
+        exit_id = queue.exits()[0]["exit_id"]
+        assert wm.get("ASTRAL")["state"] == "exited"   # the transition landed
+        assert queue.find_confirmation(exit_id) is None  # the stamp did not
+        return exit_id
+
+    def test_the_proceeds_stay_routable_inside_the_window(
+        self, wm, queue, monkeypatch
+    ):
+        """This is what the live-state fallback is *for*, and the one case it
+        still serves.
+
+        The sale genuinely completed — both stores hold it — and only the
+        record of the agreement is missing, so the proceeds must not disappear
+        while the stamp is outstanding. The entry's own history stands in, read
+        matched to this exit's review. What the stamp adds is not the reading
+        but its *durability*: the fallback works only while the entry exists.
+        """
+        entered = reviewed_position(wm)
+        self.interrupted(wm, queue, entered, monkeypatch)
+
+        assert [v["ticker"] for v in queue.routable_exits(wm)] == ["ASTRAL"]
+
+    def test_the_retry_stamps_the_record_and_says_that_is_all_it_did(
+        self, wm, queue, monkeypatch
+    ):
+        entered = reviewed_position(wm)
+        exit_id = self.interrupted(wm, queue, entered, monkeypatch)
+
+        outcome = confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                               entered + timedelta(days=700))
+
+        assert outcome["ok"] is True
+        assert outcome["stamp_only"] is True
+        assert outcome["exit_id"] == exit_id
+        assert queue.find_confirmation(exit_id) is not None
+
+    def test_the_retry_writes_no_second_transition_and_no_second_exit_event(
+        self, wm, queue, monkeypatch
+    ):
+        """It completes the record of a sale, so it must add nothing to the
+        record of what happened — one sale, one transition, one exit event."""
+        entered = reviewed_position(wm)
+        self.interrupted(wm, queue, entered, monkeypatch)
+        history = list(wm.get("ASTRAL")["state_history"])
+
+        confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                     entered + timedelta(days=700))
+
+        assert wm.get("ASTRAL")["state_history"] == history
+        assert len(queue.exits()) == 1
+
+    def test_the_stamp_dates_the_transition_not_the_run_that_noticed(
+        self, wm, queue, monkeypatch
+    ):
+        """`at` records when the watchlist agreed the sale completed. A run
+        reconciling days later must not restate that as having happened when it
+        caught up — `recorded_at` is what holds the latter."""
+        entered = reviewed_position(wm)
+        exit_id = self.interrupted(wm, queue, entered, monkeypatch)
+        transitioned = wm.get("ASTRAL")["state_history"][-1]["at"]
+
+        confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                     entered + timedelta(days=700))
+
+        stamp = queue.find_confirmation(exit_id)
+        assert stamp["at"] == transitioned
+        assert stamp["recorded_at"] != transitioned
+
+    def test_the_retry_adopts_the_stored_figures_rather_than_re_pricing(
+        self, wm, queue, monkeypatch
+    ):
+        """The same rule the earlier window's retry follows, for the same
+        reason: the sale is already recorded, and a figure re-priced against
+        newer bars would make the two stores disagree about one event."""
+        entered = reviewed_position(wm)
+        self.interrupted(wm, queue, entered, monkeypatch)
+        stored = dict(queue.exits()[0])
+
+        outcome = confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                               entered + timedelta(days=700))
+
+        assert queue.exits()[0] == stored
+        assert outcome["friction"]["gross_return_pct"] == pytest.approx(50.0)
+        assert outcome["exit_date"] == str(entered + timedelta(days=400))
+
+    def test_the_repaired_exit_is_routable(self, wm, queue, monkeypatch):
+        """The point of the repair, and the property the window cost."""
+        entered = reviewed_position(wm)
+        self.interrupted(wm, queue, entered, monkeypatch)
+
+        confirm_exit(wm, queue, "ASTRAL", priced_service(entered),
+                     entered + timedelta(days=700))
+
+        assert [v["ticker"] for v in queue.routable_exits(wm)] == ["ASTRAL"]
+
+    def test_an_exited_entry_with_no_queue_event_is_still_refused(self, wm, queue):
+        """The unrecoverable direction stays a refusal, deliberately.
+
+        A transition with no exit event behind it cannot be repaired by writing
+        one: the sale's date and its friction figures are gone, and inventing
+        them today would price a months-old sale against today's bars and call
+        the result a record. Refusing names the disagreement instead.
+        """
+        reviewed_position(wm)
+        wm.transition("ASTRAL", "exited", REVIEW_TRIGGER, applied_by="owner")
+
+        outcome = confirm_exit(wm, queue, "ASTRAL", StubService(),
+                               date(2026, 8, 7))
+
+        assert outcome["ok"] is False
+        assert "exited" in outcome["reason"]
+        assert queue.events() == []
 
 
 class TestPricingReadsOneSource:

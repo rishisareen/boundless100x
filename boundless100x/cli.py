@@ -871,8 +871,53 @@ def watchlist_catalyst(
 def watchlist_remove(
     ticker: str = typer.Argument(help="NSE symbol to remove"),
 ):
-    """Remove a company from the watchlist."""
+    """Remove a company from the watchlist.
+
+    **Refused while the company holds an unconfirmed exit.** That is the one
+    state whose repair genuinely needs the lifecycle record — `watchlist exit`
+    keys on the entry's `exit_review` transition and completes from its history
+    — so deleting the entry underneath it strands the proceeds with no command
+    able to reach them, and the queue then reports nothing outstanding.
+    Completing the exit first costs one command; the removal is then safe,
+    because a confirmed exit carries its own completion stamp and no longer
+    depends on the entry existing at all.
+
+    An unreadable queue refuses too. It cannot show that the removal is safe,
+    and "could not check" must not resolve to "go ahead" on the one path that
+    cannot be undone.
+    """
+    from rich.markup import escape
+
+    from boundless100x.lifecycle.reinvestment import ReinvestmentQueue
     from boundless100x.watchlist import WatchlistManager
+
+    symbol = ticker.upper()
+    try:
+        blocking = ReinvestmentQueue().unconfirmed_exits(symbol)
+    except Exception as e:
+        logger.error(f"The reinvestment queue could not be read: {e}")
+        console.print(
+            f"[red]The reinvestment queue could not be read ({escape(str(e))}), "
+            f"so this removal cannot be shown not to strand recorded exit "
+            f"proceeds.[/red]"
+        )
+        console.print("[dim]Nothing was removed.[/dim]")
+        raise typer.Exit(1)
+
+    if blocking:
+        listed = ", ".join(event["exit_id"] for event in blocking)
+        console.print(
+            f"[red]{symbol} holds {len(blocking)} recorded exit(s) whose sale is "
+            f"not yet confirmed ({escape(listed)}).[/red]"
+        )
+        console.print(
+            f"[yellow]Run `watchlist exit {symbol}` to complete the record "
+            f"first — removing the entry now would leave those proceeds with no "
+            f"command able to route them, and `watchlist queue` would stop "
+            f"reporting them as outstanding.[/yellow]"
+        )
+        console.print("[dim]Nothing was removed.[/dim]")
+        raise typer.Exit(1)
 
     wm = WatchlistManager()
     if wm.remove(ticker):
@@ -954,16 +999,31 @@ def watchlist_exit(
         console.print(f"[red]{escape(outcome['reason'])}[/red]")
         raise typer.Exit(1)
 
-    verb = "reconciled" if outcome["adopted"] else "recorded"
-    console.print(
-        f"\n[bold green]{outcome['ticker']}: exit_review → exited[/bold green] "
-        f"on {outcome['exit_date']} ({verb})"
-    )
-    if outcome["adopted"]:
+    # Three things this command can have just done, and they are worth telling
+    # apart: recorded a sale, completed a transition an earlier crash left
+    # queued, or stamped a record whose transition was already there. All three
+    # leave the same state; only the last two mean a previous run was
+    # interrupted.
+    if outcome["stamp_only"]:
         console.print(
-            "[dim]An earlier run had already queued this exit; its date and "
-            "figures were adopted rather than re-priced.[/dim]"
+            f"\n[bold green]{outcome['ticker']}: exit record completed[/bold green] "
+            f"for the sale of {outcome['exit_date']}"
         )
+        console.print(
+            "[dim]The transition was already recorded; this run added only the "
+            "completion stamp its proceeds needed to be routable.[/dim]"
+        )
+    else:
+        verb = "reconciled" if outcome["adopted"] else "recorded"
+        console.print(
+            f"\n[bold green]{outcome['ticker']}: exit_review → exited[/bold green] "
+            f"on {outcome['exit_date']} ({verb})"
+        )
+        if outcome["adopted"]:
+            console.print(
+                "[dim]An earlier run had already queued this exit; its date and "
+                "figures were adopted rather than re-priced.[/dim]"
+            )
     console.print(f"  trigger: {escape(outcome['trigger_id'] or '—')}")
     reading = outcome["friction"]
     colour = "yellow" if reading.get("available") else "dim"
@@ -1041,10 +1101,10 @@ def watchlist_queue_route(
     from rich.markup import escape
 
     from boundless100x.lifecycle.reinvestment import (
-        NO_PROCEEDS,
         ReinvestmentQueue,
         eligible_deployments,
         exit_is_complete,
+        unroutable_reason,
     )
     from boundless100x.watchlist import WatchlistManager
 
@@ -1056,12 +1116,14 @@ def watchlist_queue_route(
         console.print("[dim]Nothing was recorded.[/dim]")
         raise typer.Exit(1)
 
-    # 1. Proceeds first, before any argument is judged.
-    if not queue.routable_exits(wm):
-        console.print(f"[yellow]{NO_PROCEEDS}[/yellow]")
+    # 1. Proceeds first, before any argument is judged — and the reason
+    #    distinguishes an empty queue from one holding exits only the owner can
+    #    complete, because those two call for opposite next steps.
+    routable, incomplete = queue.unrouted_views(wm)
+    if not routable:
+        console.print(f"[yellow]{escape(unroutable_reason(incomplete))}[/yellow]")
         console.print(
-            "[dim]A routing event deploys the proceeds of a completed exit; "
-            "there are none outstanding.[/dim]"
+            "[dim]A routing event deploys the proceeds of a completed exit.[/dim]"
         )
         raise typer.Exit(1)
 
@@ -1085,11 +1147,12 @@ def watchlist_queue_route(
     #    so the direct command cannot be a way round that exclusion.
     sold = event["ticker"]
     entry = wm.get(sold)
-    if not exit_is_complete(entry):
+    if not exit_is_complete(entry=entry, event=event,
+                            confirmation=queue.find_confirmation(exit_id)):
         state = entry["state"] if entry else "no watchlist entry"
         refuse(
-            f"{sold} is in {state!r} and holds no completed `exited` transition, "
-            f"so this exit is only half recorded — run `watchlist exit {sold}` "
+            f"{sold} is in {state!r} and this exit carries no completion stamp, "
+            f"so the sale is only half recorded — run `watchlist exit {sold}` "
             f"to complete it before routing its proceeds"
         )
 
@@ -1454,9 +1517,9 @@ def _print_routing_snapshot(queue, watchlist) -> None:
 
     from boundless100x.lifecycle import friction
     from boundless100x.lifecycle.reinvestment import (
-        NO_PROCEEDS,
         SNAPSHOT_UNAVAILABLE,
         snapshot_state,
+        unroutable_reason,
     )
 
     snapshot = queue.latest_proposal() or {}
@@ -1553,8 +1616,15 @@ def _print_routing_snapshot(queue, watchlist) -> None:
         if view["note"]:
             console.print(f"    [red]{escape(view['note'])}[/red]")
 
-    if not queue.routable_exits(watchlist):
-        console.print(f"\n[dim]{NO_PROCEEDS}[/dim]")
+    # The closing line, and the one place this display could quietly lie. An
+    # exit recorded but not confirmed is capital the owner has and cannot yet
+    # reach; printing "no proceeds awaiting routing" over it is the false
+    # all-clear the queue exists to prevent, so the sentence is chosen by
+    # `unroutable_reason` and the incomplete case is yellow, not dim.
+    routable, incomplete = queue.unrouted_views(watchlist)
+    if not routable:
+        tone = "yellow" if incomplete else "dim"
+        console.print(f"\n[{tone}]{escape(unroutable_reason(incomplete))}[/{tone}]")
 
 
 def _print_exit_friction(outcomes) -> None:

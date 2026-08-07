@@ -11,7 +11,7 @@ not wired into `advance()` at all.
 Confirming an exit writes **two stores** — a queue event and a watchlist
 transition — and two JSON files cannot be written atomically. Rather than
 pretend otherwise with a transaction that does not exist, the failure window is
-made *recoverable*, in three ordered steps:
+made *recoverable*, in four ordered steps:
 
   1. **Validate before any durable write.** The state must be `exit_review`;
      anything else is a clean refusal that names the actual state and says
@@ -22,6 +22,13 @@ made *recoverable*, in three ordered steps:
      which is what makes the append idempotent.
   3. **Transition second**, carrying the same friction payload as structured
      `details` beside its prose evidence.
+  4. **The completion stamp last** — a `confirmed` event, keyed by the same id,
+     recording that the watchlist agreed. It exists because completeness has to
+     outlive the entry that proves it: read from live lifecycle state instead,
+     an exit whose company later left the watchlist became permanently
+     unroutable, and the queue then reported no proceeds outstanding.
+     `lifecycle/reinvestment.py` argues the reading; this is where it is
+     written.
 
 **The ordering is the crash-safety argument.** A crash between steps 2 and 3
 leaves the entry still in `exit_review` with a queue event present. Re-running
@@ -31,6 +38,13 @@ the transition. Reconciliation is "run it again" — no new tooling, no repair
 mode. Adopting rather than recomputing matters on its own: a retry days later
 would otherwise re-price the same sale against newer bars, and the two stores
 would disagree about a single event.
+
+A crash between steps 3 and 4 is the shallowest window and repairs the same
+way. The sale is in both stores and only the stamp is missing, so the retry
+meets an entry already in `exited` — a state the command used to refuse
+outright, which would have made the one command that could finish the record
+refuse on the very state it was being asked to finish. It now appends the stamp
+and nothing else: no re-pricing, no second transition, no new queue event.
 
 The reverse order would be unrecoverable by construction. Transition first plus
 a crash leaves an exited position with no queue event — and the state check
@@ -64,6 +78,7 @@ import logging
 from datetime import date
 
 from boundless100x.lifecycle import friction as friction_module
+from boundless100x.lifecycle import reinvestment
 from boundless100x.lifecycle import states as lifecycle_states
 from boundless100x.watchlist import APPLIED_OWNER
 
@@ -141,39 +156,116 @@ def _friction_for_confirmed_exit(service, ticker: str, entry: dict, exit_date) -
     )
 
 
+def _stamp_only(watchlist, queue, ticker: str, entry: dict, exit_id: str,
+                event: dict) -> dict:
+    """Complete an exit whose transition landed but whose stamp did not.
+
+    Step 4's own crash window, and the shallowest of the three: both stores
+    already hold the sale, and what is missing is only the queue's record that
+    they agree. So nothing is re-priced, no transition is written, and no
+    second queue event is appended — the stamp adopts the timestamp of the
+    `exited` transition that is already there, and the proceeds become
+    routable.
+
+    Reached rather than refused because the alternative is the failure the
+    whole protocol is built against: an entry sitting in `exited` whose
+    proceeds no surface will offer to route, with `watchlist exit` — the one
+    command that could repair it — refusing on the very state it is being asked
+    to repair.
+
+    The friction payload comes back from the stored event rather than being
+    recomputed, for the reason the adopting retry does the same: a figure
+    re-priced days later would make the two stores disagree about one sale.
+    """
+    exited = lifecycle_states.last_record_into(
+        entry.get("state_history"), lifecycle_states.EXITED
+    )
+    if not (exited or {}).get("at"):
+        return _refused(
+            ticker,
+            f"{ticker} is in {lifecycle_states.EXITED!r} but its history holds no "
+            f"transition into it, so there is no timestamp to record as the "
+            f"moment the exit completed — the stores cannot be reconciled "
+            f"automatically, and nothing was recorded",
+            entry.get("state"),
+        )
+
+    confirmation = queue.record_confirmation(exit_id, at=exited["at"])
+    logger.info(f"{ticker}: stamped the exit already transitioned as {exit_id}")
+    return {
+        "ok": True,
+        "ticker": ticker,
+        "lane": entry.get("lane"),
+        "exit_id": exit_id,
+        "exit_date": event.get("at"),
+        "trigger_id": event.get("trigger_id", ""),
+        "friction": event.get("friction") or {},
+        "adopted": True,
+        # Distinct from `adopted`, because the two runs did different amounts of
+        # work and the surface says so: an adopting retry completed the
+        # transition, this one found the transition already there and completed
+        # only the record of it.
+        "stamp_only": True,
+        "evidence": (exited or {}).get("evidence", ""),
+        "event": event,
+        "transition": exited,
+        "confirmation": confirmation,
+    }
+
+
 def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
     """Record an owner-confirmed exit across both stores. The only path to `exited`.
 
     Returns `{ok: True, ...}` with the exit id, date, friction payload, queue
-    event and transition record, or `{ok: False, reason, state}` on a refusal
-    that wrote nothing. See the module docstring for why the two writes are
-    ordered as they are, and why an unpriceable exit still records.
+    event, transition record and completion stamp, or `{ok: False, reason,
+    state}` on a refusal that wrote nothing. See the module docstring for why
+    the writes are ordered as they are, and why an unpriceable exit still
+    records.
 
-    An exception escaping step 3 is left to propagate rather than converted:
-    the queue event is already durable, so the situation is exactly the
-    recoverable crash window, and re-running the command completes it.
+    An exception escaping step 3 or step 4 is left to propagate rather than
+    converted: the queue event is already durable, so the situation is exactly
+    a recoverable crash window, and re-running the command completes it.
     """
     ticker = ticker.upper()
 
     # ── step 1: validate, and identify the exit, before anything is written ──
+    stamp_only = False
     try:
         entry = watchlist.get(ticker)
         if entry is None:
             return _refused(ticker, f"{ticker} is not on the watchlist — nothing was recorded")
 
         state = entry["state"]
-        if state != lifecycle_states.EXIT_REVIEW:
+        review = lifecycle_states.last_transition_into(
+            entry, lifecycle_states.EXIT_REVIEW
+        )
+        # The id a retry recomputes identically, which is the whole basis of the
+        # idempotent appends below. The format is `reinvestment`'s, because the
+        # store that persists the id also parses it back apart to find the
+        # review it keys on — two copies would eventually disagree about which
+        # sale an event describes.
+        exit_id = (
+            reinvestment.exit_id_for(ticker, review["at"]) if review else ""
+        )
+        existing = queue.find_exit(exit_id) if exit_id else None
+        stamped = queue.find_confirmation(exit_id) if exit_id else None
+
+        if state == lifecycle_states.EXITED and existing is not None and stamped is None:
+            # Step 4's window: the sale is recorded in both stores and only the
+            # stamp is missing. Handled below rather than here, so the append
+            # sits outside this try — a commit failure there is the same
+            # recoverable situation as one in step 3, and converting it to a
+            # refusal would tell the owner nothing was written when the point is
+            # that something already was.
+            stamp_only = True
+        elif state != lifecycle_states.EXIT_REVIEW:
             return _refused(
                 ticker,
                 f"{ticker} is in {state!r}, not {lifecycle_states.EXIT_REVIEW!r} — an "
                 f"exit is confirmed only from an exit review, and nothing was recorded",
                 state,
             )
-
-        review = lifecycle_states.last_transition_into(
-            entry, lifecycle_states.EXIT_REVIEW
-        )
-        if review is None:
+        elif review is None:
             return _refused(
                 ticker,
                 f"{ticker} is in exit_review but its history holds no transition "
@@ -182,11 +274,6 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
                 f"nothing was recorded",
                 state,
             )
-
-        # The id a retry recomputes identically, which is the whole basis of
-        # the idempotent append below.
-        exit_id = f"{ticker}:{review['at']}"
-        existing = queue.find_exit(exit_id)
     except Exception as e:
         # Nothing has been written at this point, and without an `exit_id` the
         # append could not be made safe anyway — so this refuses rather than
@@ -195,6 +282,9 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
         return _refused(
             ticker, f"the exit could not be identified ({e}) — nothing was recorded"
         )
+
+    if stamp_only:
+        return _stamp_only(watchlist, queue, ticker, entry, exit_id, existing)
 
     trigger_id = review.get("trigger_id", "")
     lane = entry["lane"]
@@ -243,6 +333,13 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
         applied_by=APPLIED_OWNER,
     )
 
+    # ── step 4: the completion stamp, last ──
+    # Carrying the transition's own timestamp, not this moment's: the stamp
+    # records when the watchlist agreed the sale completed, and a run
+    # reconciling an older crash must not restate that as having happened when
+    # it caught up.
+    confirmation = queue.record_confirmation(exit_id, at=record["at"])
+
     return {
         "ok": True,
         "ticker": ticker,
@@ -255,7 +352,9 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
         # queued — the caller renders it, because "recorded" and "reconciled"
         # are different things to have just done.
         "adopted": adopted,
+        "stamp_only": False,
         "evidence": evidence,
         "event": event,
         "transition": record,
+        "confirmation": confirmation,
     }

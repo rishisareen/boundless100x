@@ -19,6 +19,26 @@ the two leaves a state that re-running the command repairs. That repair only
 works because a second append with the same `exit_id` is refused rather than
 duplicated — the refusal is what turns "run it again" into reconciliation.
 
+**Completeness is stamped, not inferred.** An exit is complete when a
+`confirmed` event says so — appended after the watchlist transition lands, and
+keyed by the same `exit_id`. It was once derived from live lifecycle state
+instead ("does this ticker hold an `exited` transition?"), which answered a
+per-*exit* question with a per-*ticker* fact and was wrong in both directions.
+Removing a company from the watchlist made its already-recorded proceeds
+permanently unroutable, and the queue then reported "No exit proceeds awaiting
+routing" — the exact false all-clear this module exists to prevent — while the
+recovery the display offered (`watchlist exit <ticker>`) could never succeed,
+the ticker being gone. In the other direction, a ticker re-added and exited a
+second time made the *older* event read complete on the strength of the newer
+sale. A stamped event survives the entry it describes, which is the property
+the reading needed and live state cannot have.
+
+The live fallback is kept for exactly one case: the window between the
+transition and the stamp. There the entry's own history is the evidence that
+the stamp has not caught up yet — and it is read **matched to this exit's own
+review**, never to any `exited` record the ticker happens to hold, or the
+per-ticker confusion comes straight back through the fallback.
+
 **Routing is an append, never a mutation.** Marking an exit routed adds a
 `routing` event referencing the `exit_id` it deploys. The exit event itself is
 never touched, so what was recorded at the moment of the sale stays exactly as
@@ -72,15 +92,20 @@ Four rules shape it, and each exists because its opposite is a plausible
 mistake:
 
 **A proposal requires proceeds.** With no completed unrouted exit the view
-carries `NO_PROCEEDS` in place of a candidate. Capital that does not exist
-cannot be routed toward one, and a standing recommendation with nothing to fund
-it reads as an instruction to buy.
+carries no candidate. Capital that does not exist cannot be routed toward one,
+and a standing recommendation with nothing to fund it reads as an instruction
+to buy.
 
-**An unfinished exit record is not proceeds.** An exit event whose ticker still
-sits in `exit_review` is KTD10's crash window — the queue event landed and the
-transition did not. It is reported with the command that completes it and
-excluded from routing until it is, both here and in `queue route`, so the
-direct command cannot bypass the display's exclusion.
+**An unfinished exit record is not proceeds — and is not emptiness either.** An
+exit event whose ticker still sits in `exit_review` is KTD10's crash window:
+the queue event landed and the transition did not. It is excluded from routing
+until it is completed, both here and in `queue route`, so the direct command
+cannot bypass the display's exclusion. But excluded is not absent. `NO_PROCEEDS`
+is reserved for a queue with genuinely nothing outstanding; where the only thing
+standing between the owner and their capital is a half-written record,
+`unroutable_reason` says so and names the command that finishes it. The two
+sentences look alike and mean opposite things — one says there is nothing to do,
+the other says there is something only the owner can do.
 
 **Safety is read, never re-derived.** Each outcome already carries a
 `routing_safety` payload built by `advance_ticker`, whose eligibility question
@@ -125,11 +150,17 @@ DEFAULT_QUEUE_PATH = Path(__file__).parent / "reinvestment_queue.json"
 
 EXIT_EVENT = "exit"
 ROUTING_EVENT = "routing"
-EVENT_KINDS = (EXIT_EVENT, ROUTING_EVENT)
+CONFIRMED_EVENT = "confirmed"
+EVENT_KINDS = (EXIT_EVENT, ROUTING_EVENT, CONFIRMED_EVENT)
 
 # The one sentence for "there is nothing to route". Shared between the view and
 # every surface that renders it, so the display and the `queue route` refusal
 # cannot drift into saying different things about the same emptiness.
+#
+# **Reserved for genuine emptiness.** Reaching for it whenever no exit is
+# routable is the false all-clear the module docstring argues against — go
+# through `unroutable_reason`, which picks this sentence only when there is in
+# fact nothing outstanding.
 NO_PROCEEDS = "No exit proceeds awaiting routing"
 
 # KTD10's crash window, stated with the command that closes it. An owner
@@ -138,6 +169,33 @@ NO_PROCEEDS = "No exit proceeds awaiting routing"
 INCOMPLETE_EXIT_NOTICE = (
     "Exit recording incomplete — run `watchlist exit {ticker}` to complete it"
 )
+
+# The two shapes of disagreement no command can repair, because the lifecycle
+# record the queue would reconcile against is gone or was never written. Both
+# are reachable only by editing a store by hand or restoring one from a copy —
+# `watchlist remove` refuses while an exit is unconfirmed, and `confirm_exit`
+# stamps before anything can remove the entry. They are still rendered rather
+# than swallowed: an unroutable event nobody can see is how proceeds go missing.
+ORPHANED_EXIT_NOTICE = (
+    "{ticker} is no longer on the watchlist and this exit was never confirmed, "
+    "so no command can complete it — the stores disagree and one of them was "
+    "edited outside this system"
+)
+UNMATCHED_EXIT_NOTICE = (
+    "{ticker} is on the watchlist in {state!r} but its history holds no "
+    "`exited` transition for this exit's review — the sale is recorded in the "
+    "queue alone"
+)
+
+# An `exit_id` is `TICKER:<the exit_review transition's timestamp>`. The format
+# lives here, beside the store that persists it, rather than in `exit.py` which
+# computes it: a retry recomputing the id is the whole basis of the idempotent
+# append, and the per-exit completeness reading below parses the same id back
+# apart to find the review it keys on. Two copies of the format and those two
+# would eventually disagree about which sale an event describes.
+#
+# A ticker never contains a colon, so one split on the first separator is exact.
+EXIT_ID_SEPARATOR = ":"
 
 # Snapshot states, in precedence order. `Unavailable` and `Partial` are facts
 # about the run that produced the snapshot; `Stale` is a fact about everything
@@ -170,6 +228,10 @@ _UNRANKED_STATE = len(CANDIDATE_STATES)
 REQUIRED_KEYS = {
     EXIT_EVENT: ("kind", "exit_id", "ticker", "lane", "trigger_id", "at", "friction"),
     ROUTING_EVENT: ("kind", "exit_id", "candidate", "deployed_at", "recorded_at"),
+    # `at` is the *transition's* timestamp, not this append's: the stamp records
+    # when the watchlist agreed the sale completed, and a reconciling run days
+    # later must not restate that as having happened when it caught up.
+    CONFIRMED_EVENT: ("kind", "exit_id", "at", "recorded_at"),
 }
 
 
@@ -203,23 +265,107 @@ def _days_between(start, end) -> int | None:
     return (second - first).days
 
 
-def exit_is_complete(entry: dict | None) -> bool:
-    """Whether the watchlist confirms the sale this exit event records.
+def exit_id_for(ticker: str, review_at: str) -> str:
+    """The id both stores key this sale on: ticker and its `exit_review` stamp.
 
-    Two conditions, and the second is KTD10's crash window: the entry must hold
-    an `exited` transition, and it must not still be sitting in `exit_review`.
-    An event whose entry never left the review is a sale the watchlist has not
-    agreed to — `confirm_exit` writes the queue first precisely so that this
-    disagreement is visible rather than lost, and routing proceeds that only
-    one store believes in is what the visibility is for.
+    Derived rather than generated, which is what lets a retry on any later day
+    compute the same one and recognise its own earlier attempt. The review's
+    timestamp is the identifying half — a position exited, re-entered and
+    exited again produces two reviews and therefore two ids, so the second sale
+    can never be mistaken for the first.
     """
+    return f"{ticker.upper()}{EXIT_ID_SEPARATOR}{review_at}"
+
+
+def review_at_of(exit_id) -> str:
+    """The `exit_review` timestamp an id keys on, or `""` if it holds none.
+
+    The inverse of `exit_id_for`, and the reason the format is stated once: the
+    completeness fallback below has to find *this* exit's review in a history
+    that may hold several, and it has nothing else to match on.
+    """
+    if not isinstance(exit_id, str) or EXIT_ID_SEPARATOR not in exit_id:
+        return ""
+    return exit_id.split(EXIT_ID_SEPARATOR, 1)[1]
+
+
+def _exited_after_review(entry: dict, review_at: str) -> bool:
+    """Whether the entry left *this* exit's review for `exited`.
+
+    Matched to the review the `exit_id` keys on, never to any `exited` record
+    the ticker happens to hold. The looser reading is what made completeness a
+    per-ticker fact: a company exited, re-added, and taken to a second exit
+    would answer "yes" for the *first* sale on the strength of the second, and
+    proceeds recorded months apart would collapse into one routable event.
+
+    Position in the history is the test, because that is what "after" means in
+    an append-only log — comparing timestamps instead would have to reconcile a
+    transition's wall clock against a review's, which are the same clock only
+    while nobody replays a backdated run.
+    """
+    if not review_at:
+        return False
+    history = [r for r in entry.get("state_history") or [] if isinstance(r, dict)]
+    opened = [
+        index
+        for index, record in enumerate(history)
+        if record.get("to") == lifecycle_states.EXIT_REVIEW
+        and record.get("at") == review_at
+    ]
+    if not opened:
+        return False
+    return any(
+        record.get("to") == lifecycle_states.EXITED
+        for record in history[opened[-1] + 1:]
+    )
+
+
+def exit_is_complete(event: dict | None, entry: dict | None,
+                     confirmation: dict | None = None) -> bool:
+    """Whether this sale is fully recorded — a question about the exit, not the ticker.
+
+    **The stamp answers it.** A `confirmed` event is the watchlist's agreement,
+    written down at the moment it was given, and it stays true afterwards
+    however the entry it describes changes or whether the entry survives at all.
+    That is the whole point: proceeds recorded and confirmed remain routable
+    after the company leaves the watchlist, where the previous live-state
+    reading made them permanently unroutable and then reported the queue as
+    empty.
+
+    **Live state is the fallback, for one window only.** Between step 3 (the
+    transition) and step 4 (the stamp) the sale is complete and the queue does
+    not yet say so, so the entry's own history stands in — read strictly, and
+    matched to this exit's review. Everything else reads incomplete: an entry
+    still in `exit_review` is KTD10's earlier crash window, and an entry that is
+    simply gone is a disagreement `exit_views` reports rather than resolves.
+    """
+    if isinstance(confirmation, dict):
+        return True
     if not isinstance(entry, dict):
         return False
     if entry.get("state") == lifecycle_states.EXIT_REVIEW:
         return False
-    return any(
-        isinstance(record, dict) and record.get("to") == lifecycle_states.EXITED
-        for record in entry.get("state_history") or []
+    return _exited_after_review(entry, review_at_of((event or {}).get("exit_id")))
+
+
+def unroutable_reason(incomplete: list[dict] | None) -> str:
+    """Why nothing can be routed — emptiness, or a record only the owner can finish.
+
+    One function because the two sentences are one decision, and every surface
+    that reports "nothing to route" has to make it the same way. Reaching for
+    `NO_PROCEEDS` directly is how a half-written exit came to render as an empty
+    queue: identical wording for a queue holding nothing and a queue holding
+    capital nobody can reach.
+    """
+    if not incomplete:
+        return NO_PROCEEDS
+    tickers = ", ".join(
+        sorted({str(view.get("ticker")) for view in incomplete})
+    )
+    return (
+        f"{len(incomplete)} exit(s) are recorded but not confirmed ({tickers}) "
+        f"— their proceeds cannot be routed until the recording is completed, "
+        f"and this is not an empty queue"
     )
 
 
@@ -593,6 +739,57 @@ class ReinvestmentQueue(_JsonStore):
         logger.info(f"{event['ticker']}: exit recorded ({exit_id})")
         return event
 
+    def record_confirmation(self, exit_id: str, at: str) -> dict:
+        """Append the stamp that the watchlist agreed this sale completed.
+
+        KTD10's step 4, and the last of the three writes. It goes **after** the
+        transition for the same reason the exit event goes before it: each write
+        must leave a state its own retry can recognise. Stamping first would
+        assert a completed sale the watchlist had not yet recorded — the one
+        claim this store must never make on its own — while stamping last means
+        a crash here leaves an exit the retry finds already transitioned and
+        finishes by appending nothing but this event.
+
+        `at` is the transition's timestamp, carried in rather than taken from
+        the clock: a run reconciling a week-old crash records when the sale was
+        agreed, not when someone got round to noticing. `recorded_at` is what
+        holds the latter, exactly as it does on a routing event.
+
+        Two refusals, both structural. A stamp for an unrecorded exit would
+        assert completeness for a sale this store never saw, and a second stamp
+        for one exit is a duplicate of a fact that is already true.
+        """
+        if self.find_exit(exit_id) is None:
+            raise ReinvestmentError(
+                f"no exit {exit_id} is recorded — a confirmation must reference "
+                f"the exit whose completion it stamps"
+            )
+        existing = self.find_confirmation(exit_id)
+        if existing is not None:
+            raise ReinvestmentError(
+                f"exit {exit_id} was already confirmed (on {existing.get('at')}) "
+                f"— the log is append-only and a sale completes once"
+            )
+        if not at:
+            raise ReinvestmentError(
+                f"the confirmation of exit {exit_id} needs the timestamp of the "
+                f"transition that completed it — without one the stamp cannot "
+                f"say when the watchlist agreed, only when it was written down"
+            )
+
+        event = {
+            "kind": CONFIRMED_EVENT,
+            "exit_id": exit_id,
+            "at": at,
+            "recorded_at": _now(),
+        }
+
+        staged = self._stage()
+        staged["events"].append(event)
+        self._commit(staged)
+        logger.info(f"{exit_id}: exit confirmed complete")
+        return event
+
     def record_routing(
         self,
         exit_id: str,
@@ -676,6 +873,32 @@ class ReinvestmentQueue(_JsonStore):
                 return event
         return None
 
+    def find_confirmation(self, exit_id: str) -> dict | None:
+        """The stamp saying this exit's sale completed, or None if it has none."""
+        for event in self.data["events"]:
+            if event.get("kind") == CONFIRMED_EVENT and event.get("exit_id") == exit_id:
+                return event
+        return None
+
+    def unconfirmed_exits(self, ticker: str | None = None) -> list[dict]:
+        """Exit events carrying no completion stamp, oldest first.
+
+        The question `watchlist remove` asks before it deletes an entry. An
+        unconfirmed exit is the one state whose repair genuinely needs the
+        lifecycle record — `confirm_exit` reads the entry's `exit_review`
+        transition to key on and its history to complete — so removing the
+        entry underneath it strands the proceeds with no command able to reach
+        them. A confirmed exit needs no such thing and survives the removal,
+        which is the difference the stamp buys.
+        """
+        events = [
+            event for event in self.exits()
+            if self.find_confirmation(event.get("exit_id")) is None
+        ]
+        if ticker:
+            events = [e for e in events if e.get("ticker") == ticker.upper()]
+        return events
+
     def routing_for(self, exit_id: str) -> dict | None:
         """The routing event that closed this exit, or None if it is still open."""
         for event in self.data["events"]:
@@ -706,28 +929,34 @@ class ReinvestmentQueue(_JsonStore):
         proceeds idle for that month, and a reading that said so would make
         bookkeeping lateness look like indecision.
 
-        Each view also states whether the watchlist agrees the sale completed.
-        An event stranded in KTD10's crash window carries the recovery command
-        in its own `note`, because whoever meets the line is the person who has
-        to run it.
+        Each view also states whether the sale completed, read from this exit's
+        own stamp and falling back to lifecycle state only inside the window
+        before the stamp lands. An incomplete event carries the reason it is
+        incomplete in its own `note` — with the recovery command when there is
+        one, and saying plainly that there is none when there is not, because
+        whoever meets the line is the person who has to act on it.
         """
         as_of = lifecycle_states.as_date(as_of) or date.today()
         views = []
         for event in self.exits():
             ticker = event.get("ticker")
-            routing = self.routing_for(event.get("exit_id"))
+            exit_id = event.get("exit_id")
+            routing = self.routing_for(exit_id)
             entry = watchlist.get(ticker) if watchlist is not None else None
-            complete = exit_is_complete(entry)
+            complete = exit_is_complete(
+                event, entry, self.find_confirmation(exit_id)
+            )
 
             if complete:
                 note = ""
             elif entry is None:
-                note = (
-                    f"{ticker} is no longer on the watchlist, so this exit "
-                    f"cannot be confirmed against a lifecycle record"
-                )
-            else:
+                note = ORPHANED_EXIT_NOTICE.format(ticker=ticker)
+            elif entry.get("state") == lifecycle_states.EXIT_REVIEW:
                 note = INCOMPLETE_EXIT_NOTICE.format(ticker=ticker)
+            else:
+                note = UNMATCHED_EXIT_NOTICE.format(
+                    ticker=ticker, state=entry.get("state")
+                )
 
             views.append({
                 "exit_id": event.get("exit_id"),
@@ -749,16 +978,31 @@ class ReinvestmentQueue(_JsonStore):
             })
         return views
 
+    def unrouted_views(self, watchlist, as_of=None) -> tuple[list[dict], list[dict]]:
+        """Unrouted exits split into the routable and the merely incomplete.
+
+        Returned together because every caller needs both halves to say
+        anything honest: the first is what can be deployed, and the second is
+        the difference between "nothing to route" and "something only you can
+        unblock". Splitting it here rather than at each surface is what stops
+        one of them reporting an empty queue while another shows the events in
+        it.
+        """
+        unrouted = [
+            view for view in self.exit_views(watchlist, as_of) if not view["closed"]
+        ]
+        return (
+            [view for view in unrouted if view["complete"]],
+            [view for view in unrouted if not view["complete"]],
+        )
+
     def routable_exits(self, watchlist, as_of=None) -> list[dict]:
-        """Unrouted exits the watchlist confirms — the only proceeds to deploy.
+        """Unrouted exits whose sale is complete — the only proceeds to deploy.
 
         Both filters matter. A routed exit's capital is already somewhere, and
         an unconfirmed one is a sale only this store believes in.
         """
-        return [
-            view for view in self.exit_views(watchlist, as_of)
-            if not view["closed"] and view["complete"]
-        ]
+        return self.unrouted_views(watchlist, as_of)[0]
 
     def propose_routing(self, watchlist, advance_outcomes, concentration,
                         as_of=None) -> dict:
@@ -787,10 +1031,7 @@ class ReinvestmentQueue(_JsonStore):
         should be ranked where it now is, not where it started the run.
         """
         as_of_date = lifecycle_states.as_date(as_of) or date.today()
-        views = self.exit_views(watchlist, as_of_date)
-        unrouted = [view for view in views if not view["closed"]]
-        idle = [view for view in unrouted if view["complete"]]
-        incomplete = [view for view in unrouted if not view["complete"]]
+        idle, incomplete = self.unrouted_views(watchlist, as_of_date)
 
         ranked, blocked = self._rank_candidates(
             watchlist, advance_outcomes, concentration
@@ -801,8 +1042,11 @@ class ReinvestmentQueue(_JsonStore):
         if not idle:
             # Checked before the ranking is consulted, and reported in place of
             # a candidate: a recommendation with nothing to fund it reads as an
-            # instruction to buy.
-            proposal, reason = None, NO_PROCEEDS
+            # instruction to buy. Which sentence goes here is
+            # `unroutable_reason`'s decision, never a bare `NO_PROCEEDS` — a
+            # half-recorded exit is capital the owner has, and reporting it as
+            # an empty queue is the failure this view exists to prevent.
+            proposal, reason = None, unroutable_reason(incomplete)
         elif proposal is None and blocked:
             reason = (
                 f"every candidate was blocked ({len(blocked)}) — see the "

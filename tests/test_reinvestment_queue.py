@@ -551,16 +551,25 @@ def concentration_for(wm, config=None, sectors=None) -> dict:
 
 
 def completed_exit(wm, queue, ticker="SOLD", lane="core", at="2026-08-01") -> dict:
-    """A sale recorded in *both* stores — the only kind that is routable proceeds."""
+    """A sale recorded in *both* stores — the only kind that is routable proceeds.
+
+    Complete means **stamped**: the queue holds the exit event and the
+    `confirmed` event `confirm_exit` appends once the transition lands. The
+    fixture builds all three writes rather than the two it used to, because
+    completeness is now a fact this store records rather than one inferred from
+    whatever state the ticker happens to be in — see `exit_is_complete`.
+    """
     wm.add(ticker, lane=lane)
     wm.transition(ticker, "probe", "seed", applied_by="owner")
     wm.transition(ticker, "exit_review", "roiic_below_cost_of_capital")
-    wm.transition(ticker, "exited", "roiic_below_cost_of_capital",
-                  applied_by="owner")
-    return queue.record_exit(
+    transition = wm.transition(ticker, "exited", "roiic_below_cost_of_capital",
+                               applied_by="owner")
+    event = queue.record_exit(
         ticker=ticker, lane=lane, trigger_id="roiic_below_cost_of_capital",
         friction=friction_payload(), at=at, exit_id=f"{ticker}:{at}",
     )
+    queue.record_confirmation(event["exit_id"], at=transition["at"])
+    return event
 
 
 def stranded_exit(wm, queue, ticker="HALFSOLD", lane="core", at="2026-08-01") -> dict:
@@ -926,14 +935,22 @@ class TestIdleReadings:
 
     def test_an_exit_still_in_exit_review_is_excluded_from_routing(self, wm, queue):
         """Proceeds from an unfinished exit record are not routable — the
-        KTD10 crash window, named rather than silently counted."""
+        KTD10 crash window, named rather than silently counted.
+
+        **And not reported as an empty queue.** `NO_PROCEEDS` says there is
+        nothing to do; here there is something only the owner can do, and the
+        two sentences must not be the same one. That collapse is what made a
+        half-written exit read as no exit at all.
+        """
         stranded_exit(wm, queue)
         outcomes = [candidate(wm, "READY", state="watch", buy_zone=True)]
 
         view = queue.propose_routing(wm, outcomes, concentration_for(wm), as_of=AS_OF)
 
         assert view["proposal"] is None
-        assert view["reason"] == NO_PROCEEDS
+        assert view["reason"] != NO_PROCEEDS
+        assert "HALFSOLD" in view["reason"]
+        assert "not confirmed" in view["reason"]
         assert [e["ticker"] for e in view["incomplete"]] == ["HALFSOLD"]
 
     def test_a_completed_exit_beside_a_stranded_one_still_routes(self, wm, queue):
@@ -945,6 +962,99 @@ class TestIdleReadings:
 
         assert view["proposal"]["ticker"] == "READY"
         assert [e["exit_id"] for e in view["idle"]] == ["SOLD:2026-08-01"]
+
+
+class TestCompletenessOutlivesTheEntry:
+    """The finding this class was written for: a per-*exit* question was being
+    answered with a per-*ticker* fact, and it was wrong in both directions.
+
+    Removing a company whose exit was fully recorded but not yet routed made
+    its proceeds permanently unroutable, and the queue then reported "No exit
+    proceeds awaiting routing" — the false all-clear the module exists to
+    prevent — while offering a recovery command (`watchlist exit <ticker>`)
+    that could never succeed, the ticker being gone. In the other direction, a
+    ticker re-added and taken to a *new* exit made an older, unrelated event
+    read complete on the strength of the newer sale.
+
+    The stamp fixes the first because a recorded fact survives the record it
+    describes. Matching the fallback to this exit's own review fixes the
+    second. `watchlist remove` refusing while an exit is unconfirmed is what
+    keeps the two from meeting in the middle — tested at the CLI, in
+    `test_routing_cli.py`, because that is where the refusal lives.
+    """
+
+    def test_a_confirmed_exit_stays_routable_after_the_ticker_is_removed(
+        self, wm, queue
+    ):
+        completed_exit(wm, queue)
+        wm.remove("SOLD")
+
+        routable = queue.routable_exits(wm)
+
+        assert [view["exit_id"] for view in routable] == ["SOLD:2026-08-01"]
+        assert routable[0]["complete"] is True
+
+    def test_the_view_does_not_report_an_empty_queue_over_it(self, wm, queue):
+        """The half that made the bug invisible. Proceeds that cannot be found
+        are bad; proceeds that cannot be found *and* are reported as absent are
+        how they stop being looked for."""
+        completed_exit(wm, queue)
+        wm.remove("SOLD")
+
+        view = queue.propose_routing(wm, [], concentration_for(wm), as_of=AS_OF)
+
+        assert [e["exit_id"] for e in view["idle"]] == ["SOLD:2026-08-01"]
+        assert view["reason"] != NO_PROCEEDS
+
+    def test_a_removed_ticker_can_still_receive_a_routing_event(self, wm, queue):
+        """Routing validates the *candidate's* transitions, never the sold
+        company's, so a confirmed exit needs no surviving entry to be closed."""
+        event = completed_exit(wm, queue)
+        wm.remove("SOLD")
+
+        queue.record_routing(
+            exit_id=event["exit_id"], candidate="READY",
+            deployed_at="2026-08-04T10:00:00",
+        )
+
+        assert queue.routable_exits(wm) == []
+        assert queue.exit_views(wm, as_of=AS_OF)[0]["routed_into"] == "READY"
+
+    def test_an_unconfirmed_orphan_is_reported_rather_than_hidden(self, wm, queue):
+        """Reachable now only by editing a store by hand or restoring one from
+        a copy, since the CLI refuses the removal that would create it. It is
+        still rendered with what is wrong: an unroutable event nobody can see
+        is how proceeds go missing quietly."""
+        stranded_exit(wm, queue)
+        wm.remove("HALFSOLD")
+
+        view = queue.exit_views(wm, as_of=AS_OF)[0]
+
+        assert view["complete"] is False
+        assert "no longer on the watchlist" in view["note"]
+        assert "edited outside this system" in view["note"]
+
+    def test_a_later_exit_does_not_make_an_earlier_orphan_read_complete(
+        self, wm, queue
+    ):
+        """The other direction, and the reason the fallback matches on this
+        exit's own review rather than on any `exited` record the ticker holds.
+
+        The old event keys on a review that the re-added entry's fresh history
+        no longer contains, so nothing in the new sale can vouch for the old
+        one — which is correct, because the two are different sales and only
+        one of them was ever completed.
+        """
+        stranded_exit(wm, queue, ticker="SOLD")
+        wm.remove("SOLD")
+        orphan = queue.exits()[0]["exit_id"]
+
+        # Re-added, and taken all the way through a second, unrelated exit.
+        completed_exit(wm, queue, ticker="SOLD", at="2026-09-01")
+
+        views = {v["exit_id"]: v for v in queue.exit_views(wm, as_of=AS_OF)}
+        assert views[orphan]["complete"] is False
+        assert views["SOLD:2026-09-01"]["complete"] is True
 
 
 class TestSnapshotState:

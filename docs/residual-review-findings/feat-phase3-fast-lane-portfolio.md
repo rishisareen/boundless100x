@@ -15,7 +15,20 @@ survived triage.
 
 ## Design decisions the phase left open
 
-- **Removing a watchlist entry orphans its unrouted exit proceeds.**
+- **~~Removing a watchlist entry orphans its unrouted exit proceeds.~~**
+  **Fixed** (Tranche 1a). Completeness is now stamped onto the queue as a
+  third event kind — `confirmed`, appended by `confirm_exit` as a fourth
+  ordered write — rather than read from live lifecycle state, so a recorded
+  exit survives the removal of the company it describes. `exit_is_complete`
+  takes the exit event and its stamp; the live-state fallback is kept only for
+  the window between the transition and the stamp, and matches on *this*
+  exit's own review, which closes the other direction too. `watchlist remove`
+  refuses while a ticker holds an unconfirmed exit (fail-closed on an
+  unreadable queue), and `unroutable_reason` now decides what every surface
+  says, so `NO_PROCEEDS` can no longer be printed over a half-written record.
+  An entry already in `exited` whose event is unstamped is reconciled rather
+  than refused. The original finding follows.
+
   Flagged independently by correctness, adversarial, and testing.
   `exit_is_complete` answers a per-*exit* question by reading per-*ticker*
   watchlist state, so `watchlist remove` on a company whose exit was fully
@@ -140,8 +153,11 @@ survived triage.
   contract change that made all seven charts silently stop rendering would
   leave the golden green.
 
-- **The exit-event-with-removed-ticker branch is untested**, which is how the
-  orphaned-proceeds finding above survived.
+- **~~The exit-event-with-removed-ticker branch is untested~~**, which is how
+  the orphaned-proceeds finding above survived. **Fixed** (Tranche 1a):
+  `TestCompletenessOutlivesTheEntry` covers both directions, the step 3→4
+  crash window has its own class in `test_confirm_exit.py`, and the removal
+  refusal is tested at the CLI where it lives.
 
 - **`advance()`'s per-run resolutions are never all live in one call.** Every
   routing test injects an evaluator (which short-circuits pace), and every pace

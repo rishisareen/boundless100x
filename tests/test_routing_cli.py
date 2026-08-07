@@ -101,18 +101,30 @@ def no_pipeline(monkeypatch):
 
 
 def sold(stores, ticker="SOLD", lane="core", at=EXIT_AT, complete=True) -> dict:
-    """A recorded exit, optionally left in KTD10's crash window."""
+    """A recorded exit, optionally left in KTD10's crash window.
+
+    A complete one carries the `confirmed` stamp as well as the transition,
+    which is what `confirm_exit` writes and what makes the proceeds routable.
+    The incomplete one stops after the queue event, exactly where a crash
+    between the first two writes leaves it.
+    """
     wm = stores.wm()
     wm.add(ticker, lane=lane)
     wm.transition(ticker, "probe", "seed", applied_by="owner")
     wm.transition(ticker, "exit_review", REVIEW_TRIGGER, evidence=REVIEW_REASON)
-    if complete:
+    transition = (
         wm.transition(ticker, "exited", REVIEW_TRIGGER, applied_by="owner")
+        if complete else None
+    )
 
-    return stores.q().record_exit(
+    queue = stores.q()
+    event = queue.record_exit(
         ticker=ticker, lane=lane, trigger_id=REVIEW_TRIGGER,
         friction=friction_payload(), at=at, exit_id=f"{ticker}:{at}",
     )
+    if transition is not None:
+        queue.record_confirmation(event["exit_id"], at=transition["at"])
+    return event
 
 
 def deployed(stores, ticker="ZENSAR", at=PROBE_AT, to="probe",
@@ -421,9 +433,13 @@ class TestQueueDisplay:
 
         assert "Exit recording incomplete" in result.output
         assert "watchlist exit HALFSOLD" in result.output
-        # No routable proceeds exist, and the display must say that rather than
-        # counting an unfinished record as capital awaiting a home.
-        assert "No exit proceeds awaiting routing" in result.output
+        # Nothing here is routable, and the display says so — but it must not
+        # say the queue is *empty*. An unfinished record is capital the owner
+        # has and cannot yet reach, and "No exit proceeds awaiting routing"
+        # over the top of it is a false all-clear: it reads as nothing to do,
+        # on the one screen whose job is to say what is outstanding.
+        assert "No exit proceeds awaiting routing" not in result.output
+        assert "not confirmed" in result.output
 
 
 class TestAdvanceRoutingLine:
@@ -793,3 +809,90 @@ class TestQueueRoute:
 
         assert json.dumps(stores.q().latest_proposal(), sort_keys=True) == \
             json.dumps(stored, sort_keys=True)
+
+
+class TestRemoveGuardsRecordedProceeds:
+    """`watchlist remove`, refused while the company holds an unconfirmed exit.
+
+    The one state whose repair genuinely needs the lifecycle record:
+    `watchlist exit` keys on the entry's `exit_review` transition and completes
+    from its history, so deleting the entry underneath an unconfirmed exit
+    strands the proceeds with no command able to reach them — and the queue
+    then reports nothing outstanding, which is the point at which the money
+    stops being looked for.
+
+    A *confirmed* exit is deliberately not guarded. Its completion is stamped
+    on the queue event, so it survives the removal and stays routable; guarding
+    it too would mean a company could never leave the watchlist until its
+    proceeds were redeployed, which is a rule about bookkeeping masquerading as
+    a rule about capital.
+    """
+
+    def test_an_unconfirmed_exit_refuses_the_removal(self, run, stores):
+        sold(stores, ticker="HALFSOLD", complete=False)
+
+        result = run("watchlist", "remove", "HALFSOLD")
+
+        assert result.exit_code == 1
+        assert "not yet confirmed" in result.output
+        assert "watchlist exit HALFSOLD" in result.output
+        assert "Nothing was removed" in result.output
+
+    def test_the_refusal_leaves_the_entry_exactly_where_it_was(self, run, stores):
+        sold(stores, ticker="HALFSOLD", complete=False)
+
+        run("watchlist", "remove", "HALFSOLD")
+
+        entry = stores.wm().get("HALFSOLD")
+        assert entry is not None
+        assert entry["state"] == "exit_review"
+
+    def test_completing_the_exit_then_allows_the_removal(self, run, stores):
+        """The refusal has to be a step, not a wall — and this is the step."""
+        sold(stores, ticker="SOLD", complete=False)
+        wm = stores.wm()
+        transition = wm.transition("SOLD", "exited", REVIEW_TRIGGER,
+                                   applied_by="owner")
+        stores.q().record_confirmation(EXIT_ID, at=transition["at"])
+
+        result = run("watchlist", "remove", "SOLD")
+
+        assert result.exit_code == 0
+        assert stores.wm().get("SOLD") is None
+
+    def test_the_removed_company_s_confirmed_proceeds_stay_routable(
+        self, run, stores, no_pipeline
+    ):
+        """The whole reason the guard can stop at *unconfirmed*."""
+        sold(stores, ticker="SOLD")
+        run("watchlist", "remove", "SOLD")
+
+        result = run("watchlist", "queue")
+
+        assert EXIT_ID in result.output
+        assert "No exit proceeds awaiting routing" not in result.output
+        assert [v["exit_id"] for v in stores.q().routable_exits(stores.wm())] \
+            == [EXIT_ID]
+
+    def test_a_company_with_no_exit_at_all_is_removed_normally(self, run, stores):
+        stores.wm().add("QUIET")
+
+        result = run("watchlist", "remove", "QUIET")
+
+        assert result.exit_code == 0
+        assert stores.wm().get("QUIET") is None
+
+    def test_an_unreadable_queue_refuses_rather_than_assuming_safety(
+        self, run, stores
+    ):
+        """Fail closed on the one path that cannot be undone: "could not check"
+        must not resolve to "go ahead"."""
+        stores.wm().add("QUIET")
+        stores.queue.write_text('{"events": [{"kind": "nonsense"}]}')
+
+        result = run("watchlist", "remove", "QUIET")
+
+        assert result.exit_code == 1
+        assert "could not be read" in result.output
+        assert "Nothing was removed" in result.output
+        assert stores.wm().get("QUIET") is not None
