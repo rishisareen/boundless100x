@@ -38,6 +38,7 @@ reading could not have supplied.
 
 import json
 import logging
+import math
 from copy import deepcopy
 from pathlib import Path
 from statistics import median
@@ -122,7 +123,13 @@ def corpus_spread(raw_data_dir, macro: dict | None = None) -> dict:
             logger.warning(f"Pace: could not read {directory.name}: {e}")
             continue
 
-        if result.ok and isinstance(result.value, (int, float)):
+        # A NaN is a float and would pass an isinstance check, then poison the
+        # median — and `nan >= floor` is False, so the poisoned median falls
+        # straight through to the tightening branch. Non-finite is not a
+        # reading; it is a missing one.
+        if result.ok and isinstance(result.value, (int, float)) and math.isfinite(
+            result.value
+        ):
             readings.append((directory.name, float(result.value)))
 
     readings.sort()
@@ -227,6 +234,27 @@ def modulate(
     if median_pp is None:
         decision["reason"] = (
             "no corpus spread could be read — deployment pace unmodulated"
+        )
+    elif not isinstance(median_pp, (int, float)) or isinstance(median_pp, bool) or (
+        not math.isfinite(median_pp)
+    ):
+        # **Fail closed, and say so.** Every comparison against NaN is False,
+        # so an unguarded non-finite median skipped the at-or-above-floor
+        # branch and landed in the tightening one — turning an unreadable macro
+        # signal into tighter entry thresholds. That inverts this module's one
+        # invariant: an unknown reading must not tighten entry any more than it
+        # may loosen it. `modulate` re-checks rather than trusting
+        # `corpus_spread` because a caller may inject a reading directly.
+        decision["reason"] = (
+            f"corpus spread {median_pp!r} is not a finite number — deployment "
+            f"pace unmodulated"
+        )
+    elif not isinstance(floor_pp, (int, float)) or isinstance(floor_pp, bool) or (
+        not math.isfinite(floor_pp)
+    ):
+        decision["reason"] = (
+            f"pace floor {floor_pp!r} is not a finite number — deployment pace "
+            f"unmodulated"
         )
     elif contributors < min_contributors:
         decision["reason"] = (

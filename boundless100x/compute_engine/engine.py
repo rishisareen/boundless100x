@@ -16,6 +16,26 @@ from boundless100x.compute_engine.metrics.validator import validate_registry
 logger = logging.getLogger(__name__)
 
 
+def _extraction_regime() -> dict:
+    """Prompt digest and model id, or a stated unavailability.
+
+    Deliberately tolerant: the hash must stay computable on a machine with no
+    API key and no prompt file, because scoring runs offline. An unreadable
+    regime hashes as a named constant rather than raising or, worse, silently
+    hashing as absent.
+    """
+    try:
+        from boundless100x.llm_layer import forward_growth
+        from boundless100x.llm_layer.orchestrator import forward_growth_model
+
+        return {
+            "prompt_digest": forward_growth.prompt_digest(),
+            "model": forward_growth_model({}),
+        }
+    except Exception:
+        return {"prompt_digest": "unavailable", "model": "unavailable"}
+
+
 class ComputeEngine:
     """Registry-driven metric computation engine.
 
@@ -140,9 +160,18 @@ class ComputeEngine:
         default, so a discount-rate change genuinely moves a composite and a
         forward signal alike.
         """
+        # The **effective extraction regime**, not just the schema. A sidecar
+        # invalidates on the prompt digest and the model id as well as the
+        # schema, so a row hashed without them cannot say which regime produced
+        # the entries a forward signal was read from — two runs either side of a
+        # prompt rewrite would carry the same label. Imported lazily: this is
+        # `compute_engine`, and a module-level `llm_layer` import would invert
+        # the seam KTD2 rests on. Only `forward_signal_hash` moves, so no
+        # ticker's momentum baseline is touched.
         return self._digest({
             "metrics": self._metric_definitions(scored=False),
             "extraction_schema": forward_growth_schema.schema_fingerprint(),
+            "extraction_prompt": _extraction_regime(),
             "macro": self.macro,
         })
 

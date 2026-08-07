@@ -522,6 +522,43 @@ class TestUnitComparability:
 # ── tam_runway ─────────────────────────────────────────────────────────────
 
 
+class TestTamSupersededDisclosure:
+    """Answering from the newest *usable* report is right; hiding it is not.
+
+    A newer filing whose sections are all suspect/fallback never reaches the
+    sidecar, so `max(by_year)` quietly names an older year and a two-year-stale
+    market size reads exactly like a current one.
+    """
+
+    def _data(self, newest_provenance):
+        return fg_data({
+            "2024": year_payload(
+                sections={"mdna": schema.FOUND, "chairman": schema.FOUND},
+                tam_entries=[tam(size=50000.0)],
+            ),
+            "2026": year_payload(sections=newest_provenance, tam_entries=[]),
+        })
+
+    def test_an_unreadable_newer_filing_is_flagged(self):
+        result = fgm.compute_tam_runway(
+            self._data({"mdna": schema.SUSPECT, "chairman": schema.FALLBACK}), {}
+        )
+
+        assert result.ok                                   # still answers
+        assert result.metadata["report_year"] == "2024"
+        assert "tam_from_superseded_report" in result.flags
+        assert result.metadata["superseded_by_unreadable_years"] == ["2026"]
+
+    def test_no_flag_when_the_newest_report_is_the_one_used(self):
+        data = fg_data({"2026": year_payload(tam_entries=[tam(size=50000.0)])})
+
+        result = fgm.compute_tam_runway(data, {})
+
+        assert result.ok
+        assert result.flags == []
+        assert result.metadata["superseded_by_unreadable_years"] == []
+
+
 class TestTamRunway:
     def test_runway_is_the_years_of_current_growth_before_revenue_meets_the_market(self):
         data = fg_data(
@@ -583,6 +620,58 @@ def quarterly_with_yoy(base: list[float], yoys: list[float]) -> pd.DataFrame:
     for index, rate in enumerate(yoys):
         values.append(values[index] * (1 + rate))
     return make_quarterly(periods=len(values), revenue=values)
+
+
+class TestQuarterlyTimelineIntegrity:
+    """Every comparison is matched by period label, never by row offset.
+
+    `dropna()` compressed the timeline before the four-quarter offset was
+    applied, so one missing interior quarter paired a period against one five
+    or six quarters earlier. On a genuinely flat 20% YoY series that produced
+    -1.4pp of fabricated deceleration; a larger gap crosses the flag threshold
+    and reports a company as decelerating whose growth never moved.
+    """
+
+    def test_a_gap_does_not_fabricate_momentum(self):
+        clean = make_quarterly(periods=12, revenue_yoy=0.20)
+        assert fgm.compute_quarterly_momentum({"quarterly": clean}, {}).value == 0.0
+
+        gapped = clean.copy()
+        gapped.loc[5, "revenue"] = None
+
+        result = fgm.compute_quarterly_momentum({"quarterly": gapped}, {})
+
+        assert result.value == 0.0
+        assert result.flags == []
+
+    def test_a_missing_row_is_treated_the_same_as_a_missing_value(self):
+        clean = make_quarterly(periods=12, revenue_yoy=0.20)
+        missing = clean.drop(index=5).reset_index(drop=True)
+
+        result = fgm.compute_quarterly_momentum({"quarterly": missing}, {})
+
+        assert result.value == 0.0
+        assert result.metadata["quarters_used"] == 11
+
+    def test_a_series_with_no_year_earlier_counterpart_is_indeterminate(self):
+        """Four consecutive quarters have nothing to compare against."""
+        frame = make_quarterly(periods=12, revenue_yoy=0.20).iloc[-4:].reset_index(drop=True)
+
+        assert not fgm.compute_quarterly_momentum({"quarterly": frame}, {}).ok
+
+    def test_unlabelled_quarters_cannot_be_verified(self):
+        frame = make_quarterly(periods=12).drop(columns=["quarter"])
+
+        result = fgm.compute_quarterly_momentum({"quarterly": frame}, {})
+
+        assert not result.ok
+        assert "period labels" in result.error
+
+    def test_a_non_march_filer_indexes_consecutively(self):
+        """Jan/Apr/Jul/Oct quarter ends must not read as gaps."""
+        assert (fgm._quarter_index("Apr 2025") - fgm._quarter_index("Jan 2025")) == 1
+        assert (fgm._quarter_index("Jan 2026") - fgm._quarter_index("Oct 2025")) == 1
+        assert (fgm._quarter_index("Mar 2026") - fgm._quarter_index("Mar 2025")) == 4
 
 
 class TestQuarterlyMomentum:

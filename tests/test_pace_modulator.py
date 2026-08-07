@@ -312,6 +312,47 @@ class TestThroughAdvance:
         metrics["trailing_peg"] = metric(1.9)
         return metrics
 
+    def test_the_default_path_resolves_a_reading_without_one_being_injected(
+        self, wm, tmp_path
+    ):
+        """Every other test here injects `pace_reading`, so the real resolution
+        path — `advance` -> `corpus_spread` -> `modulate` — was never exercised
+        end to end. A corpus it can actually read must produce a decision, and
+        the reading must be the corpus's, not a default."""
+        watched(wm)
+        service = self.service(metrics=self.buyable())
+        # Six cheap names: a real median, but under the contributor minimum.
+        service.suite = type("S", (), {
+            "raw_data_dir": corpus(tmp_path, {f"T{i}": 5.0 for i in range(6)})
+        })()
+
+        out = advance(service, wm)
+
+        assert out["pace"]["applied"] is False
+        assert out["pace"]["contributors"] == 6
+        assert "contributors" in out["pace"]["reason"]
+
+    def test_the_default_path_applies_when_the_real_corpus_is_expensive(
+        self, wm, tmp_path
+    ):
+        watched(wm)
+        service = self.service(metrics=self.buyable())
+        # Ten expensive names (P/E 100 -> ~1% earnings yield vs a 7% G-Sec).
+        service.suite = type("S", (), {
+            "raw_data_dir": corpus(tmp_path, {f"T{i}": 100.0 for i in range(10)})
+        })()
+        service.engine = type("E", (), {
+            "registry_hash": "abc123",
+            "metrics": dict(ComputeEngine().metrics),
+            "macro": {"gsec_yield_pct": 7.0},
+        })()
+
+        out = advance(service, wm)
+
+        assert out["pace"]["applied"] is True
+        assert out["pace"]["contributors"] == 10
+        assert out["outcomes"][0]["proposal"] is None
+
     def test_a_wide_spread_proposes_entry(self, wm):
         watched(wm)
         out = advance(
@@ -422,3 +463,58 @@ class TestThroughAdvance:
         after = pace.corpus_spread(path, macro={"gsec_yield_pct": 7.0})
 
         assert before == after
+
+
+class TestNonFiniteReadingsFailClosed:
+    """An unknown macro reading must not tighten entry any more than loosen it.
+
+    Every comparison against NaN is False, so an unguarded non-finite median
+    skipped the at-or-above-floor branch and landed in the tightening one —
+    inverting this module's single invariant on a signal nobody could read.
+    """
+
+    @pytest.mark.parametrize("median", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_spread_leaves_thresholds_alone(self, median):
+        triggers, decision = pace.modulate(
+            load_triggers(), {"median_pp": median, "contributors": 20}
+        )
+
+        assert decision["applied"] is False
+        assert "not a finite number" in decision["reason"]
+        assert triggers == load_triggers()
+
+    def test_a_non_finite_floor_leaves_thresholds_alone(self):
+        _, decision = pace.modulate(
+            load_triggers(), {"median_pp": -5.0, "contributors": 20},
+            floor_pp=float("nan"),
+        )
+
+        assert decision["applied"] is False
+        assert "floor" in decision["reason"]
+
+    def test_a_non_finite_company_reading_is_not_a_contributor(self, tmp_path):
+        """A NaN is a float; it would pass isinstance and poison the median."""
+        import json
+        import pandas as pd
+        from boundless100x.compute_engine.metrics.base import MetricResult
+
+        for name in ("A", "B"):
+            d = tmp_path / name
+            d.mkdir()
+            (d / "metadata.json").write_text(json.dumps({"Stock P/E": 20.0}))
+            pd.DataFrame({"year": ["Mar 2025"], "revenue": [100.0]}).to_csv(
+                d / "financials.csv", index=False
+            )
+
+        import boundless100x.lifecycle.pace as pace_module
+        original = pace_module.compute_earnings_yield_spread
+        try:
+            pace_module.compute_earnings_yield_spread = (
+                lambda data, params: MetricResult(value=float("nan"))
+            )
+            reading = pace.corpus_spread(tmp_path)
+        finally:
+            pace_module.compute_earnings_yield_spread = original
+
+        assert reading["contributors"] == 0
+        assert reading["median_pp"] is None

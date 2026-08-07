@@ -79,7 +79,13 @@ changes which entries survive belongs in this number.
 #     12% CAGR (FY23-28) ...") passed grounding honestly — the numeral really is
 #     in the text, denominated as claimed — and fed `tam_runway` a market size
 #     off a PDF axis, producing the only value that metric returned corpus-wide.
-SCHEMA_VERSION = 9
+# 10 — a figure must match a WHOLE numeric token. Grounding used a bare
+#     substring search, so "Rs 1,500 crore" reported 1, 5, 50, 150, 500 and
+#     1500 as all present, and "grow by 20%" reported 2. A fabricated figure
+#     sharing any digit run with a real one passed the check written to catch
+#     fabrication and then settled against real financials. This is the
+#     load-bearing half of KTD3 and it was not enforcing.
+SCHEMA_VERSION = 10
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like

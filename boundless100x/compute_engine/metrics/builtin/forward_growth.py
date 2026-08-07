@@ -70,6 +70,28 @@ def _year_of(period) -> int | None:
     return None
 
 
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec")
+)}
+
+
+def _quarter_index(label) -> int | None:
+    """An orderable index for a Screener quarter label, or None.
+
+    `Mar 2026` -> a number one greater than `Dec 2025`, so "four quarters back"
+    is arithmetic on real periods rather than a row offset. Works for any
+    quarter-end scheme, not just March years: the three-month bucket is derived
+    from the calendar month, so a Jan/Apr/Jul/Oct filer indexes consecutively
+    too.
+    """
+    match = re.match(r"\s*([A-Za-z]{3})[a-z]*\s+(\d{4})", str(label or ""))
+    if not match:
+        return None
+    month = _MONTHS.get(match.group(1).lower())
+    return None if month is None else int(match.group(2)) * 4 + (month - 1) // 3
+
+
 def _usable_sections(payload: dict, required: tuple) -> set:
     """Which of a sub-metric's required sections were usable for this year.
 
@@ -90,15 +112,29 @@ def _entries_by_year(data: dict, metric_id: str, kind: str) -> tuple[dict, str]:
     unusable, read and empty — because "indeterminate" without a reason is the
     outcome this whole layer exists to avoid.
     """
+    return _entries_and_unusable(data, metric_id, kind)[:2]
+
+
+def _entries_and_unusable(
+    data: dict, metric_id: str, kind: str
+) -> tuple[dict, str, list]:
+    """As `_entries_by_year`, plus the report years that could not be read.
+
+    A caller that answers from the *newest* year needs to know when a newer one
+    exists and was unreadable — otherwise it silently answers from a superseded
+    filing (see `compute_tam_runway`).
+    """
     if "forward_growth" not in data:
         return {}, (
             "no forward-growth extraction available — run an analysis with the "
             "LLM enabled at least once to populate it"
-        )
+        ), []
 
     by_year = data.get("forward_growth") or {}
     if not isinstance(by_year, dict) or not by_year:
-        return {}, "forward-growth extraction is empty — no annual-report years read"
+        return {}, (
+            "forward-growth extraction is empty — no annual-report years read"
+        ), []
 
     required = schema.REQUIRED_SECTIONS[metric_id]
 
@@ -122,16 +158,16 @@ def _entries_by_year(data: dict, metric_id: str, kind: str) -> tuple[dict, str]:
             found[year] = entries
 
     if found:
-        return found, ""
+        return found, "", unusable
 
     if unusable:
         return {}, (
             f"no usable {'/'.join(required)} section for {metric_id}: "
             f"{'; '.join(sorted(unusable))}"
-        )
+        ), unusable
     return {}, (
         f"the {'/'.join(required)} section was read but carried no {kind} statements"
-    )
+    ), unusable
 
 
 def _set_aside_reason(subject: str, units: list) -> str:
@@ -384,13 +420,22 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
 
     cap_years = float(params.get("cap_years", 50.0))
 
-    by_year, reason = _entries_by_year(data, "tam_runway", schema.TAM)
+    by_year, reason, unusable = _entries_and_unusable(data, "tam_runway", schema.TAM)
     if not by_year:
         return MetricResult(error=reason)
 
     # The newest report's largest stated market: management restates and
     # revises TAM, and the current view is the one a thesis rests on.
     newest = max(by_year)
+    # **A newer filing that could not be read is disclosed, not hidden.** The
+    # metric answers from the newest *usable* report, which is the right
+    # fallback — refusing outright would discard a real reading on a corpus
+    # where roughly half of all report-years are fallback. What is not
+    # acceptable is doing it silently: a market size two years stale reads
+    # exactly like a current one, and a thesis rests on the current view.
+    superseded = sorted(
+        year for year in (u.split(" ")[0] for u in unusable) if year > newest
+    )
     usable, wrong_unit = schema.partition_by_unit(schema.TAM, by_year[newest])
     sizes = [
         float(entry["market_size_inr_cr"])
@@ -436,7 +481,9 @@ def compute_tam_runway(data: dict, params: dict) -> MetricResult:
 
     return MetricResult(
         value=round(years, 1),
+        flags=["tam_from_superseded_report"] if superseded else [],
         metadata={
+            "superseded_by_unreadable_years": superseded,
             "tam_inr_cr": tam,
             "latest_revenue_inr_cr": latest_revenue,
             "revenue_cagr_pct": float(growth.value),
@@ -481,34 +528,63 @@ def compute_quarterly_momentum(data: dict, params: dict) -> MetricResult:
     if field not in frame.columns:
         return MetricResult(error=f"Column '{field}' absent from quarterly results")
 
-    values = pd.to_numeric(frame[field], errors="coerce").dropna().tolist()
-    if len(values) < _MIN_QUARTERS:
+    if "quarter" not in frame.columns:
         return MetricResult(
             error=(
-                f"{len(values)} quarters of {field}, needs {_MIN_QUARTERS} — two "
-                f"year-over-year figures are required to form a second difference"
+                "quarterly results carry no period labels, so a year-over-year "
+                "comparison cannot be verified as spanning four quarters"
             )
         )
 
-    yoy: list[float] = []
-    for index in range(_QUARTERS_PER_YEAR, len(values)):
-        base = values[index - _QUARTERS_PER_YEAR]
-        if base == 0:
-            # No YoY basis; skipping keeps the *sequence* of comparable figures
-            # intact rather than injecting a zero that would read as a stall.
+    # **Every comparison is matched by period label, never by position.**
+    # Taking the value four *rows* back assumes the rows are contiguous, and
+    # `dropna()` compresses the timeline before that offset is applied — so a
+    # single missing interior quarter silently pairs a quarter against one five
+    # or six periods earlier. On an otherwise flat 20% YoY series one such gap
+    # produced -1.4pp of fabricated deceleration, and a slightly larger one
+    # crosses the flag threshold and emits `quarterly_growth_decelerating` for
+    # a company whose growth never moved.
+    numeric = pd.to_numeric(frame[field], errors="coerce")
+    by_period: dict[int, float] = {}
+    for label, value in zip(frame["quarter"], numeric):
+        index = _quarter_index(label)
+        if index is not None and pd.notna(value):
+            by_period[index] = float(value)
+
+    if len(by_period) < _MIN_QUARTERS:
+        return MetricResult(
+            error=(
+                f"{len(by_period)} readable quarters of {field}, needs "
+                f"{_MIN_QUARTERS} — two year-over-year figures are required to "
+                f"form a second difference"
+            )
+        )
+
+    # A YoY figure exists only where the same quarter one year earlier does.
+    yoy: dict[int, float] = {}
+    for index, value in by_period.items():
+        base = by_period.get(index - _QUARTERS_PER_YEAR)
+        if base is None or base == 0:
             continue
-        yoy.append((values[index] - base) / abs(base) * 100)
+        yoy[index] = (value - base) / abs(base) * 100
 
-    if len(yoy) < 2:
+    # A second difference exists only between *adjacent* quarters. Comparing
+    # across a gap would reintroduce the same fabrication one level up.
+    diffs = [
+        (index, yoy[index] - yoy[index - 1])
+        for index in sorted(yoy)
+        if index - 1 in yoy
+    ]
+    if len(yoy) < 2 or not diffs:
         return MetricResult(
             error=(
-                f"only {len(yoy)} usable year-over-year figure(s) — a second "
-                f"difference needs two"
+                f"{len(yoy)} year-over-year figure(s) and {len(diffs)} adjacent "
+                f"pair(s) — a second difference needs two consecutive quarters "
+                f"that each have the same quarter a year earlier"
             )
         )
 
-    diffs = [yoy[i] - yoy[i - 1] for i in range(1, len(yoy))]
-    recent = diffs[-window:]
+    recent = [d for _, d in diffs[-window:]]
     momentum = float(np.mean(recent))
 
     flags = []
@@ -523,8 +599,8 @@ def compute_quarterly_momentum(data: dict, params: dict) -> MetricResult:
         flags=flags,
         metadata={
             "field": field,
-            "quarters_used": len(values),
-            "yoy_pct": [round(v, 2) for v in yoy],
+            "quarters_used": len(by_period),
+            "yoy_pct": [round(yoy[i], 2) for i in sorted(yoy)],
             "second_differences_pp": [round(v, 2) for v in recent],
             "latest_period": (
                 str(frame["quarter"].iloc[-1]) if "quarter" in frame.columns else None

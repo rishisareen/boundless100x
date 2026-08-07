@@ -107,6 +107,9 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "rerating_headroom_stretched": ("Re-rating Headroom — Stretched", "bad"),
     "quarterly_growth_accelerating": ("Quarterly Growth Accelerating", "good"),
     "quarterly_growth_decelerating": ("Quarterly Growth Decelerating", "bad"),
+    "tam_from_superseded_report": (
+        "TAM Read From a Superseded Report", "neutral"
+    ),
 }
 
 # ── Metric-to-element mapping with display labels ──
@@ -253,6 +256,7 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,
     "quarterly_growth_accelerating": FORWARD_SIGNALS_ELEMENT,
     "quarterly_growth_decelerating": FORWARD_SIGNALS_ELEMENT,
+    "tam_from_superseded_report": FORWARD_SIGNALS_ELEMENT,
 }
 
 # ── Forward signals (Phase 2, zero weight) ──

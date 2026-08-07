@@ -319,7 +319,7 @@ adds forward evidence without touching the backward scores:
 | Sub-metric | Source (already fetched) | What it measures |
 |---|---|---|
 | Promises-kept ratio | Annual report guidance vs. subsequent delivery (LLM-assisted extraction) | Management forecast credibility — a proven predictor of guidance reliability |
-| Capacity/capex pipeline | AR text: announced capacity, commissioning dates, capex plans | Physical runway for volume growth (Lever 1) |
+| ~~Capacity/capex pipeline~~ **(retired 2026-08-07)** | AR text: announced capacity, commissioning dates, capex plans | Physical runway for volume growth (Lever 1). **Built and shipped in Phase 2, then retired** against the threshold the follow-up plan stated in advance: zero capex statements extracted across 54 report-years and 15 swept tickers. Indian MD&A in this corpus does not state capital commitments with a commissioning year in a form the extractor recognises. The `capex` extraction kind is retained, so the metric is restorable if such statements appear. See `docs/plans/2026-08-07-005-feat-forward-signal-activation-plan.md`. |
 | TAM/runway sizing | AR + sector context (LLM-assisted) | Whether 20%+ growth is arithmetically possible for N more years (feeds Longevity's CAP proxy) |
 | Quarterly momentum | Quarterly results series (Phase 0 parser); latest-quarter shareholding | Is growth accelerating or decelerating *now* |
 

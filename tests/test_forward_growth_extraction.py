@@ -580,6 +580,41 @@ CORPUS_MARKET_GROWTH = (
 )
 
 
+class TestNumericTokenBoundaries:
+    """KTD3's load-bearing half: a figure must match a whole numeric token.
+
+    A bare substring search reported `2` as present in "grow by 20%" and 1, 5,
+    50, 150, 500 and 1500 as all present in "Rs 1,500 crore" — so a fabricated
+    value sharing any digit run with a real one grounded, and promises-kept
+    then settled it against real financials.
+    """
+
+    @pytest.mark.parametrize("sentence,unit,value,grounds", [
+        # the reported case, and its INR sibling
+        ("We expect SPC business to grow by 20% in 2024-25.", "pct", 20, True),
+        ("We expect SPC business to grow by 20% in 2024-25.", "pct", 2, False),
+        ("We expect revenue of Rs 1,500 crore in FY2026.", "inr_cr", 1500, True),
+        ("We expect revenue of Rs 1,500 crore in FY2026.", "inr_cr", 500, False),
+        ("We expect revenue of Rs 1,500 crore in FY2026.", "inr_cr", 150, False),
+        ("We expect revenue of Rs 1,500 crore in FY2026.", "inr_cr", 1, False),
+        # decimals: neither half of 12.6 is a claim of its own
+        ("Margin is expected at 12.6% in FY2026.", "pct", 12.6, True),
+        ("Margin is expected at 12.6% in FY2026.", "pct", 12, False),
+        ("Margin is expected at 12.6% in FY2026.", "pct", 6, False),
+        # a guided range still grounds on either bound
+        ("Company expects growth of 4-5% in 2025-26.", "pct", 4, True),
+        ("Company expects growth of 4-5% in 2025-26.", "pct", 5, True),
+        ("Company expects growth of 4-5% in 2025-26.", "pct", 45, False),
+        # "Rs." is not a decimal point
+        ("A capex of Rs.1500 crore lands by FY2027.", "inr_cr", 1500, True),
+        # grouped figures survive comma-stripping without gaining substrings
+        ("The market is USD 2,250 billion by 2028.", "usd_bn", 2250, True),
+        ("The market is USD 2,250 billion by 2028.", "usd_bn", 225, False),
+    ])
+    def test_only_a_whole_token_grounds(self, sentence, unit, value, grounds):
+        assert fg._number_appears(sentence, value, unit) is grounds
+
+
 class TestPercentGrowthEntries:
     def _validate(self, raw, mdna_text):
         sections = make_ar_sections(provenance="found", sections={"mdna": mdna_text})

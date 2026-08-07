@@ -353,3 +353,55 @@ class TestServiceIntegration:
 
         assert result.scores["composite"] is not None
         assert any("momentum" in e.lower() for e in result.errors)
+
+
+class TestForwardSignalHashDoesNotPartitionMomentum:
+    """KTD8's central promise, asserted rather than assumed.
+
+    The hashes are split so that tuning a zero-weight forward signal — or, now,
+    editing the extraction prompt — never resets a ticker's momentum baseline.
+    Momentum groups on `config_hash` alone; nothing in the code reads
+    `forward_signal_hash`, and this is the test that keeps it that way.
+    """
+
+    def test_rows_under_two_forward_hashes_still_diff(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        write_history(path, make_history_rows(
+            "ASTRAL", dates=["2026-01-01"], composites=[6.0],
+            config_hash="same-regime", forward_signal_hash="fwd-before",
+        ))
+        write_history(path, make_history_rows(
+            "ASTRAL", dates=["2026-04-01"], composites=[6.8],
+            config_hash="same-regime", forward_signal_hash="fwd-after",
+        ))
+
+        momentum = trajectory.compute_momentum("ASTRAL", path=path)
+
+        assert momentum["status"] == "ok"
+        latest = momentum["latest"]
+        assert latest["composite_from"] == 6.0
+        assert latest["composite_to"] == 6.8
+        assert latest["composite_delta"] == pytest.approx(0.8)
+        assert latest["interval_days"] == 90
+        # One regime, because only `config_hash` partitions.
+        assert [r["config_hash"] for r in momentum["regimes"]] == ["same-regime"]
+
+    def test_a_changed_scoring_hash_still_does_partition(self, tmp_path):
+        """The converse, so the test above cannot pass by ignoring hashes."""
+        path = tmp_path / "history.jsonl"
+        write_history(path, make_history_rows(
+            "ASTRAL", dates=["2026-01-01"], composites=[6.0],
+            config_hash="regime-one", forward_signal_hash="fwd",
+        ))
+        write_history(path, make_history_rows(
+            "ASTRAL", dates=["2026-04-01"], composites=[6.8],
+            config_hash="regime-two", forward_signal_hash="fwd",
+        ))
+
+        momentum = trajectory.compute_momentum("ASTRAL", path=path)
+
+        assert momentum["status"] == "insufficient_history"
+        assert momentum["latest"] is None
+        assert sorted(r["config_hash"] for r in momentum["regimes"]) == [
+            "regime-one", "regime-two"
+        ]

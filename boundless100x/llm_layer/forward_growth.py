@@ -595,6 +595,36 @@ def _number_appears(sentence: str, value, unit: str | None = None) -> bool:
     return bool(_number_positions(sentence, value, unit))
 
 
+def _is_whole_numeric_token(haystack: str, start: int, end: int) -> bool:
+    """Whether a match spans a *whole* number rather than part of a larger one.
+
+    **This is the difference between grounding and pattern-matching.** A bare
+    substring search reports the claim `2` as present in "grow by 20%", and
+    `5`, `50`, `150`, `500` and `1500` as all present in "Rs 1,500 crore" —
+    so a fabricated figure sharing any digit run with a real one passed the
+    check that exists precisely to catch fabrication, and then settled against
+    real financials.
+
+    A match is a whole token when no digit abuts it on either side, and when
+    it is not the integer or fractional half of a decimal: `2` must not match
+    inside `2.5`, and `5` must not match inside `2.5`. A leading `Rs.` is not
+    a decimal point, so the rule looks at what sits beyond the dot rather than
+    rejecting every adjacent one.
+    """
+    before = haystack[start - 1] if start else ""
+    if before.isdigit():
+        return False
+    if before == "." and start >= 2 and haystack[start - 2].isdigit():
+        return False
+
+    after = haystack[end] if end < len(haystack) else ""
+    if after.isdigit():
+        return False
+    if after == "." and end + 1 < len(haystack) and haystack[end + 1].isdigit():
+        return False
+    return True
+
+
 def _number_positions(sentence: str, value, unit: str | None = None) -> list[tuple]:
     """Every occurrence of a number that is also denominated as claimed."""
     haystack = re.sub(r"(?<=\d)[,\s](?=\d)", "", sentence or "")
@@ -606,6 +636,7 @@ def _number_positions(sentence: str, value, unit: str | None = None) -> list[tup
         (match.start(), match.end())
         for candidate in candidates
         for match in re.finditer(re.escape(candidate), haystack)
+        if _is_whole_numeric_token(haystack, match.start(), match.end())
     )
     if unit in _UNCHECKED_UNITS:
         return positions

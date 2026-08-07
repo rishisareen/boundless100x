@@ -108,6 +108,13 @@ yet turns that data into forward signal.
   (RoCE, growth, longevity) — never a sector-relative anchor (v05 §14.5).
 - R3. A forward-growth module of four sub-metrics: promises-kept ratio, capex
   pipeline, TAM runway, and quarterly momentum.
+  > **Superseded 2026-08-07.** All four were built and shipped as specified.
+  > `capex_pipeline` was subsequently *retired* by the follow-up phase
+  > (`docs/plans/2026-08-07-005-feat-forward-signal-activation-plan.md`) against
+  > a retire threshold that plan stated before reading its result: it extracted
+  > zero entries across 54 report-years and 15 swept tickers. This requirement
+  > is recorded as met-then-retired rather than amended, so the shipped registry
+  > (three sub-metrics) and this plan no longer contradict each other.
 - R4. The three text-derived sub-metrics are produced by an LLM extraction
   pass whose output is validated at the boundary against a closed vocabulary;
   anything unparseable or out-of-vocabulary is discarded with its reason
