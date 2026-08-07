@@ -222,11 +222,11 @@ thresholds, and scoring the owner actually runs.
 
 ### Key Technical Decisions
 
-- **KTD0 — What a point-in-time *valuation* reading may be. UNRESOLVED, and
-  it precedes every other decision here.** Numbered 0 rather than 11 because
-  U1 cannot be written until it is settled, and the units below already name
-  the other decisions by number — renumbering would break those references
-  for no gain.
+- **KTD0 — What a point-in-time *valuation* reading may be. SETTLED with the
+  owner on 2026-08-07: rebuild both market cap and the multiple from
+  truncatable inputs.** Numbered 0 rather than 11 because U1 implements it and
+  the units below already name the other decisions by number — renumbering
+  would break those references for no gain.
 
   Measured on 2026-08-07 by running `backtest._truncate` → `engine.run_all`
   → `EligibilityEvaluator` → `LaneGateEvaluator` over eight cached tickers at
@@ -282,13 +282,47 @@ thresholds, and scoring the owner actually runs.
      for the fast lane and nearly useless for the core one — see U1's measured
      frame depths.
 
-  **Recommendation: (b) as the baseline, plus the `pe_vs_historical` half of
-  (a).** (b) makes the phase produce something on day one with its limits
-  stated, which is this system's house style; a point-in-time P/E is the cheap
-  half of (a) and unblocks three gates at once. A point-in-time market cap is
-  the expensive, leak-adjacent half and should wait for evidence that the rest
-  works. **Until this is settled, U1 is not implementable and no unit below
-  should start.**
+  **Owner chose (a) on 2026-08-07**, over a recommendation of (b). The
+  objection to (a) was that a reconstructed market cap fails quietly, so it
+  was measured before being written down — and it holds up:
+
+  ```
+  market_cap_cr = equity_capital_cr × raw_close ÷ face_value
+  ```
+
+  `equity_capital` is paid-up capital on the balance sheet, `face_value` is
+  in `metadata.json`, and the shares term cancels. Checked against the stored
+  `Market Cap` at the corpus's latest date, where the stored figure is the
+  truth: **20 of 22 tickers within 2%, 14 within 0.5%**; the two outliers are
+  EDELWEISS (−2.4%) and KFINTECH (+2.1%). So the objection is answered on the
+  market-cap side, and it is answered *by a check the implementation can keep
+  running* — see the reconciliation guard in U1, which is what converts the
+  quiet failure mode into a loud one.
+
+  **The multiple is a different matter, and the measurement changed what this
+  decision says about it.** Rebuilding `close ÷ latest annual EPS` and
+  comparing it to Screener's stored `Stock P/E` gives errors from −14% to
+  **+1169%** (RAIN), because `Stock P/E` is a TTM figure and annual EPS is
+  not — they are two different multiples, not one multiple measured twice. So
+  the rebuilt figure is **not** a reconstruction of `Stock P/E` and must never
+  be validated against it. It is the `_current_multiple` definition
+  (`valuation.py`), which already exists, is already argued, and already
+  refuses a non-positive EPS — the guard RAIN's +1169% is exactly what
+  motivates.
+
+  That turns out to be the *more* consistent choice rather than a compromise:
+  `pe_vs_historical` builds its band from each year-end close over that
+  year's EPS, so the band is already on the annual-EPS basis. Feeding it a
+  current multiple on the same basis is more internally coherent than the
+  production path's stored TTM P/E measured against an annual-EPS band. The
+  consequence is stated in the limitations block rather than buried: the
+  replay's `pe_vs_historical` is basis-consistent where production's is not,
+  so a replayed percentile is **not** the number production would have shown
+  that day. That is a divergence in the replay's favour, and it is still a
+  divergence.
+
+  Both reconstructions are marked as reconstructed wherever they surface, so
+  no consumer can mistake one for a fetched figure.
 - **KTD1 — The replay calls the production evaluators; nothing is
   reimplemented.** The backtest's KTD3 ("reuse the production engine on
   truncated inputs") applies one level up: a simulator with its own copy of
@@ -453,13 +487,15 @@ thresholds, and scoring the owner actually runs.
 Settled with the owner on 2026-08-07. Each is config-shaped, so a later
 reconsideration is an edit, not a refactor.
 
-**Two are open.** Decision 4 was deferred by the owner from the start.
-Decision 5 was **reopened on review**: it was settled on a claim about
-production behaviour that a later commit had already made false, and a
-decision is only as settled as the premise under it. Both are marked in
-place rather than deleted — what a decision was reversed *from* is the part
-a reader needs, and dropping it would leave the same wrong premise available
-to be reasoned from again.
+**One is open, and one was reversed.** Decision 4 remains deferred by the
+owner. Decision 5 was **reopened on review and resettled the other way**: it
+had been settled on a claim about production behaviour that a later commit
+had already made false, and a decision is only as settled as the premise
+under it. Both are marked in place rather than rewritten — what a decision
+was reversed *from* is the part a reader needs, and dropping it would leave
+the same wrong premise available to be reasoned from again. KTD0, which
+review opened and the owner then settled, follows the same convention: the
+recommendation it was settled *against* stays visible beside the choice.
 
 1. **Starting pool and its unit — SETTLED: 100 unitless "capital
    units."** Every output is a ratio, so the unit cancels, and no simulated
@@ -515,8 +551,10 @@ to be reasoned from again.
    `--override-caps`, so all three postures production can be run in are
    reachable from config.
 
-   **Owner decision needed:** confirm enforced-by-default, or state which
-   posture the baseline should measure now that the premise is corrected.
+   **RESETTLED with the owner on 2026-08-07: enforced.** The baseline
+   measures what `advance --apply` actually does — a breaching transition
+   withheld and recorded. `advisory` and `override` ship as config values so
+   Phase 5 can sweep all three and price what the guardrail cost or saved.
 
 ### Assumptions
 
@@ -549,8 +587,9 @@ to be reasoned from again.
 | Confirmation lag: entry / exit / route | 5 / 2 / 5 trading days | settled (decision 2) |
 | Synthetic catalyst window | 6 months | settled (decision 3) |
 | Reduce-severity fraction | none — reduce ships inactive; saturation exits in full | deferred (decision 4) |
-| Cap posture | enforced — breaching transition withheld and recorded; `advisory` and `override` are config values | **reopened** (decision 5) |
-| Point-in-time valuation inputs | unresolved — market cap and Stock P/E are omitted by design, closing every entry gate | **blocks U1** (KTD0) |
+| Cap posture | enforced — breaching transition withheld and recorded; `advisory` and `override` are config values | settled (decision 5, resettled) |
+| Point-in-time market cap | rebuilt: `equity_capital × raw_close ÷ face_value`, reconciled against the stored figure at the latest date | settled (KTD0) |
+| Point-in-time multiple | rebuilt: `_current_multiple`'s raw close ÷ annual EPS — **not** Screener's TTM `Stock P/E` | settled (KTD0) |
 | Friction regime | `friction:` config, unchanged | shipped (Phase 3) |
 | Tranche sizing / sleeve split | `portfolio:` config, unchanged | shipped (Phase 3, §14.1–.2) |
 
@@ -667,12 +706,36 @@ same skeleton:
      module, verbatim semantics.
   2. `backtest.py` computes its split-half cutoff exactly as today and
      delegates; its exclusion reasons and return shape are unchanged.
-  3. Implement KTD0's resolution in `_point_in_time_metadata`'s successor,
-     which is the only place the valuation inputs can come from. Whatever is
-     decided, the *reason* a field is absent travels with the truncated view
-     rather than being re-derived by each consumer — a metric that errors
-     with "No P/E" cannot say whether the field was withheld to prevent a
-     leak or was never fetched, and those are different exclusions.
+  3. Implement KTD0 in `_point_in_time_metadata`'s successor, the only place
+     the valuation inputs can come from. It gains two rebuilt fields and a
+     reconciliation guard:
+
+     - **`Market Cap` = `equity_capital × raw_close ÷ face_value`**, all three
+       read at the cutoff: `equity_capital` off the truncated balance sheet,
+       `raw_close` off the **`close`** column (never `adj_close` — a split
+       moves equity capital and the adjusted price in the same direction and
+       would be counted twice), `face_value` off metadata, which is static.
+     - **`Stock P/E` is *not* rebuilt.** Consumers that read it get the
+       `_current_multiple` figure instead, and the key is named so nobody can
+       mistake the two. Non-positive EPS refuses, as `_current_multiple`
+       already does.
+     - **The reconciliation guard.** At the corpus's *latest* date both the
+       rebuilt market cap and the stored one exist, and that is the only
+       place the reconstruction is checkable against truth. A per-ticker
+       check runs there and **fails the ticker into the exclusions with its
+       error** when the two disagree by more than a configured tolerance —
+       measured baseline is 20 of 22 within 2% (worst: EDELWEISS −2.4%,
+       KFINTECH +2.1%), so a 5% tolerance passes the corpus today while still
+       catching a formula that has gone wrong for a filer with partly-paid
+       shares, a face-value change, or an unusual capital structure. This is
+       what makes the owner's choice of KTD0(a) safe: without it the
+       reconstruction fails silently, which was the whole objection to it.
+
+     Whichever way a field resolves, the *reason* it is absent travels with
+     the truncated view rather than being re-derived by each consumer — a
+     metric erroring with "No P/E" cannot say whether the field was withheld
+     to prevent a leak, was never fetched, or failed reconciliation, and
+     those are three different exclusions.
   4. **The `quarterly` frame is cut by its own period labels** under the same
      reporting-lag rule, extending the backtest's `ANNUAL_FRAMES` handling to
      a frame Phase 0 added and the `growth_intact` gate reads.
@@ -708,6 +771,16 @@ same skeleton:
   - A quarterly or shareholding frame too shallow to reach the cutoff
     yields an absent-with-reason reading, never an empty frame that a
     metric would read as "no rises".
+  - **The rebuilt market cap reconciles at the latest date** across the
+    cached corpus, within the configured tolerance, and a ticker that does
+    not reconcile lands in the exclusions with its error rather than
+    scoring on a fabricated size.
+  - The rebuild uses `close`, not `adj_close`: a fixture carrying a split
+    partway through produces the same market cap on both sides of it,
+    which is the double-count this choice exists to avoid.
+  - A non-positive EPS refuses the multiple rather than emitting one — the
+    RAIN case, where annual EPS near zero puts the rebuilt figure three
+    orders of magnitude away from anything meaningful.
   - A trailing part-year column sharing a calendar year with the cutoff
     is excluded (the case `_truncate`'s comment records).
   - The refactored backtest on a fixed fixture produces a byte-identical
