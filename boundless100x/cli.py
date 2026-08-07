@@ -45,6 +45,80 @@ def _record_checkpoints_if_tracked(ticker: str, result) -> None:
         logger.warning(f"Could not record checkpoints for {ticker}: {e}")
 
 
+def _lane_context_if_tracked(ticker: str, result, service) -> dict | None:
+    """The lane, gates and modeled friction for a watchlisted company, or None.
+
+    The same gate as `_record_checkpoints_if_tracked`, deliberately: "is this
+    ticker tracked" is one question and it should be asked the same way twice.
+    A company that is not on the watchlist has no lane to report, and its
+    report renders exactly as it did before this section existed.
+
+    A failure never costs the caller the analysis they just paid for — the
+    report is written either way, one section shorter.
+    """
+    from datetime import date
+
+    from boundless100x.lifecycle.lane_view import build_lane_context
+    from boundless100x.watchlist import WatchlistManager
+
+    try:
+        entry = WatchlistManager().get(ticker)
+        if entry is None:
+            return None
+        return build_lane_context(
+            entry, result, date.today(), config=getattr(service, "config", None)
+        )
+    except Exception as e:
+        logger.warning(f"Could not build the lane context for {ticker}: {e}")
+        return None
+
+
+def _print_lane_status(context: dict | None) -> None:
+    """Lane, state and the modeled friction line, for a tracked company.
+
+    Short by design — the full section is in the report this command has just
+    written. What earns a terminal line is what an owner would otherwise have
+    to open a file to learn: which lane the company is being judged in, whether
+    a catalyst window has passed, and, for a position, what it is modeled to
+    keep after tax and slippage.
+
+    Gross and net travel together because `friction.describe` renders them
+    together, and the line names itself modeled every time (R5, KTD7). An
+    unavailable reading prints its reason rather than nothing, for the reason
+    every gap in this system is printed: silence and zero look identical.
+    """
+    from rich.markup import escape
+
+    from boundless100x.lifecycle import friction
+
+    if not context:
+        return
+
+    console.print(
+        f"\n[bold]Lane:[/bold] {escape(str(context.get('lane')))} "
+        f"[dim](lifecycle state: {escape(str(context.get('state')))})[/dim]"
+    )
+
+    catalyst = context.get("catalyst") or {}
+    if catalyst.get("overdue"):
+        # Advisory, and said so in the line itself: §13 keeps the clock feeding
+        # the time stop and nothing else, so an owner must not read this as a
+        # transition that has been taken on their behalf.
+        console.print(
+            f"[yellow]Catalyst overdue: "
+            f"{escape(str(catalyst.get('description', '')))} — expected by "
+            f"{escape(str(catalyst.get('expected_by', '')))}. Advisory only; "
+            f"no transition was proposed or taken.[/yellow]"
+        )
+
+    reading = context.get("friction")
+    if reading:
+        colour = "yellow" if reading.get("available") else "dim"
+        console.print(
+            f"  [{colour}]{escape(friction.describe(reading))}[/{colour}]"
+        )
+
+
 def setup_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -90,10 +164,18 @@ def analyze(
     # become the checkpoints `watchlist advance` tests each quarter.
     _record_checkpoints_if_tracked(ticker, result)
 
+    # A tracked company's report carries its lane, its gates and what a
+    # position is modeled to keep after friction; an untracked one renders
+    # exactly as it did before that section existed (KTD9).
+    lane_context = _lane_context_if_tracked(ticker, result, svc)
+    _print_lane_status(lane_context)
+
     # Generate reports
     fmt_list = [f.strip() for f in formats.split(",")]
     generator = ReportGenerator()
-    report_dir = generator.generate(result, formats=fmt_list)
+    report_dir = generator.generate(
+        result, formats=fmt_list, lane_context=lane_context
+    )
 
     console.print(f"\n[bold green]Reports saved to:[/bold green] {report_dir}")
 

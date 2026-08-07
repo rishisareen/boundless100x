@@ -78,23 +78,6 @@ def _refused(ticker: str, reason: str, state: str | None = None) -> dict:
     return {"ok": False, "ticker": ticker, "state": state, "reason": reason}
 
 
-def _last_transition_into(entry: dict, to_state: str) -> dict | None:
-    """The most recent record entering a state, or None.
-
-    The **last** match, not the first, for `_friction_for_exit`'s reason:
-    history is append-only and in order, so a position re-entered after an
-    earlier stint restarts the clock. Dating a holding period from a stint that
-    already ended would put it in the wrong tax bracket, and keying an
-    `exit_id` on an old review would collide with an exit already recorded.
-    """
-    records = [
-        record
-        for record in entry.get("state_history") or []
-        if isinstance(record, dict) and record.get("to") == to_state
-    ]
-    return records[-1] if records else None
-
-
 def _friction_for_confirmed_exit(service, ticker: str, entry: dict, exit_date) -> dict:
     """What the position is modeled to have kept, at `basis: recorded`.
 
@@ -109,7 +92,7 @@ def _friction_for_confirmed_exit(service, ticker: str, entry: dict, exit_date) -
     because the exit records either way and the alternative — an exception here
     aborting a sale that already happened — is the failure this design refuses.
     """
-    probe = _last_transition_into(entry, lifecycle_states.PROBE)
+    probe = lifecycle_states.last_transition_into(entry, lifecycle_states.PROBE)
     if probe is None:
         return {
             **friction_module.unavailable(
@@ -170,7 +153,9 @@ def confirm_exit(watchlist, queue, ticker: str, service, as_of=None) -> dict:
                 state,
             )
 
-        review = _last_transition_into(entry, lifecycle_states.EXIT_REVIEW)
+        review = lifecycle_states.last_transition_into(
+            entry, lifecycle_states.EXIT_REVIEW
+        )
         if review is None:
             return _refused(
                 ticker,

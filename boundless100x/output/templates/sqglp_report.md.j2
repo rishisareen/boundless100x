@@ -232,6 +232,74 @@ Composite **{{ "%.2f"|format(forward_signals.momentum.composite_from) }} → {{ 
 
 {% endif %}
 
+{# ── Lane & Friction (Phase 3) ──
+   Rendered only for a watchlisted company; a ticker with no lane context
+   renders exactly as it did before this section existed (KTD9). #}
+{% if lane_status %}
+## Lane & Friction
+
+{# The inline `{% endif %}` above swallows its own newline (trim_blocks), so
+   two blank lines here are what leaves one behind — without it the block
+   quote below opens on the line the paragraph ended. #}
+**{{ lane_status.lane_label }}** — lifecycle state **{{ lane_status.state_label }}**{% if lane_status.as_of %} as of {{ lane_status.as_of }}{% endif %}
+
+
+{% if lane_status.breakeven %}
+> **Break-even for the fast lane: {{ lane_status.breakeven.estimate }}**
+> {{ lane_status.breakeven.statement }}
+{% for item in lane_status.breakeven.assumptions %}
+> - {{ item }}
+{% endfor %}
+>
+> *{{ lane_status.breakeven.caveat }}*
+
+{% endif %}
+{% if lane_status.catalyst %}
+**Catalyst** (owner-recorded; no metric computes it): {{ lane_status.catalyst.description }} — expected by {{ lane_status.catalyst.expected_by }}, status {{ lane_status.catalyst.status }}
+{% if lane_status.catalyst.overdue %}
+
+> **Overdue** — the expected window has passed and the catalyst is still active. A note for the reader: no transition is proposed or taken on it.
+{% endif %}
+
+{% endif %}
+{% if lane_status.gates %}
+**Fast-Lane Entry Gates** — {{ lane_status.verdict_label }}: {{ lane_status.description }}
+
+| Gate | Result | Detail |
+|---|---|---|
+{% for gate in lane_status.gates %}| {{ gate.label }} | {% if gate.passed is sameas true %}pass{% elif gate.passed is sameas false %}**fail**{% else %}unknown{% endif %} | {{ gate.reason }} |
+{% endfor %}
+
+{% endif %}
+{% if lane_status.friction %}
+### Friction
+
+{% if lane_status.friction.available %}
+*{{ lane_status.friction.label }}*
+
+| Reading | Value | Basis |
+|---|---|---|
+| Gross return | {{ "%+.1f"|format(lane_status.friction.gross_return_pct) }}% | {{ lane_status.friction.entry_date }} → {{ lane_status.friction.exit_date }}, {{ lane_status.friction.holding_days }} days |
+{# Shown only when it is a number: the builder guarantees gross and net, but
+   this intermediate step is not part of R5's pair. #}
+{% if lane_status.friction.after_slippage_pct is number %}
+| After round-trip slippage | {{ "%+.1f"|format(lane_status.friction.after_slippage_pct) }}% | {{ lane_status.friction.slippage_bps }} bps, entry and exit |
+{% endif %}
+| Net return | {{ "%+.1f"|format(lane_status.friction.net_return_pct) }}% | {{ lane_status.friction.tax_regime }} at {{ lane_status.friction.tax_pct }}% |
+
+{{ lane_status.friction.note }}
+{% else %}
+**{{ lane_status.friction.label }}** — {{ lane_status.friction.reason }}
+{% endif %}
+
+{% endif %}
+---
+
+{# The trailing blank line belongs INSIDE the guard: emitted unconditionally
+   it would change the bytes of a report for a company with no lane context,
+   which is the one thing this section may not do (KTD9). #}
+
+{% endif %}
 {# ── Investment Thesis (LLM only) ── #}
 {% if llm_analysis and not llm_analysis.get('skipped') %}
 {% set p2 = llm_analysis.get('pass2', {}) %}

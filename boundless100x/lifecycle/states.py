@@ -54,6 +54,29 @@ def is_state(value: object) -> bool:
     return isinstance(value, str) and value in STATES
 
 
+def last_transition_into(entry: dict, to_state: str) -> dict | None:
+    """The most recent record entering a state, or None.
+
+    The **last** match, not the first, and the rule is load-bearing enough to
+    live in one place: history is append-only and in order, so a position
+    re-entered after an earlier stint restarts the clock. Dating a holding
+    period from a stint that already ended would put it in the wrong tax
+    bracket, and keying an `exit_id` on an old review would collide with an
+    exit already recorded.
+
+    Stated here rather than in any one caller because `exit.py`, `advance.py`
+    and `lane_view.py` all depend on it agreeing with itself — a report showing
+    a different holding period than the transition that recorded it would be a
+    disagreement nobody could see.
+    """
+    records = [
+        record
+        for record in entry.get("state_history") or []
+        if isinstance(record, dict) and record.get("to") == to_state
+    ]
+    return records[-1] if records else None
+
+
 def moves_money(to_state: str) -> bool:
     """Whether entering this state commits or withdraws capital."""
     return to_state not in AUTO_APPLICABLE

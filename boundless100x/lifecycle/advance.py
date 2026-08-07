@@ -63,6 +63,7 @@ from boundless100x.action_policy import (
     _eligibility_constraints,
 )
 from boundless100x.lifecycle import friction as friction_module
+from boundless100x.lifecycle import lane_view
 from boundless100x.lifecycle import pace as pace_module
 from boundless100x.lifecycle import portfolio
 from boundless100x.lifecycle import reinvestment
@@ -251,22 +252,19 @@ def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict
     A kill-switch that fired must reach the owner whether or not a price series
     could be read beside it.
     """
-    probes = [
-        record
-        for record in entry.get("state_history") or []
-        if isinstance(record, dict) and record.get("to") == lifecycle_states.PROBE
-    ]
-    if not probes:
+    # The *last* transition into `probe`, for the reason
+    # `states.last_transition_into` states: history is append-only and in
+    # order, so re-entering a position restarts the clock, and dating a holding
+    # period from a stint that already ended would put it in the wrong tax
+    # bracket.
+    probe = lifecycle_states.last_transition_into(entry, lifecycle_states.PROBE)
+    if probe is None:
         return None
 
     try:
         return friction_module.model_exit(
             (result.data or {}).get("price"),
-            # The last matching record, for `_evaluate_since_state_entry`'s
-            # reason: history is append-only and in order, so re-entering a
-            # position restarts the clock. Dating a holding period from a stint
-            # that already ended would put it in the wrong tax bracket.
-            probes[-1].get("at"),
+            probe.get("at"),
             # The same clock the rest of the run reads, so a replay of an old
             # decision reproduces the figure it was decided on.
             as_of or date.today(),
@@ -281,6 +279,35 @@ def _friction_for_exit(service, ticker: str, entry: dict, result, as_of) -> dict
             ),
             "basis": friction_module.BASIS_ESTIMATE,
         }
+
+
+def _lane_context(
+    service, watchlist, ticker: str, result, as_of, lane_gate_result: dict | None
+) -> dict | None:
+    """The lane view for this company, as it stands after the run's own transition.
+
+    Assembled by `lifecycle/lane_view.py` — the same function the report calls —
+    so a lane, a catalyst window and a modeled friction figure read identically
+    wherever they are shown. The lane-gate result is handed in rather than
+    recomputed: it was evaluated above against these exact readings, and a
+    second evaluation could disagree with the first if the registry changed
+    underneath the run.
+
+    Never raises. A view is a nice-to-have beside a proposal that may be moving
+    money, and an advance run that failed because a display field could not be
+    assembled would be the expensive half of that trade.
+    """
+    try:
+        return lane_view.build_lane_context(
+            watchlist.get(ticker),
+            result,
+            as_of,
+            lane_gate_result,
+            config=getattr(service, "config", {}),
+        )
+    except Exception as e:
+        logger.warning(f"{ticker}: the lane view could not be assembled: {e}")
+        return None
 
 
 def _sector_of(result) -> str | None:
@@ -464,6 +491,15 @@ def advance_ticker(
         "ticker": ticker,
         "state": state,
         "lane": lane,
+        # The same assembled view a report renders, so the terminal and the
+        # report cannot describe one position two ways. Built **after** the
+        # transition above and from a re-read entry, so it describes where the
+        # company now stands rather than where it stood when the run began, and
+        # handed the lane-gate result already computed above rather than paying
+        # for a second evaluation. A failure costs the view, never the advance.
+        "lane_context": _lane_context(
+            service, watchlist, ticker, result, as_of, lane_gate_result
+        ),
         # The run's only path from a per-ticker analysis to the concentration
         # reading: `result` is local to this function and never reaches the
         # caller, so without carrying the sector out here `advance()` has no way

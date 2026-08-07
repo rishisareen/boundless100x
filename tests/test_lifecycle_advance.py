@@ -266,6 +266,43 @@ class TestBookkeeping:
         run(Recorder(), wm, evaluator)
 
 
+class TestTheLaneView:
+    """The assembled view every surface renders, carried out of the loop.
+
+    Built from the same `lane_view.build_lane_context` a report calls, so the
+    terminal and the report cannot describe one position two ways — and handed
+    the lane-gate result the run has already paid for rather than evaluating a
+    second time.
+    """
+
+    def test_every_outcome_carries_one(self, wm, evaluator):
+        wm.add("ASTRAL")
+        outcome = run(StubService(), wm, evaluator)
+
+        assert outcome["lane_context"]["lane"] == "core"
+
+    def test_it_describes_the_state_the_run_left_the_company_in(self, wm, evaluator):
+        """Assembled after the transition, or it would report yesterday's state."""
+        wm.add("ASTRAL")
+        outcome = run(StubService(), wm, evaluator)
+
+        assert outcome["state"] == "screen"
+        assert outcome["proposal"]["to"] == "qualify"
+        assert outcome["lane_context"]["state"] == "qualify"
+
+    def test_the_gate_result_is_the_one_already_computed(self, wm, evaluator):
+        ticker = fast_lane_entry(wm, state="watch")
+        outcome = run(StubService(fast_lane_metrics()), wm, evaluator, ticker=ticker)
+
+        assert outcome["lane_context"]["lane_gates"] is outcome["lane_gates"]
+
+    def test_a_core_outcome_carries_no_lane_gates(self, wm, evaluator):
+        wm.add("ASTRAL")
+        outcome = run(StubService(), wm, evaluator)
+
+        assert outcome["lane_context"]["lane_gates"] is None
+
+
 class TestCheckpointRecording:
     def test_pass2_monitorables_become_checkpoints(self, wm):
         wm.add("ASTRAL")

@@ -783,6 +783,120 @@
 {% endif %}
 
 
+{# The section banner sits INSIDE the guard, unlike its siblings above. An
+   HTML comment is output: rendered unconditionally it would change the bytes
+   of a report for a company with no lane context, which is the one thing this
+   section may not do (KTD9). #}
+{% if lane_status %}
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 7.6: Lane & Friction (Phase 3)                 -->
+<!-- Rendered only for a watchlisted company.               -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="lane-friction"></div>
+<h2>Lane &amp; Friction</h2>
+
+<div class="card" style="margin-top: 15px;">
+  <p>
+    <strong>{{ lane_status.lane_label }}</strong>
+    <span style="color: var(--gray);">— lifecycle state</span>
+    <strong>{{ lane_status.state_label }}</strong>
+    {% if lane_status.as_of %}
+    <span style="color: var(--gray);">as of {{ lane_status.as_of }}</span>
+    {% endif %}
+  </p>
+
+  {% if lane_status.breakeven %}
+  <div style="margin: 12px 0; padding: 10px 12px; border-left: 3px solid var(--gray); background: rgba(128,128,128,0.06); font-size: 0.88em;">
+    <strong>Break-even for the fast lane: {{ lane_status.breakeven.estimate }}</strong>
+    <p style="margin: 6px 0 0 0; color: var(--text-secondary);">{{ lane_status.breakeven.statement }}</p>
+    <ul style="margin: 6px 0 0 18px;">
+      {% for item in lane_status.breakeven.assumptions %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+    <p style="margin: 6px 0 0 0; color: var(--gray); font-style: italic;">{{ lane_status.breakeven.caveat }}</p>
+  </div>
+  {% endif %}
+
+  {% if lane_status.catalyst %}
+  <div style="margin: 12px 0; font-size: 0.9em;">
+    <strong style="font-size: 0.9em;">Catalyst</strong>
+    <span style="color: var(--gray);"> — owner-recorded; no metric computes it</span>
+    <p style="margin: 4px 0 0 0;">
+      {{ lane_status.catalyst.description }}
+      <span style="color: var(--gray);">— expected by {{ lane_status.catalyst.expected_by }}, status {{ lane_status.catalyst.status }}</span>
+    </p>
+    {% if lane_status.catalyst.overdue %}
+    <p style="margin: 4px 0 0 0; color: var(--red);">
+      Overdue — the expected window has passed and the catalyst is still active.
+      This is a note for the reader: no transition is proposed or taken on it.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if lane_status.gates %}
+  <div style="margin: 12px 0; font-size: 0.88em;">
+    <strong style="font-size: 0.9em;">Fast-Lane Entry Gates</strong>
+    <span style="color: var(--gray);"> — {{ lane_status.verdict_label }}: {{ lane_status.description }}</span>
+    <ul style="margin: 6px 0 0 18px; padding: 0;">
+      {% for gate in lane_status.gates %}
+      <li style="margin-bottom: 3px; color: {% if gate.passed is sameas true %}var(--green){% elif gate.passed is sameas false %}var(--red){% else %}var(--gray){% endif %};">
+        {{ gate.label }}: {% if gate.passed is sameas true %}pass{% elif gate.passed is sameas false %}fail{% else %}unknown{% endif %}
+        <span style="color: var(--gray);">— {{ gate.reason }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if lane_status.friction %}
+  <h3 style="margin-top: 22px;">Friction</h3>
+  {% if lane_status.friction.available %}
+  <p style="color: var(--gray); font-style: italic; margin-bottom: 10px;">{{ lane_status.friction.label }}</p>
+  {# The DCF summary's number blocks, because these are the same kind of
+     figure. Gross and net sit in one grid so a reader cannot take in one
+     without the other (R5). #}
+  <div class="dcf-grid">
+    <div class="dcf-stat">
+      <div class="label">Gross return</div>
+      <div class="value">{{ "%+.1f"|format(lane_status.friction.gross_return_pct) }}%</div>
+    </div>
+    {# The intermediate step, shown only when it is a number. Gross and net are
+       guaranteed by the builder; this one is not part of R5's pair, so a
+       payload without it renders two blocks rather than failing. #}
+    {% if lane_status.friction.after_slippage_pct is number %}
+    <div class="dcf-stat">
+      <div class="label">After round-trip slippage</div>
+      <div class="value">{{ "%+.1f"|format(lane_status.friction.after_slippage_pct) }}%</div>
+    </div>
+    {% endif %}
+    <div class="dcf-stat">
+      <div class="label">Net return</div>
+      <div class="value">{{ "%+.1f"|format(lane_status.friction.net_return_pct) }}%</div>
+    </div>
+  </div>
+  <div style="margin-top: 12px; padding: 10px; background: var(--bg-input); border-radius: 8px; font-size: 0.9em;">
+    <strong>Modeled over:</strong> {{ lane_status.friction.entry_date }} &rarr; {{ lane_status.friction.exit_date }},
+    {{ lane_status.friction.holding_days }} days &nbsp;|&nbsp;
+    {{ lane_status.friction.tax_regime }} at {{ lane_status.friction.tax_pct }}% &nbsp;|&nbsp;
+    {{ lane_status.friction.slippage_bps }} bps round-trip slippage
+  </div>
+  <p style="color: var(--gray); font-size: 0.88em; margin-top: 8px;">{{ lane_status.friction.note }}</p>
+  {% else %}
+  <p>
+    <strong>{{ lane_status.friction.label }}</strong>
+    <span style="color: var(--gray);">— {{ lane_status.friction.reason }}</span>
+  </p>
+  {% endif %}
+  {% endif %}
+</div>
+
+{# The blank lines that separate this section from the next belong INSIDE the
+   guard for the same reason the banner does: emitted unconditionally they
+   would change an untracked report's bytes. #}
+
+{% endif %}
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- SECTION 8: Investment Thesis (LLM only)                -->
 <!-- ═══════════════════════════════════════════════════════ -->

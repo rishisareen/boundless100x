@@ -16,6 +16,11 @@ from markupsafe import Markup
 
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
+# The shipped tax and slippage rates, so a lane section handed no assumptions
+# still states the numbers the model would actually have applied rather than a
+# blank. `lifecycle/friction.py` imports nothing from this layer, so the
+# direction is one-way.
+from boundless100x.lifecycle.friction import config_from as friction_config_from
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +335,84 @@ FORWARD_SIGNALS_DISCLAIMER = (
 MOMENTUM_UNAVAILABLE_LABEL = "Not enough history yet"
 
 
+# ── Lane & Friction (Phase 3) ──
+# Everything below renders only when the caller supplied a `lane_context`,
+# which only a watchlisted ticker has. A company analysed outside the watchlist
+# renders exactly what it rendered before this section existed (KTD9).
+
+LANE_LABELS: dict[str, str] = {
+    "core": "Core — the compounder lane",
+    "rerating": "Re-rating — the fast lane",
+}
+
+# The fast lane's verdict vocabulary, kept **out of** the 100x badge's words on
+# purpose. `not_qualified` and `not_eligible` are different findings about
+# different questions — a company can fail every 100x gate and still be a sound
+# re-rating candidate, which is the asymmetry the whole lane exists for — so a
+# reader must never meet "eligible" in this section and carry the other
+# question's meaning into it.
+LANE_VERDICTS: dict[str, tuple[str, str, str]] = {
+    "qualifies": (
+        "Qualifies for the fast lane", "good",
+        "Clears every fast-lane entry gate",
+    ),
+    "not_qualified": (
+        "Does not qualify for the fast lane", "bad",
+        "Fails at least one fast-lane entry gate",
+    ),
+    "indeterminate": (
+        "Fast-lane qualification unknown", "neutral",
+        "A fast-lane entry gate could not be evaluated from available data",
+    ),
+}
+
+FRICTION_UNAVAILABLE_LABEL = "Modeled friction unavailable"
+
+# `recorded` says the two dates stopped moving, never that the figure stopped
+# being a model — so both labels lead with the same word.
+FRICTION_BASIS_LABELS: dict[str, str] = {
+    "estimate": "Modeled estimate — the exit date is still moving",
+    "recorded": "Modeled at the recorded exit — the dates are fixed, the figure is still a model",
+}
+
+# No backticks: one string reaches an HTML template that renders no markdown
+# and a markdown template that does, so anything only one of them understands
+# shows up as punctuation in the other.
+FRICTION_NOTE = (
+    "Every figure here is a model. The holding period runs from the probe "
+    "confirmation date rather than a broker fill, the prices are market bars "
+    "rather than trade prices, and no cost basis is recorded anywhere in this "
+    "system."
+)
+
+# §8.2's break-even framing, for the fast lane only.
+#
+# **No hurdle is computed, and that is a decision rather than an omission.** A
+# capital-gains rate applies to a gain; it is not a number of return points, so
+# turning "20% STCG and 100bps round trip" into a single percentage the lane
+# must beat would require an assumed holding period, an assumed turnover rate
+# and an assumed alternative — three numbers nobody has supplied. A figure
+# derived from invented inputs would be read as a threshold, and the fast lane
+# would then look "accelerated" when it was merely busier. Phase 4's simulator
+# derives one from owner cost assumptions; until then this states the roadmap's
+# rough estimate as an estimate, with the rates it rests on listed beside it.
+BREAKEVEN_ESTIMATE = "6–10 percentage points more per cycle"
+
+BREAKEVEN_STATEMENT = (
+    "A re-rating round trip pays capital-gains tax and slippage that a held "
+    "position never pays, so it has to earn more just to come out level. The "
+    "roadmap's rough estimate for that difference is 6–10 percentage points "
+    "more per cycle — an estimate, stated with the assumptions it rests on."
+)
+
+BREAKEVEN_CAVEAT = (
+    "No hurdle number is computed here. A tax rate applies to a gain, not to a "
+    "number of return points, so any single figure would be arithmetic these "
+    "inputs do not support — the Phase 4 simulator derives one from owner cost "
+    "assumptions."
+)
+
+
 # ── SQGLP element display config ──
 ELEMENT_CONFIG: dict[str, dict] = {
     "size": {"label": "Size", "short": "S", "weight": "10%"},
@@ -431,12 +514,18 @@ class ReportGenerator:
         self.env.filters["paragraphize"] = _paragraphize
         self.output_dir = Path(output_dir) if output_dir else Path(__file__).parent / "reports"
 
-    def generate(self, result, formats: list[str] | None = None) -> Path:
+    def generate(self, result, formats: list[str] | None = None,
+                 lane_context: dict | None = None) -> Path:
         """Generate all requested report formats.
 
         Args:
             result: AnalysisResult from the service layer.
             formats: List of formats to generate (html, md, json). Default: all.
+            lane_context: `lifecycle.lane_view.build_lane_context` output for a
+                watchlisted company, or None. **None by default, so every
+                existing call site is untouched** — a ticker analysed outside
+                the watchlist renders exactly what it rendered before the Lane
+                & Friction section existed (KTD9).
 
         Returns:
             Path to the report directory.
@@ -455,6 +544,7 @@ class ReportGenerator:
         pe_band_summary = self._build_pe_band_summary(result)
         score_drilldown = self._build_score_drilldown(result)
         forward_signals = self._build_forward_signals(result)
+        lane_status = self._build_lane_status(lane_context)
         flags = self._collect_flags(result.metrics)
         element_summaries = self._build_element_summaries(result, score_drilldown, flags)
 
@@ -482,6 +572,7 @@ class ReportGenerator:
                 element_summaries=element_summaries,
                 flags_precomputed=flags,
                 forward_signals=forward_signals,
+                lane_status=lane_status,
             )
             path = report_dir / f"{result.ticker}_dashboard.html"
             path.write_text(html)
@@ -500,6 +591,7 @@ class ReportGenerator:
                 element_summaries=element_summaries,
                 flags_precomputed=flags,
                 forward_signals=forward_signals,
+                lane_status=lane_status,
             )
             path = report_dir / f"{result.ticker}_report.md"
             path.write_text(md)
@@ -518,7 +610,8 @@ class ReportGenerator:
                      score_drilldown: dict | None = None,
                      element_summaries: dict | None = None,
                      flags_precomputed: list | None = None,
-                     forward_signals: dict | None = None) -> str:
+                     forward_signals: dict | None = None,
+                     lane_status: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.html.j2")
         flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
@@ -545,6 +638,7 @@ class ReportGenerator:
             element_summaries=element_summaries or {},
             element_config=ELEMENT_CONFIG,
             forward_signals=forward_signals or {},
+            lane_status=lane_status or {},
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -561,7 +655,8 @@ class ReportGenerator:
                          score_drilldown: dict | None = None,
                          element_summaries: dict | None = None,
                          flags_precomputed: list | None = None,
-                         forward_signals: dict | None = None) -> str:
+                         forward_signals: dict | None = None,
+                         lane_status: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.md.j2")
         flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
@@ -582,6 +677,7 @@ class ReportGenerator:
             element_summaries=element_summaries or {},
             element_config=ELEMENT_CONFIG,
             forward_signals=forward_signals or {},
+            lane_status=lane_status or {},
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -968,6 +1064,178 @@ class ReportGenerator:
                 ),
                 key=lambda e: e["label"],
             ),
+        }
+
+    # ── Lane & Friction (Phase 3) ──
+
+    def _build_lane_status(self, lane_context: dict | None) -> dict | None:
+        """The lane section, ready to render, or None when there is nothing to show.
+
+        The same shape `_build_forward_signals` has, and gated the same way: the
+        templates ask `{% if lane_status %}`, so a company with no lane context
+        renders byte-identically to the way it did before this section existed.
+        That is the whole of KTD9's "unchanged" claim — it is a claim about
+        *untracked* reports, never a claim that a tracked core entry shows
+        nothing. A tracked core entry does show its lane and state, because
+        that is what it has.
+
+        Nothing here is computed from `result`. Everything arrives assembled
+        from `lifecycle/lane_view.build_lane_context`, so the report and the
+        terminal cannot drift into rendering two different readings of one
+        position.
+        """
+        if not lane_context:
+            return None
+
+        lane = lane_context.get("lane")
+        state = str(lane_context.get("state") or "")
+        gate_result = lane_context.get("lane_gates") or {}
+        gates = gate_result.get("gates") or {}
+        verdict = gate_result.get("verdict")
+        label, sentiment, description = LANE_VERDICTS.get(verdict, ("", "", ""))
+
+        return {
+            "lane": lane,
+            "lane_label": LANE_LABELS.get(lane, str(lane)),
+            "state": state,
+            # The machine word with its underscore softened, not a title-cased
+            # rewrite: `exit_review` is the vocabulary every other surface uses
+            # for this state, and a report inventing "Exit Review" would make an
+            # owner search for a state the CLI never prints.
+            "state_label": state.replace("_", " "),
+            "as_of": lane_context.get("as_of"),
+            "verdict": verdict,
+            "verdict_label": label,
+            "sentiment": sentiment,
+            "description": description,
+            "gates": [{"id": gate_id, **detail} for gate_id, detail in gates.items()],
+            "failed_reasons": [
+                gates[g]["reason"] for g in gate_result.get("failed", []) if g in gates
+            ],
+            "unknown_reasons": [
+                gates[g]["reason"]
+                for g in gate_result.get("indeterminate", [])
+                if g in gates
+            ],
+            "catalyst": self._build_catalyst(lane_context.get("catalyst")),
+            "friction": self._build_lane_friction(lane_context.get("friction")),
+            "breakeven": self._build_breakeven(
+                lane, lane_context.get("friction_assumptions")
+            ),
+        }
+
+    @staticmethod
+    def _build_catalyst(catalyst: dict | None) -> dict | None:
+        """The recorded catalyst, with its overdue flag as display only.
+
+        §13 keeps the system advisory: an active catalyst whose window has
+        passed is worth a reader's attention and is not a transition. The flag
+        is computed upstream and rendered here; nothing on this path can move a
+        company's state.
+        """
+        if not catalyst:
+            return None
+        return {
+            "description": catalyst.get("description", ""),
+            "expected_by": catalyst.get("expected_by", ""),
+            "status": catalyst.get("status", ""),
+            "overdue": bool(catalyst.get("overdue")),
+        }
+
+    @staticmethod
+    def _build_lane_friction(reading: dict | None) -> dict | None:
+        """Gross beside net, or the reason there is neither.
+
+        Three outcomes stay distinguishable, and the middle one is the reason
+        this is a builder rather than a template expression. **None** means no
+        modeled position exists — nothing was ever bought — and the section
+        simply carries no friction subsection. **Unavailable** means a position
+        exists and could not be priced, and it renders its reason with *no
+        numeric field at all*: a rendered zero says the position went nowhere,
+        which is a measurement, and an unreadable input is not one. A reading
+        renders gross and net together (R5), never one without the other.
+        """
+        if not reading:
+            return None
+
+        basis = reading.get("basis", "estimate")
+        if not reading.get("available"):
+            return {
+                "available": False,
+                "basis": basis,
+                "label": FRICTION_UNAVAILABLE_LABEL,
+                "reason": reading.get("reason", "no reason given"),
+            }
+
+        # A reading that claims to be available and is missing half the pair is
+        # refused rather than rendered short. Two reasons, and both are real:
+        # R5 has no half — a gross figure with no net beside it is precisely
+        # the one-without-the-other it forbids — and an `exited` payload is
+        # read back off a hand-editable JSON store, so a missing figure would
+        # otherwise reach a format filter and take the whole report down with a
+        # TypeError.
+        missing = [
+            name for name in ("gross_return_pct", "net_return_pct")
+            if not isinstance(reading.get(name), (int, float))
+            or isinstance(reading.get(name), bool)
+        ]
+        if missing:
+            return {
+                "available": False,
+                "basis": basis,
+                "label": FRICTION_UNAVAILABLE_LABEL,
+                "reason": (
+                    f"the recorded reading is incomplete — {', '.join(missing)} "
+                    f"is missing or not a number, and gross and net are only "
+                    f"ever shown together"
+                ),
+            }
+
+        return {
+            "available": True,
+            "basis": basis,
+            "label": FRICTION_BASIS_LABELS.get(basis, FRICTION_BASIS_LABELS["estimate"]),
+            "gross_return_pct": reading.get("gross_return_pct"),
+            "after_slippage_pct": reading.get("after_slippage_pct"),
+            "net_return_pct": reading.get("net_return_pct"),
+            "holding_days": reading.get("holding_days"),
+            "tax_regime": str(reading.get("tax_regime", "")).upper(),
+            "tax_pct": reading.get("tax_pct"),
+            "slippage_bps": reading.get("slippage_bps"),
+            "entry_date": reading.get("entry_date"),
+            "exit_date": reading.get("exit_date"),
+            "note": FRICTION_NOTE,
+        }
+
+    @staticmethod
+    def _build_breakeven(lane, assumptions: dict | None) -> dict | None:
+        """§8.2's break-even statement — fast lane only, and never a computed hurdle.
+
+        A core position is held; it does not pay a round trip per cycle, so the
+        statement would be about a cost it never bears. See `BREAKEVEN_CAVEAT`
+        for why no number is derived from the rates listed here.
+
+        The rates come from the context rather than from this file, because a
+        rendered assumption must be the one that was actually applied — an
+        owner who edited `friction:` in config and still read the shipped rates
+        here would be reading a different model than the one that produced the
+        figures beside it.
+        """
+        if lane != "rerating":
+            return None
+
+        settings = assumptions or friction_config_from(None)
+        return {
+            "estimate": BREAKEVEN_ESTIMATE,
+            "statement": BREAKEVEN_STATEMENT,
+            "caveat": BREAKEVEN_CAVEAT,
+            "assumptions": [
+                f"Short-term capital gains {settings['stcg_pct']}%",
+                f"Long-term capital gains {settings['ltcg_pct']}% "
+                f"at or beyond {settings['ltcg_holding_days']} days",
+                f"Round-trip slippage {settings['slippage_bps']} bps "
+                f"(entry and exit together)",
+            ],
         }
 
     def _build_executive_summary(self, result) -> dict:
