@@ -823,6 +823,39 @@ class TestStatedUnitRetention:
         assert result["years"]["2025"]["tam"] == []
         assert any("unit" in d["reason"] for d in result["discarded"])
 
+    def test_a_flattened_chart_is_refused_however_well_it_grounds(self):
+        """Verbatim from IXIGO's FY2024 sidecar — it passed every other guard.
+
+        The numeral really is in the submitted text, denominated as claimed,
+        beside a plausible period. Grounding cannot tell a claim from a scraped
+        axis label, because on those tests it is one. Unrefused, it fed
+        `tam_runway` a Rs 3,808 crore market and produced the only value that
+        metric returned across the whole corpus.
+        """
+        fragment = (
+            "3,808\n5,904\n8%\n6%\n7%\n12%\nCAGR (FY23-28)\n\n"
+            "1,365\n2,900\n1,660"
+        )
+        raw = response(**{"2025": {"tam": [{
+            "market_size_inr_cr": 3808, "unit": schema.UNIT_INR_CR,
+            "source_sentence": fragment, "section": "mdna",
+        }]}})
+
+        result = self._validate(raw, fragment)
+
+        assert result["years"]["2025"]["tam"] == []
+        assert any("not prose" in d["reason"] for d in result["discarded"])
+
+    def test_a_short_but_genuine_sentence_still_survives(self):
+        """The threshold sits in a measured gap; it must not clip real prose."""
+        sentence = "Domestic PS demand is expected to grow about 5% in 2025-26."
+        raw = response(**{"2025": {"guidance": [guidance_entry(
+            metric="revenue_growth_pct", target_value=5, target_period="FY2026",
+            subject=schema.SUBJECT_MARKET, source_sentence=sentence,
+        )]}})
+
+        assert len(self._validate(raw, sentence)["years"]["2025"]["guidance"]) == 1
+
     def test_the_prompt_and_vocabulary_carry_the_closed_unit_set(self):
         block = fg.vocabulary_prompt_block()
         for unit in schema.UNITS:

@@ -543,6 +543,23 @@ _IMPLICIT_UNITS = frozenset({"inr_cr", "inr"})
 # — nowhere near the sign.
 _UNCHECKED_UNITS = frozenset({"pct", None})
 
+# A quotation has to be *prose*. PDF extraction flattens charts and tables into
+# runs of bare numerals, and one reached storage: IXIGO's FY2024 sidecar held a
+# `tam` entry whose `source_sentence` was "3,808 5,904 8% 6% 7% 12% CAGR
+# (FY23-28) 1,365 2,900 1,660" — a chart's axis labels. It passed every guard
+# honestly. The figure really is in the submitted text, denominated as claimed,
+# beside a plausible period; grounding cannot tell a claim from a scraped axis,
+# because on those tests it *is* one. It then fed `tam_runway` a Rs 3,808 crore
+# addressable market and produced the only value that metric returned across
+# the whole corpus — the well-formed, well-grounded, wrong-thing failure KTD9
+# names, one level below the section gate it was written for.
+#
+# Five is measured, not guessed: across the 60 stored quotations the fragment
+# has 2 alphabetic words and the next-lowest genuine sentence has 9, so the
+# threshold sits in an empty gap and rejects exactly that one entry.
+_MIN_PROSE_WORDS = 5
+_PROSE_WORD = re.compile(r"[A-Za-z]{2,}")
+
 # Ceiling on an optional free-text field. These are the only parts of an entry
 # nothing else constrains — not grounded, not settled against a number — so a
 # bound is what stops a malformed response putting an arbitrary payload into
@@ -746,6 +763,13 @@ def _validate_entry(
 
     sentence = kept["source_sentence"]
     grounded_sentence = ground_text(sentence) if isinstance(sentence, str) else ""
+    if grounded_sentence and len(_PROSE_WORD.findall(grounded_sentence)) < _MIN_PROSE_WORDS:
+        return drop(
+            f"source_sentence is not prose — {len(_PROSE_WORD.findall(grounded_sentence))} "
+            f"word(s), needs {_MIN_PROSE_WORDS}. A run of numerals is a chart or "
+            f"a table flattened by PDF extraction, and it grounds honestly "
+            f"while claiming nothing"
+        )
     if not grounded_sentence or grounded_sentence not in grounded:
         return drop(
             f"source_sentence does not appear in the submitted {section} text "

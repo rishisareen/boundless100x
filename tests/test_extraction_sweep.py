@@ -302,7 +302,7 @@ class TestLiveRun:
              "section": "mdna"},
             {"metric": "pat", "target_value": 900, "target_period": "FY2027",
              "subject": schema.SUBJECT_COMPANY, "unit": schema.UNIT_INR_CR,
-             "source_sentence": "Another sentence nobody wrote.",
+             "source_sentence": "Another whole sentence that nobody ever wrote down.",
              "section": "mdna"},
         ]}}})
 

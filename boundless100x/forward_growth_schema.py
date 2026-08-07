@@ -75,7 +75,11 @@ changes which entries survive belongs in this number.
 #     Every one of these only ever *rejects* more, so entries cached under 7
 #     are a superset of what 8 accepts — which is exactly why they may not be
 #     served.
-SCHEMA_VERSION = 8
+# 9 — a quoted sentence must be prose. A flattened chart ("3,808 5,904 8% 6% 7%
+#     12% CAGR (FY23-28) ...") passed grounding honestly — the numeral really is
+#     in the text, denominated as claimed — and fed `tam_runway` a market size
+#     off a PDF axis, producing the only value that metric returned corpus-wide.
+SCHEMA_VERSION = 9
 
 # ── Provenance ──
 # Three-valued (KTD9). `found` means the section was located and looks like

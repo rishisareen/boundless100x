@@ -63,6 +63,8 @@ ASSUMED_OUTPUT_TOKENS = 1350
 _DISCARD_BUCKETS = (
     (re.compile(r"source_sentence does not appear"),
      "quoted sentence is not in the submitted text"),
+    (re.compile(r"source_sentence is not prose"),
+     "quotation is a flattened chart or table, not prose"),
     (re.compile(r"does not appear in its own source_sentence as an? \w+ figure"),
      "figure is not denominated as the entry claims"),
     (re.compile(r"(?:target_period|commissioning_year) does not appear"),
