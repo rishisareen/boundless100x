@@ -707,15 +707,82 @@ def watchlist_show():
 def watchlist_add(
     ticker: str = typer.Argument(help="NSE symbol to add"),
     notes: str = typer.Option("", help="Optional notes"),
+    lane: str = typer.Option(
+        "core", help="Lane to track in: core (compounder) or rerating (fast lane)"
+    ),
 ):
     """Add a company to the watchlist."""
-    from boundless100x.watchlist import WatchlistManager
+    from boundless100x.watchlist import LANES, WatchlistManager
+
+    ticker, lane = ticker.upper(), lane.lower()
+    if lane not in LANES:
+        raise typer.BadParameter(f"unknown lane {lane!r} — one of: {', '.join(LANES)}")
 
     wm = WatchlistManager()
-    if wm.add(ticker, notes=notes):
-        console.print(f"[green]Added {ticker} to watchlist[/green]")
+    if wm.add(ticker, notes=notes, lane=lane):
+        console.print(f"[green]Added {ticker} to the {lane} lane[/green]")
     else:
         console.print(f"[yellow]{ticker} is already in the watchlist[/yellow]")
+
+
+@watchlist_app.command("catalyst")
+def watchlist_catalyst(
+    ticker: str = typer.Argument(help="NSE symbol"),
+    description: str = typer.Option(
+        None, "--description", help="What the re-rating is waiting on"
+    ),
+    expected_by: str = typer.Option(
+        None, "--expected-by", help="When it is expected (e.g. FY2027 Q2)"
+    ),
+    spent: bool = typer.Option(
+        False, "--spent", help="Mark the recorded catalyst as having happened"
+    ),
+):
+    """Record the catalyst a company is waiting on, or mark it spent.
+
+    Owner judgement, never computed — no metric knows that a demerger is
+    filed. The two modes are kept apart on purpose: a flip that could also
+    rewrite the description would quietly change *which* catalyst it says was
+    spent.
+    """
+    from boundless100x.watchlist import WatchlistError, WatchlistManager
+
+    ticker = ticker.upper()
+    if spent and (description or expected_by):
+        raise typer.BadParameter(
+            "--spent marks the recorded catalyst spent and takes nothing else. "
+            "Record a replacement in a separate call."
+        )
+    if not spent:
+        missing = [
+            name for name, value in
+            (("--description", description), ("--expected-by", expected_by))
+            if not value
+        ]
+        if len(missing) == len(("--description", "--expected-by")):
+            raise typer.BadParameter(
+                "give --description and --expected-by to record a catalyst, "
+                "or --spent to mark one spent"
+            )
+        if missing:
+            raise typer.BadParameter(f"{missing[0]} is required to record a catalyst")
+
+    wm = WatchlistManager()
+    try:
+        if spent:
+            catalyst = wm.mark_catalyst_spent(ticker)
+            console.print(
+                f"[yellow]{ticker}: catalyst spent — {catalyst['description']}[/yellow]"
+            )
+        else:
+            catalyst = wm.record_catalyst(ticker, description, expected_by)
+            console.print(
+                f"[green]{ticker}: catalyst recorded — {catalyst['description']} "
+                f"(expected by {catalyst['expected_by']})[/green]"
+            )
+    except WatchlistError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
 
 
 @watchlist_app.command("remove")

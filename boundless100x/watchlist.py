@@ -4,7 +4,7 @@ Each entry is one company's position in the state machine: which lane it is
 in, what state it has reached, the checkpoints its thesis is held to, and an
 append-only log of every transition with the evidence that caused it.
 
-Two properties are deliberate.
+Three properties are deliberate.
 
 **A state is earned, never granted.** `add` creates an entry at `screen` and
 nothing else can set a state directly — the only way forward is
@@ -16,16 +16,30 @@ that later looks wrong can still be traced to the evidence available when it
 was taken. That is the whole point of recording the evidence rather than just
 the outcome.
 
+**A change is durable before it is visible.** Every mutator stages onto a deep
+copy, writes the copy through `atomic_write_json`, and adopts it only once the
+write has returned. Two failures are ruled out by that order: a crash mid-write
+leaves the previous store rather than truncated JSON, and a failed save leaves
+`self.data` describing exactly what is on disk rather than a change that was
+never durable. The second is the more dangerous of the two, because nothing
+later in the process can tell that memory ran ahead.
+
 There is one schema and no migration path: old outputs were discarded at the
 start of Phase 1. An entry that does not match is a loud error, because with
 one schema in existence an odd entry means something is wrong, and repairing
-it silently is how a company ends up in a state nobody assigned it.
+it silently is how a company ends up in a state nobody assigned it. `catalyst`
+is the exception that proves the shape of the rule: it is optional rather than
+required, so a store written before the fast lane existed keeps loading
+untouched, and every reader asks for it with `.get("catalyst")`.
 """
 
 from __future__ import annotations  # `list` is a method name here; keep annotations lazy
 
+import copy
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -36,10 +50,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_WATCHLIST_PATH = Path(__file__).parent / "watchlist.json"
 
 CORE_LANE = "core"
-LANES = (CORE_LANE,)  # The re-rating lane arrives in Phase 3.
+RERATING_LANE = "rerating"
+LANES = (CORE_LANE, RERATING_LANE)
 
 APPLIED_AUTO = "auto"
 APPLIED_OWNER = "owner"
+
+CATALYST_ACTIVE = "active"
+CATALYST_SPENT = "spent"
+CATALYST_STATUSES = (CATALYST_ACTIVE, CATALYST_SPENT)
 
 REQUIRED_KEYS = (
     "added",
@@ -59,6 +78,60 @@ class WatchlistError(ValueError):
 
 def _now() -> str:
     return datetime.now().isoformat()
+
+
+def atomic_write_json(path: Path | str, data: object) -> None:
+    """Write JSON such that the previous file survives a failed write.
+
+    The write lands on a temp file in the *same directory* — `os.replace` is
+    only atomic within one filesystem, so a temp directory elsewhere would
+    reintroduce the copy this exists to avoid. The store therefore only ever
+    holds a fully written document: either the old one or the new one, never
+    the first few hundred bytes of the new one.
+
+    Shared rather than private because the durability argument is per-file and
+    identical wherever the argument applies.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    handle, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        # A replaced file inherits the temp file's private 0600 mode, so a
+        # store that was readable before this call must stay readable after it
+        # — durability may not quietly change who can open the file.
+        if path.exists():
+            os.chmod(temp_name, path.stat().st_mode & 0o777)
+        os.replace(temp_name, path)
+    except BaseException:
+        # Leave nothing behind to be mistaken for a store: the caller keeps
+        # the previous file, and a stray half-written sibling would only
+        # confuse whoever comes to investigate the failure.
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _revision_of(data: dict) -> int:
+    """The store's commit counter, defaulting to zero for a store without one.
+
+    Absent on every file written before Phase 3, and hand-editable into
+    nonsense like anything else on disk — either way the counter restarts from
+    zero rather than raising, because a missing revision is a staleness signal
+    nobody can read yet, not a corrupt watchlist.
+    """
+    revision = data.get("revision", 0)
+    if not isinstance(revision, int) or revision < 0:
+        return 0
+    return revision
 
 
 def _new_entry(notes: str, lane: str) -> dict:
@@ -85,13 +158,13 @@ class WatchlistManager:
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return {"companies": {}}
+            return {"companies": {}, "revision": 0}
         with open(self.path) as f:
             data = json.load(f)
         companies = data.get("companies", {})
         for ticker, entry in companies.items():
             self._validate_entry(ticker, entry)
-        return {"companies": companies}
+        return {"companies": companies, "revision": _revision_of(data)}
 
     @staticmethod
     def _validate_entry(ticker: str, entry: object) -> None:
@@ -109,33 +182,79 @@ class WatchlistManager:
         if entry["lane"] not in LANES:
             raise WatchlistError(f"{ticker}: unknown lane {entry['lane']!r}")
 
-    def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w") as f:
-            json.dump(self.data, f, indent=2)
+        # Optional, so its absence says "written before the fast lane existed"
+        # rather than "broken". Present, it is held to the same loud standard
+        # as the rest: a status nothing recognises would read as neither active
+        # nor spent wherever the fast lane asks.
+        catalyst = entry.get("catalyst")
+        if catalyst is not None:
+            if not isinstance(catalyst, dict):
+                raise WatchlistError(f"{ticker}: catalyst must be an object")
+            if catalyst.get("status") not in CATALYST_STATUSES:
+                raise WatchlistError(
+                    f"{ticker}: unknown catalyst status {catalyst.get('status')!r}"
+                )
+
+    def _stage(self) -> dict:
+        """A deep copy of the store, safe to mutate before anything is committed."""
+        return copy.deepcopy(self.data)
+
+    def _stage_entry(self, ticker: str) -> tuple[dict, dict]:
+        """A staged store and the entry inside it — the pair every setter mutates."""
+        key = ticker.upper()
+        if key not in self.data["companies"]:
+            raise WatchlistError(f"{ticker} is not on the watchlist")
+        staged = self._stage()
+        return staged, staged["companies"][key]
+
+    def _commit(self, staged: dict) -> None:
+        """Persist a staged store, then adopt it — never the other way round.
+
+        The revision bumps here and nowhere else, so it counts durable commits
+        rather than attempts. A reader comparing revisions to decide whether
+        its view is current would otherwise be told a change happened that the
+        store never took.
+        """
+        staged["revision"] = _revision_of(self.data) + 1
+        atomic_write_json(self.path, staged)
+        self.data = staged
 
     # ── membership ──
 
     def add(self, ticker: str, notes: str = "", lane: str = CORE_LANE) -> bool:
-        """Track a company. Starts at `screen` — qualification is earned."""
+        """Track a company. Starts at `screen` — qualification is earned.
+
+        The lane is the owner's choice of *how* the company will be judged:
+        `core` for the compounder path, `rerating` for the fast lane. Neither
+        grants a state; both start at `screen`.
+        """
         ticker = ticker.upper()
         if ticker in self.data["companies"]:
             return False
         if lane not in LANES:
-            raise WatchlistError(f"unknown lane {lane!r}")
-        self.data["companies"][ticker] = _new_entry(notes, lane)
-        self._save()
+            raise WatchlistError(f"unknown lane {lane!r} — one of {', '.join(LANES)}")
+        staged = self._stage()
+        staged["companies"][ticker] = _new_entry(notes, lane)
+        self._commit(staged)
         return True
 
     def remove(self, ticker: str) -> bool:
         ticker = ticker.upper()
         if ticker not in self.data["companies"]:
             return False
-        del self.data["companies"][ticker]
-        self._save()
+        staged = self._stage()
+        del staged["companies"][ticker]
+        self._commit(staged)
         return True
 
     def get(self, ticker: str) -> dict | None:
+        """The stored entry, for reading.
+
+        Not a write path: the next commit replaces `self.data` wholesale, so an
+        entry held across one is a detached copy and anything written into it
+        goes nowhere. Every change belongs in a mutator, which is also the only
+        way it reaches disk.
+        """
         return self.data["companies"].get(ticker.upper())
 
     def tickers(self) -> list[str]:
@@ -174,9 +293,7 @@ class WatchlistManager:
         The evidence travels with the transition because a state without its
         reason cannot be reviewed later — and reviewing later is the point.
         """
-        entry = self.get(ticker)
-        if entry is None:
-            raise WatchlistError(f"{ticker} is not on the watchlist")
+        staged, entry = self._stage_entry(ticker)
         if not lifecycle_states.is_state(to_state):
             raise WatchlistError(f"unknown state {to_state!r}")
 
@@ -190,7 +307,7 @@ class WatchlistManager:
         }
         entry["state_history"].append(record)
         entry["state"] = to_state
-        self._save()
+        self._commit(staged)
         logger.info(
             f"{ticker.upper()}: {record['from']} → {to_state} "
             f"({trigger_id}, {applied_by})"
@@ -203,9 +320,7 @@ class WatchlistManager:
         The registry hash rides along so the regime behind a stored composite
         is visible without cross-referencing score_history.jsonl.
         """
-        entry = self.get(ticker)
-        if entry is None:
-            raise WatchlistError(f"{ticker} is not on the watchlist")
+        staged, entry = self._stage_entry(ticker)
 
         scores = result.scores or {}
         eligibility = result.eligibility or {}
@@ -216,22 +331,72 @@ class WatchlistManager:
             "verdict": eligibility.get("verdict", "indeterminate"),
             "config_hash": config_hash,
         }
-        self._save()
+        self._commit(staged)
 
     def set_checkpoints(self, ticker: str, checkpoints: list[dict]) -> None:
         """Replace the recorded checkpoints for a company."""
-        entry = self.get(ticker)
-        if entry is None:
-            raise WatchlistError(f"{ticker} is not on the watchlist")
+        staged, entry = self._stage_entry(ticker)
         entry["checkpoints"] = list(checkpoints or [])
-        self._save()
+        self._commit(staged)
 
     def set_kill_switch_status(self, ticker: str, status: dict) -> None:
-        entry = self.get(ticker)
-        if entry is None:
-            raise WatchlistError(f"{ticker} is not on the watchlist")
+        staged, entry = self._stage_entry(ticker)
         entry["kill_switch_status"] = dict(status or {})
-        self._save()
+        self._commit(staged)
+
+    # ── catalysts ──
+
+    def record_catalyst(self, ticker: str, description: str, expected_by: str) -> dict:
+        """Name what this company is waiting on, and by when.
+
+        The fast lane rests on a re-rating happening for a reason, and the
+        reason is the one input the pipeline cannot derive: no metric knows
+        that a demerger is filed or a plant is due. So it is recorded as owner
+        judgement, and both halves are required — an event with no window can
+        never come due, and a window with no event cannot be checked when it
+        does. Recording again replaces outright rather than appending: a
+        catalyst is the current reason to be waiting, not a history of them.
+        """
+        staged, entry = self._stage_entry(ticker)
+
+        description = (description or "").strip()
+        expected_by = (expected_by or "").strip()
+        missing = [
+            name for name, value in
+            (("description", description), ("expected_by", expected_by))
+            if not value
+        ]
+        if missing:
+            raise WatchlistError(
+                f"{ticker.upper()}: a catalyst needs both a description and an "
+                f"expected_by window — missing {', '.join(missing)}"
+            )
+
+        catalyst = {
+            "description": description,
+            "expected_by": expected_by,
+            "status": CATALYST_ACTIVE,
+            "recorded_at": _now(),
+        }
+        entry["catalyst"] = catalyst
+        self._commit(staged)
+        return catalyst
+
+    def mark_catalyst_spent(self, ticker: str) -> dict:
+        """Record that the awaited event has happened.
+
+        Spent, not deleted: what the fast lane bought into is still readable
+        afterwards, and a position whose catalyst has been spent without the
+        re-rating following is exactly the case worth being able to see.
+        """
+        staged, entry = self._stage_entry(ticker)
+        catalyst = entry.get("catalyst")
+        if not catalyst:
+            raise WatchlistError(f"{ticker.upper()} has no catalyst to spend")
+
+        catalyst["status"] = CATALYST_SPENT
+        self._commit(staged)
+        return catalyst
 
     # ── scheduling ──
 
