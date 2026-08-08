@@ -728,7 +728,14 @@ class TestASurfaceMustRenderEveryMember:
                 def render_disclosure(self, component): ...
                 def render_caveat(self, component): ...
 
-        assert "html" not in rc.SURFACES
+        # Not `"html" not in rc.SURFACES` any more: U10 landed and registered a
+        # real HTML renderer, so the slot is legitimately occupied. What the
+        # refusal has to guarantee is that the *incomplete* class did not take
+        # it — checked by name, because the class statement raised and never
+        # bound one.
+        assert "Forgot" not in {
+            surface.__name__ for surface in rc.SURFACES.values()
+        }
 
     def test_the_decorator_refuses_a_surface_r14_does_not_name(self):
         with pytest.raises(rc.IncompleteSurface, match="not one of the surfaces"):

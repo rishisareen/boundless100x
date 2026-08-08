@@ -248,7 +248,23 @@ def _reserved_keys() -> frozenset[str]:
     # not acquire is a cycle. The list is five words and a test pins it.
     keys.update(("avoid", "watchlist", "hold", "buy", "strong_buy"))
     for values in CATEGORICAL_VALUE_LABELS.values():
-        keys.update(values)
+        # **Multi-segment grades only.** A grade's value belongs to its own
+        # metric rather than to the report's global vocabulary, and four of
+        # them are single English words: `moderate`, `risky`, `unknown`,
+        # `discounting`. Three shipped `presentation.bands` declarations —
+        # `dupont_turnover`, `revenue_growth_streak`, `reverse_dcf_growth` —
+        # read "moderate", which is a band label somebody wrote and not an enum
+        # that leaked, and the whole-field rule refused every one of them: U10
+        # could not render a real company at all until this narrowed.
+        #
+        # Nothing is given up. Every multi-segment grade is still refused
+        # *anywhere in a string* by the snake-case rule, which is the stronger
+        # of the two checks, and the ordinary path for a grade is
+        # `CATEGORICAL_VALUE_LABELS` routing rather than this scan — the module
+        # docstring already says single-word keys are covered by routing and
+        # not by detection. This is that sentence applied to the one family of
+        # keys where a false positive costs a reading.
+        keys.update(value for value in values if "_" in value)
     return frozenset(keys)
 
 
@@ -977,7 +993,14 @@ def section_reading(
     if coverage is not None and coverage.clause:
         qualifier = coverage.clause
 
-    band = score_band(score)
+    # Band the figure the reader is actually shown, not the one behind it.
+    # PFC's Price element scores 6.9658: banding the raw value called it
+    # "middling" while the headline rounded to "7.0 / 10", so the line read
+    # `7.0 / 10 — Reads middling` against a band boundary at exactly 7. A
+    # number disagreeing with its own interpretation on the same line is the
+    # defect this report exists to remove, so the rounding happens once.
+    shown = round(float(score), 1) if isinstance(score, (int, float)) and not isinstance(score, bool) else score
+    band = score_band(shown)
     if band is None:
         return ReadingLine(
             subject=title,
@@ -995,7 +1018,7 @@ def section_reading(
     return ReadingLine(
         subject=title,
         text=f"Reads {band} for this element.",
-        headline=f"{float(score):.1f} / {SCORE_SCALE}",
+        headline=f"{shown:.1f} / {SCORE_SCALE}",
         qualifier=qualifier,
         key=element,
     )

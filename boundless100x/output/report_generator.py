@@ -39,10 +39,38 @@ from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED
 # test suite, and a caller that reaches for one here is not wrong about where it
 # means something.
 from boundless100x.output.report_charts import render_charts
+# The research note's three collaborators (U6, U8, U9), each a leaf this module
+# is allowed to depend on and none of which depends back. The direction is what
+# lets `report_reading` stay pure and testable without a generator.
+from boundless100x.output.contradiction import ContradictionPairs
+from boundless100x.output.report_components import (
+    Caveat,
+    Finding,
+    ReadingLine,
+    Section,
+    Unknown,
+    Vocabulary,
+    build_section,
+    caveat_from_run_error,
+    disclosure_for,
+    finding_from_flag,
+    metric_row,
+    score_band,
+)
+from boundless100x.output.report_expansion import ExpansionDecider, load_scored_corpus
+from boundless100x.output.report_reading import read_metrics
+from boundless100x.output.report_surfaces import (
+    ROW_HEADERS,
+    HtmlComponents,
+    MarkdownComponents,
+)
 from boundless100x.output.report_vocabulary import (
+    ACTION_LABELS,
+    ACTION_UNKNOWN_LABEL,
     BREAKEVEN_CAVEAT,
     BREAKEVEN_ESTIMATE,
     BREAKEVEN_STATEMENT,
+    COLLAPSED_SECTIONS_NOTE,
     ELEMENT_CONFIG,
     FLAG_ELEMENT_MAP,
     FLAG_LABELS,
@@ -56,6 +84,10 @@ from boundless100x.output.report_vocabulary import (
     LANE_VERDICT_LABELS,
     METRIC_DISPLAY_NAMES,
     MOMENTUM_UNAVAILABLE_LABEL,
+    RESEARCH_NOTE_TITLE,
+    SCORE_SCALE,
+    UNSCORED_SECTION_READING,
+    UNSCORED_SECTION_TITLE,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +107,24 @@ def _safe_numeric(val) -> float | None:
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# The fourth format token (KTD3). A token rather than a template rewrite, so
+# the two blocks that render the current report are not touched and R16 holds
+# by construction rather than by care.
+CLARITY = "clarity"
+
+# What `formats=None` means. Spelled out rather than left as a literal at the
+# one call site, because the new report joining it is a decision worth being
+# able to find: a caller that names no formats is asking for everything this
+# generator produces, and a default that quietly omitted one of the reports
+# would be the silent-omission failure this whole plan is about.
+DEFAULT_FORMATS: list[str] = ["html", "md", CLARITY, "json"]
+
+# The note's opening section. One constant because it is both the section's
+# title and its reading's subject, and the two must be the same string: every
+# surface prints the title as a heading and then prints the reading beneath it,
+# so a subject that differed would put two names on one section.
+LEAD_TITLE = "What this says"
 
 
 def _md_inline(text: str) -> str:
@@ -164,6 +214,14 @@ class ReportGenerator:
         )
         self.env.filters["paragraphize"] = _paragraphize
         self.output_dir = Path(output_dir) if output_dir else Path(__file__).parent / "reports"
+        # The research note's registry and vocabulary, built on first use and
+        # kept for the life of the generator. Both are declaration-level —
+        # nothing in either depends on which company is being rendered — and
+        # the registry costs a YAML walk that a batch run would otherwise pay
+        # once per ticker. Lazy rather than eager so a caller who never asks
+        # for the note never loads them.
+        self._registry = None
+        self._vocabulary = None
 
     def generate(self, result, formats: list[str] | None = None,
                  lane_context: dict | None = None) -> Path:
@@ -171,7 +229,10 @@ class ReportGenerator:
 
         Args:
             result: AnalysisResult from the service layer.
-            formats: List of formats to generate (html, md, json). Default: all.
+            formats: List of formats to generate (html, md, clarity, json).
+                Default: all of them. `clarity` is the research note (U10) and
+                writes two files of its own — the same content as HTML and as
+                Markdown, per R14.
             lane_context: `lifecycle.lane_view.build_lane_context` output for a
                 watchlisted company, or None. **None by default, so every
                 existing call site is untouched** — a ticker analysed outside
@@ -181,7 +242,7 @@ class ReportGenerator:
         Returns:
             Path to the report directory.
         """
-        formats = formats or ["html", "md", "json"]
+        formats = formats or list(DEFAULT_FORMATS)
         metadata = result.data.get("metadata", {})
         company_name = metadata.get("name", result.ticker)
         report_dir = self._make_report_dir(result.ticker, company_name)
@@ -247,6 +308,26 @@ class ReportGenerator:
             path = report_dir / f"{result.ticker}_report.md"
             path.write_text(md)
             logger.info(f"Markdown report: {path}")
+
+        if CLARITY in formats:
+            # The research note, in both surfaces R14 names. Deliberately last
+            # and deliberately fenced: it is an *additional* output, and a
+            # failure inside it must not cost the caller the two reports
+            # already on disk or the analysis behind them — the same trade
+            # `score_history` makes for a failed write. The reason travels back
+            # in `result.errors`, where the CLI prints it, rather than only
+            # into a log nobody is reading.
+            try:
+                self._render_clarity(
+                    result, report_dir,
+                    financial_snapshot=financial_snapshot,
+                    cashflow_quality=cashflow_quality,
+                    shareholding_data=shareholding_data,
+                    flags=flags,
+                )
+            except Exception as e:  # noqa: BLE001 - see the comment above
+                logger.exception(f"Research note failed for {result.ticker}")
+                result.errors.append(f"Research note generation failed: {e}")
 
         return report_dir
 
@@ -341,6 +422,414 @@ class ReportGenerator:
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
+
+    # ── The research note (Report Clarity, U10) ──
+    #
+    # A fourth format beside the three above, not a rewrite of any of them
+    # (KTD3, R16). Everything below reads the declarations — `presentation:`
+    # blocks through the reading layer, the sector table, the contradiction
+    # pairs, the scored corpus — and renders them through U9's closed component
+    # set. Nothing here recomputes a number: the figures in this report and the
+    # figures in the two above come from the same `result`.
+
+    def _clarity_registry(self):
+        """The metric registry the declarations live in, loaded once.
+
+        The generator is handed an `AnalysisResult`, which carries computed
+        values and no declarations — `presentation`, `name`, `element` and
+        `scoring.weight` all live in the registry. So the note loads its own
+        `ComputeEngine`, with default macro: nothing the note reads off a
+        metric config depends on a macro assumption, and the values it renders
+        were computed upstream by the service's engine, not by this one.
+        """
+        if self._registry is None:
+            from boundless100x.compute_engine.engine import ComputeEngine
+
+            self._registry = ComputeEngine()
+        return self._registry
+
+    def _clarity_vocabulary(self) -> Vocabulary:
+        if self._vocabulary is None:
+            self._vocabulary = Vocabulary(self._clarity_registry().metrics)
+        return self._vocabulary
+
+    def _render_clarity(self, result, report_dir: Path, *,
+                        financial_snapshot: list | None = None,
+                        cashflow_quality: dict | None = None,
+                        shareholding_data: list | None = None,
+                        flags: list | None = None) -> tuple[Path, Path]:
+        """Write the research note in both of R14's document surfaces.
+
+        One context, two templates, two surface renderers. The context is built
+        once — a second build could differ, and "the two reports never disagree
+        on a number" is one of the plan's three success criteria.
+        """
+        context = self._clarity_context(
+            result,
+            financial_snapshot=financial_snapshot,
+            cashflow_quality=cashflow_quality,
+            shareholding_data=shareholding_data,
+            flags=flags,
+        )
+
+        html_path = report_dir / f"{result.ticker}_note.html"
+        html_path.write_text(
+            self.env.get_template("clarity_report.html.j2").render(
+                surface=HtmlComponents(), **context
+            )
+        )
+        md_path = report_dir / f"{result.ticker}_note.md"
+        md_path.write_text(
+            self.env.get_template("clarity_report.md.j2").render(
+                surface=MarkdownComponents(), **context
+            )
+        )
+        logger.info(f"Research note: {html_path} and {md_path}")
+        return html_path, md_path
+
+    def _clarity_context(self, result, *,
+                         financial_snapshot: list | None = None,
+                         cashflow_quality: dict | None = None,
+                         shareholding_data: list | None = None,
+                         flags: list | None = None) -> dict:
+        """Everything both surfaces render, assembled once.
+
+        Public enough to be tested directly: the R14 comparison asks whether
+        two renderings carry the same content, and the only way to state what
+        "the same content" *is* without comparing markup is to walk the model
+        both of them were given.
+        """
+        from boundless100x.compute_engine.eligibility import effective_gates
+        from boundless100x.compute_engine.sector import SectorApplicability
+
+        engine = self._clarity_registry()
+        vocabulary = self._clarity_vocabulary()
+        configs = engine.metrics
+        metadata = result.data.get("metadata", {})
+        flags = flags if flags is not None else self._collect_flags(result.metrics)
+
+        readings = read_metrics(
+            configs, result.metrics or {},
+            sector=metadata.get("sector"),
+            applicability=SectorApplicability(configs.keys()),
+        )
+
+        # The corpus is **this generator's own reports directory**, which is
+        # what makes R8's suppression test read the companies actually
+        # analysed on this machine — and what keeps a test out of it, since a
+        # test generator writes to a tmp directory that holds nothing. An
+        # empty corpus reads as below the minimum and therefore expands with
+        # its reason, never as "nothing to suppress" (U8's own note).
+        decider = ExpansionDecider(
+            configs,
+            ContradictionPairs(configs, effective_gates(engine.gates)),
+            load_scored_corpus(self.output_dir),
+        )
+        decisions = decider.evaluate(
+            readings, result.scores,
+            eligibility=getattr(result, "eligibility", None),
+            elements=list(ELEMENT_CONFIG),
+        )
+        weight_shares = {mid: decider.weight_share(mid) for mid in configs}
+
+        sections = [
+            build_section(
+                element, decisions[element], readings, vocabulary, result.scores,
+                flags=[f["raw"] for f in flags if f.get("element") == element],
+                weight_shares=weight_shares,
+            )
+            for element in ELEMENT_CONFIG
+        ]
+        unscored = self._clarity_unscored(configs, readings, vocabulary)
+
+        return {
+            "ticker": result.ticker,
+            "company": metadata.get("name", result.ticker),
+            "title": RESEARCH_NOTE_TITLE,
+            "subtitle": self._clarity_subtitle(result.ticker, metadata),
+            "lead": self._clarity_lead(result, sections),
+            "sections": sections,
+            "unscored": unscored,
+            "appendix": self._clarity_appendix(
+                result, [*sections, unscored] if unscored else sections, flags,
+                financial_snapshot, cashflow_quality, shareholding_data,
+            ),
+            "row_headers": ROW_HEADERS,
+            "generation_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+
+    @staticmethod
+    def _clarity_subtitle(ticker: str, metadata: dict) -> str:
+        """The one line under the title: who this is, and how big.
+
+        The market cap carries its unit here rather than in a component,
+        because it is masthead rather than reading — but R12's rule is the same
+        either way, and a bare number would be as unreadable in a header as it
+        is in a table.
+        """
+        parts = [str(ticker)]
+        sector = metadata.get("sector")
+        if sector:
+            parts.append(str(sector))
+        market_cap = _safe_numeric(metadata.get("Market Cap"))
+        if market_cap is not None:
+            parts.append(f"Market cap ₹{market_cap:,.0f} Cr")
+        return " · ".join(parts)
+
+    def _clarity_lead(self, result, sections: list[Section]) -> Section:
+        """The opening: where this lands, and how long the rest of it is.
+
+        Built by hand rather than through `build_section`, which assembles an
+        *element* — this is not one, has no element weight and no expansion
+        decision. It is still a `Section` of the same components, so R13 holds
+        and both surfaces render it through the same handlers as everything
+        else.
+
+        **It states no finding twice.** The shape line counts sections and
+        names them; it never restates what any of them found, which is the
+        roll-up KD4 rejected.
+        """
+        scores = result.scores or {}
+        composite = _safe_numeric(scores.get("composite"))
+        coverage = _safe_numeric((scores.get("coverage") or {}).get("composite"))
+
+        qualifier = ""
+        if coverage is not None and coverage < 0.999:
+            qualifier = (
+                f"Scored on {coverage:.0%} of the model's declared metric "
+                f"weight — the rest could not be computed."
+            )
+
+        band = score_band(composite)
+        if band is None:
+            reading = ReadingLine(
+                subject=LEAD_TITLE,
+                unknown=Unknown(
+                    subject="No composite score",
+                    reason=(
+                        "nothing in this company could be scored, so there is "
+                        "no overall reading — which is not the same as a score "
+                        "of zero"
+                    ),
+                ),
+                qualifier=qualifier,
+                key="composite",
+            )
+        else:
+            reading = ReadingLine(
+                subject=LEAD_TITLE,
+                text=f"Reads {band} across the six scored elements.",
+                headline=f"{composite:.1f} / {SCORE_SCALE}",
+                qualifier=qualifier,
+                key="composite",
+            )
+
+        findings = [f for f in (
+            self._clarity_verdict_finding(result),
+            self._clarity_action_finding(result, coverage),
+            self._clarity_shape_finding(sections),
+        ) if f is not None]
+
+        return Section(
+            key="lead",
+            title=LEAD_TITLE,
+            reading=reading,
+            findings=tuple(findings),
+            caveats=(Caveat(text=COLLAPSED_SECTIONS_NOTE),),
+            expanded=True,
+        )
+
+    def _clarity_verdict_finding(self, result) -> Finding | None:
+        """The 100x verdict, in the badge's own words.
+
+        The gate *reasons* are deliberately not rendered here: they are the
+        evaluator's sentences and carry raw metric ids ("market_cap 5000.00 lte
+        3000"), which R15 keeps off the page and `guard_text` would refuse. The
+        badge's label and description say the same thing in the reader's words,
+        and the gate table itself is in the dashboard beside this note.
+        """
+        badge = self._build_eligibility_badge(result)
+        if not badge or not badge.get("label"):
+            return None
+        return Finding(
+            headline=badge["label"],
+            text=badge.get("description", ""),
+            sentiment=badge.get("sentiment", "neutral"),
+            source="eligibility",
+        )
+
+    def _clarity_action_finding(self, result, coverage) -> Finding | None:
+        """The action, guarded, with the cap explained in clean prose.
+
+        `_resolve_action` is the single derivation and is called fresh here for
+        the reason its own docstring gives — a stored `final_action` is an
+        output of that function and must never become an input to it. What this
+        adds is wording: the surfaces render `ACTION_LABELS`, never the enum.
+        """
+        decision = self._resolve_action(result)
+        action = (decision or {}).get("action")
+        if not action:
+            return None
+
+        label = ACTION_LABELS.get(action, ACTION_UNKNOWN_LABEL)
+        sentiment = "good" if action in ("buy", "strong_buy") else (
+            "bad" if action == "avoid" else "neutral"
+        )
+        text = ""
+        if decision.get("capped"):
+            suggested = ACTION_LABELS.get(
+                decision.get("llm_action"), ACTION_UNKNOWN_LABEL
+            )
+            reasons = self._clarity_cap_reasons(result, coverage)
+            text = (
+                f"The model suggested {suggested}; the guard lowered it "
+                f"because {reasons}."
+            )
+            sentiment = "neutral"
+        return Finding(
+            headline=f"Action: {label}", text=text, sentiment=sentiment,
+            source="action",
+        )
+
+    def _clarity_cap_reasons(self, result, coverage) -> str:
+        """Why the action was capped, said without the evaluator's vocabulary.
+
+        `action_policy` builds its `constraints` list out of gate reasons,
+        which name metric ids and comparators. Those are the right words for a
+        log and the wrong ones for a reader, so the same two facts are restated
+        here from the badge and the coverage figure.
+        """
+        reasons: list[str] = []
+        eligibility = getattr(result, "eligibility", None) or {}
+        verdict = eligibility.get("verdict")
+        badge = self.ELIGIBILITY_BADGES.get(verdict)
+        if badge and verdict != "eligible":
+            description = badge[2]
+            reasons.append(description[:1].lower() + description[1:])
+        elif not verdict:
+            reasons.append("the 100x verdict was never evaluated")
+        if "low_data_coverage" in ((result.scores or {}).get("flags") or []):
+            reasons.append(
+                f"the score rests on {coverage:.0%} of the declared metric "
+                f"weight" if coverage is not None
+                else "the score rests on incomplete evidence"
+            )
+        return " and ".join(reasons) or "the evidence does not support an entry"
+
+    @staticmethod
+    def _clarity_shape_finding(sections: list[Section]) -> Finding:
+        """How long this report is, and why — KD5's "the length is the verdict".
+
+        A reader comparing two companies should not have to read either to see
+        which one has problems, so the count is stated rather than left to be
+        inferred from scroll length (AE5).
+        """
+        expanded = [section.title for section in sections if section.expanded]
+        if not expanded:
+            return Finding(
+                headline="No section needed more than its score and one line",
+                text=(
+                    "Nothing here tripped a check that earns a section room to "
+                    "explain itself, so the rest of this note is six readings "
+                    "long."
+                ),
+                sentiment="good",
+                source="shape",
+            )
+        return Finding(
+            headline=(
+                f"{len(expanded)} of {len(sections)} sections have something "
+                f"to explain"
+            ),
+            text="They are " + ", ".join(expanded) + ".",
+            sentiment="neutral",
+            source="shape",
+        )
+
+    def _clarity_unscored(self, configs, readings, vocabulary) -> Section | None:
+        """Every metric outside the six scored elements, in one place.
+
+        These are the zero-weight signals whose element is absent from
+        `element_weights` — the forward-growth readings and the quality-growth
+        quadrant. They are not a seventh element and must not read like one, so
+        the section carries no score, states plainly that nothing in it moved
+        one, and is never subject to the expansion decision (a signal that
+        cannot move a score must not move the report's shape either, KTD5).
+
+        Their rows are shown rather than collapsed because there is nothing to
+        collapse *to*: R5's collapsed form is a score and one line, and a
+        section with no score would render as a single unknown — the metrics
+        would simply vanish from the note.
+        """
+        outside = [
+            metric_id for metric_id, config in configs.items()
+            if (config or {}).get("element") not in ELEMENT_CONFIG
+        ]
+        if not outside:
+            return None
+
+        rows, unknowns, disclosures = [], [], []
+        for metric_id in sorted(
+            outside, key=lambda mid: vocabulary.metric_name(mid) or mid
+        ):
+            reading = readings.get(metric_id)
+            if reading is None:
+                continue
+            built = metric_row(metric_id, reading, vocabulary)
+            if isinstance(built, Unknown):
+                unknowns.append(built)
+                continue
+            rows.append(built)
+            disclosure = disclosure_for(metric_id, reading, vocabulary)
+            if disclosure is not None:
+                disclosures.append(disclosure)
+
+        return Section(
+            key="unscored",
+            title=UNSCORED_SECTION_TITLE,
+            reading=ReadingLine(
+                subject=UNSCORED_SECTION_TITLE,
+                text=UNSCORED_SECTION_READING,
+                key="unscored",
+            ),
+            rows=tuple(rows),
+            unknowns=tuple(unknowns),
+            caveats=(Caveat(text=FORWARD_SIGNALS_DISCLAIMER),),
+            disclosures=tuple(disclosures),
+            expanded=True,
+        )
+
+    def _clarity_appendix(self, result, sections, flags,
+                          financial_snapshot, cashflow_quality,
+                          shareholding_data) -> dict:
+        """R10's exile, R3's deferred half, and the run's own warnings.
+
+        Three multi-year tables move here out of the section bodies where the
+        current report puts them: twelve rows of cash-flow history given the
+        same visual weight as the composite score is the density problem this
+        plan opens on. The disclosure *bodies* live here too, which is what
+        makes R3 structural rather than a convention — `Section.flow` excludes
+        them, so a reading flow physically cannot contain the explanation.
+        """
+        bodies: dict[str, object] = {}
+        for section in sections:
+            for disclosure in section.disclosures:
+                bodies.setdefault(disclosure.anchor, disclosure)
+
+        signals, signal_unknowns = [], []
+        for flag in flags or []:
+            built = finding_from_flag(flag["raw"])
+            (signal_unknowns if isinstance(built, Unknown) else signals).append(built)
+
+        return {
+            "disclosures": sorted(bodies.values(), key=lambda d: d.title),
+            "signals": signals,
+            "signal_unknowns": signal_unknowns,
+            "snapshot": financial_snapshot or [],
+            "cashflow": cashflow_quality or {},
+            "shareholding": shareholding_data or [],
+            "caveats": [caveat_from_run_error(e) for e in (result.errors or [])],
+        }
 
     # ── JSON Export ──
 

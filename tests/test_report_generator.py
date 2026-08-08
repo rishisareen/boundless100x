@@ -715,3 +715,561 @@ class TestTheLegacyReportIsFrozen:
         assert "+42%" in md          # a forward signal's reading
         assert "+48.0%" in md        # the gross friction figure
         assert "<generated>" in md   # and the one thing that is stripped
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The research note (U10)
+#
+# The fourth format, beside the three frozen above. Everything below asserts
+# something about the *new* report; that the old two are untouched is what
+# `TestTheLegacyReportIsFrozen` already says, and the two claims are kept in
+# separate classes so a failure names which of them broke.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def clarity_result():
+    """The golden fixture, moved into the sector that makes it interesting.
+
+    `rich_result()` fires no expansion trigger — no metric scores exactly zero
+    and "Chemicals" is not a sector anyone has declared applicability for — so
+    it renders AE5's all-collapsed shape and says nothing about AE1's. Setting
+    the sector to Finance turns on the one trigger the plan was written about:
+    asset turnover, the equity multiplier and free cash flow stop measuring
+    anything, and three sections earn their space.
+
+    It mutates a fresh `rich_result()` rather than editing the fixture, because
+    the fixture is the goldens' input and moving it would move them.
+    """
+    result = rich_result()
+    result.data["metadata"]["sector"] = "Finance"
+    return result
+
+
+def render_note(output_dir, result=None) -> tuple[str, str]:
+    """The note's two surfaces, from the full `generate` path.
+
+    Through `generate` for the reason `render_legacy` goes through it: the
+    format gating and the shared builders are part of what is being asserted.
+    """
+    report_dir = ReportGenerator(output_dir=str(output_dir)).generate(
+        result if result is not None else clarity_result(),
+        formats=["clarity"],
+    )
+    ticker = (result or clarity_result()).ticker
+    return (
+        (report_dir / f"{ticker}_note.html").read_text(),
+        (report_dir / f"{ticker}_note.md").read_text(),
+    )
+
+
+def visible_text(markup: str) -> str:
+    """What a reader of the HTML actually sees, with the markup taken off.
+
+    R14 is a claim about *content*, so a comparison that matched strings would
+    be asserting the wrong thing — the two surfaces are supposed to differ in
+    markup. Tags come off, entities are unescaped, and whitespace collapses, so
+    what is left is the words. Anything a template wrapped in `<strong>` or in
+    `**` reads the same afterwards.
+    """
+    import html as html_module
+    import re as re_module
+
+    text = re_module.sub(r"<script.*?</script>|<style.*?</style>", " ", markup,
+                         flags=re_module.S)
+    text = re_module.sub(r"<[^>]+>", " ", text)
+    text = html_module.unescape(text)
+    return re_module.sub(r"\s+", " ", text)
+
+
+def plain_text(markdown: str) -> str:
+    """The Markdown's words, on the same footing as `visible_text`'s.
+
+    Only whitespace is collapsed. Emphasis markers are deliberately left
+    alone — `**Cheap PE**` still *contains* "Cheap PE", so stripping them buys
+    nothing, and stripping asterisks would also eat the ones inside a
+    declaration that reads "profit *per share*", turning a content match into a
+    punctuation match.
+    """
+    import re as re_module
+
+    return re_module.sub(r"\s+", " ", markdown)
+
+
+def headings(html: str, markdown: str) -> tuple[list[str], list[str]]:
+    """The section headings each surface actually opened, in order.
+
+    Extracted rather than searched for, because a title can legitimately appear
+    in running text — the opening line names the sections that expanded — and a
+    `find()` on the whole document would report that mention as the section.
+    """
+    import html as html_module
+    import re as re_module
+
+    from_html = [
+        html_module.unescape(match).strip()
+        for match in re_module.findall(r"<h2>(.*?)</h2>", html, flags=re_module.S)
+    ]
+    from_md = [
+        line[3:].strip() for line in markdown.splitlines()
+        if line.startswith("## ")
+    ]
+    return from_html, from_md
+
+
+def content_of(context: dict) -> list[str]:
+    """Every string the two surfaces were given, walked off the model itself.
+
+    This is what makes the R14 assertion below a content comparison rather than
+    a string comparison: the expectations come from the `Section` objects both
+    renderers received, not from either rendering.
+    """
+    from boundless100x.output import report_surfaces as rs
+
+    pieces: list[str] = []
+    sections = [context["lead"], *context["sections"]]
+    if context["unscored"]:
+        sections.append(context["unscored"])
+
+    for section in sections:
+        pieces.append(section.title)
+        headline, body, qualifier = rs.reading_line(section.reading)
+        pieces.extend(p for p in (headline, body, qualifier) if p)
+        if not section.expanded:
+            continue
+        for finding in section.findings:
+            pieces.extend(p for p in rs.finding_line(finding) if p)
+        for row in section.rows:
+            pieces.extend(rs.metric_cells(row))
+        for unknown in section.unknowns:
+            pieces.extend((unknown.subject, unknown.reason))
+        for caveat in section.caveats:
+            pieces.append(rs.caveat_line(caveat))
+
+    appendix = context["appendix"]
+    for finding in appendix["signals"]:
+        pieces.extend(p for p in rs.finding_line(finding) if p)
+    for unknown in appendix["signal_unknowns"]:
+        pieces.extend((unknown.subject, unknown.reason))
+    for disclosure in appendix["disclosures"]:
+        pieces.extend((disclosure.title, disclosure.body))
+    for caveat in appendix["caveats"]:
+        pieces.append(rs.caveat_line(caveat))
+
+    import re as re_module
+
+    return [re_module.sub(r"\s+", " ", p).strip() for p in pieces if str(p).strip()]
+
+
+class TestOneRunProducesBothReports:
+    """R16 from the other side: the note is *added*, and the old two stay."""
+
+    def test_a_single_generate_call_writes_all_four_artefacts(self, tmp_path):
+        report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
+            clarity_result(), formats=["html", "md", "clarity", "json"],
+        )
+
+        for name in ("TEST_dashboard.html", "TEST_report.md",
+                     "TEST_note.html", "TEST_note.md", "scores.json"):
+            assert (report_dir / name).exists(), name
+
+    def test_the_note_joins_the_default_format_list(self, tmp_path):
+        """`formats=None` means "everything this generator produces".
+
+        A default that listed three of four reports would be the silent
+        omission this whole plan is about — and every production caller passes
+        `formats=` explicitly, so joining it changes nothing that runs today.
+        """
+        from boundless100x.output.report_generator import CLARITY, DEFAULT_FORMATS
+
+        assert CLARITY in DEFAULT_FORMATS
+
+        report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
+            clarity_result()
+        )
+
+        assert (report_dir / "TEST_note.md").exists()
+
+    def test_the_cli_asks_for_the_note_explicitly(self):
+        """KTD3's footnote: `cli.py` passes `formats=` and never sees the
+        default above, so the token has to be in its option string too."""
+        from boundless100x.output.report_generator import CLARITY
+
+        source = (Path(__file__).resolve().parent.parent
+                  / "boundless100x" / "cli.py").read_text()
+
+        assert f'"html,md,{CLARITY},json"' in source
+
+    def test_asking_only_for_the_note_leaves_the_legacy_files_unwritten(self, tmp_path):
+        """The new block gates on its own token and nothing else."""
+        report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
+            clarity_result(), formats=["clarity"],
+        )
+
+        assert (report_dir / "TEST_note.md").exists()
+        assert not (report_dir / "TEST_report.md").exists()
+        assert not (report_dir / "TEST_dashboard.html").exists()
+
+    def test_the_two_reports_agree_on_every_element_score(self, tmp_path):
+        """One of the plan's three success criteria, asserted rather than hoped.
+
+        The note reads its figures off the same `result` the dashboard does, so
+        a disagreement would mean one of them recomputed something.
+        """
+        result = clarity_result()
+        report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
+            result, formats=["md", "clarity"],
+        )
+        legacy = (report_dir / "TEST_report.md").read_text()
+        note = (report_dir / "TEST_note.md").read_text()
+
+        for score in result.scores["elements"].values():
+            assert f"{score:.1f}/10" in legacy
+            assert f"{score:.1f} / 10" in note
+        assert str(result.scores["composite"]) in legacy
+        assert f"{result.scores['composite']:.1f} / 10" in note
+
+
+class TestBothSurfacesCarryTheSameContent:
+    """R14, proven against the model rather than against either rendering."""
+
+    def test_every_string_the_model_carried_reaches_both_surfaces(self, tmp_path):
+        generator = ReportGenerator(output_dir=str(tmp_path))
+        result = clarity_result()
+        context = generator._clarity_context(result)
+        html, md = render_note(tmp_path, result)
+
+        seen_html, seen_md = visible_text(html), plain_text(md)
+        missing = [
+            piece for piece in content_of(context)
+            if piece not in seen_html or piece not in seen_md
+        ]
+
+        assert missing == []
+
+    def test_the_two_surfaces_open_the_same_sections(self, tmp_path):
+        """"A section present in one surface is present in all three."
+
+        Compared as a set of titles, in order, because that is the claim — not
+        that the headings are spelled the same way in HTML and Markdown.
+        """
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        html, md = render_note(tmp_path, result)
+
+        titles = [context["lead"].title, *[s.title for s in context["sections"]]]
+        if context["unscored"]:
+            titles.append(context["unscored"].title)
+        titles.append("Appendix")
+
+        from_html, from_md = headings(html, md)
+
+        assert from_html == titles
+        assert from_md == titles
+
+    def test_both_surfaces_render_every_member_of_the_closed_set(self):
+        """R13's mechanism, asserted where it can be read as the requirement.
+
+        The decorator already refuses an incomplete renderer at class-creation
+        time; this is the statement that the two surfaces R14 names for a
+        report have both landed and are both complete.
+        """
+        from boundless100x.output import report_components as rc
+        from boundless100x.output import report_surfaces as rs
+
+        assert rc.SURFACES["html"] is rs.HtmlComponents
+        assert rc.SURFACES["markdown"] is rs.MarkdownComponents
+        assert rc.missing_members(rs.HtmlComponents) == ()
+        assert rc.missing_members(rs.MarkdownComponents) == ()
+
+
+class TestASectionIsAsLongAsItHasSomethingToSay:
+    """R5, R6, R7 as the reader meets them."""
+
+    def test_a_collapsed_section_is_a_score_and_one_line(self, tmp_path):
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        _, md = render_note(tmp_path, result)
+
+        collapsed = [s for s in context["sections"] if not s.expanded]
+        assert collapsed, "the fixture must leave something collapsed"
+
+        for section in collapsed:
+            start = md.index(f"## {section.title}")
+            body = md[start:].split("\n## ", 1)[0]
+            assert "|" not in body, section.title      # no table
+            assert "\n- " not in body, section.title   # no findings
+
+    def test_an_expanded_section_names_every_reason_it_expanded(self, tmp_path):
+        """AE1: the three lender readings, stated before the table that scores
+        all three at zero."""
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        _, md = render_note(tmp_path, result)
+
+        quality = next(s for s in context["sections"]
+                       if s.key == "quality_business")
+        body = md[md.index(f"## {quality.title}"):].split("\n## ", 1)[0]
+
+        mismatches = [
+            finding.text for finding in quality.findings
+            if finding.source == "sector_mismatch"
+        ]
+
+        assert quality.expanded
+        assert len(mismatches) == 3, mismatches
+        for text in mismatches:
+            assert text in body
+        assert body.index("does not measure anything") < body.index("| Metric |")
+
+    def test_the_opening_states_how_many_sections_expanded(self, tmp_path):
+        """AE5's other half: the contrast has to be legible without reading."""
+        _, md = render_note(tmp_path)
+
+        assert "sections have something to explain" in md
+
+    def test_a_company_that_fires_nothing_collapses_everywhere(self, tmp_path):
+        """AE5. `rich_result()` is that company — no zero score, and a sector
+        nobody has declared applicability for."""
+        generator = ReportGenerator(output_dir=str(tmp_path))
+        context = generator._clarity_context(rich_result())
+        _, md = render_note(tmp_path, rich_result())
+
+        assert not any(s.expanded for s in context["sections"])
+        assert "No section needed more than its score and one line" in md
+        assert len(md) < len(render_note(tmp_path / "wide")[1])
+
+
+class TestEveryReadingIsPresentWithoutAModel:
+    """AE3, KD2: the reading layer is pure, so `--no-llm` loses nothing."""
+
+    def test_a_run_with_no_llm_still_carries_every_section_reading(self, tmp_path):
+        result = make_result()
+        assert result.llm_analysis is None
+
+        generator = ReportGenerator(output_dir=str(tmp_path))
+        context = generator._clarity_context(result)
+        html, md = render_note(tmp_path, result)
+
+        from boundless100x.output.report_surfaces import MarkdownComponents
+
+        surface = MarkdownComponents()
+        for section in [context["lead"], *context["sections"]]:
+            rendered = surface.render_reading(section.reading)
+            assert rendered.strip(), section.title
+            assert rendered.splitlines()[0] in md, section.title
+            assert visible_text(html).count(section.title) >= 1
+
+    def test_no_section_opens_on_a_blank(self, tmp_path):
+        """The failure AE3 names: a heading with nothing under it."""
+        _, md = render_note(tmp_path, make_result())
+
+        lines = md.splitlines()
+        for index, line in enumerate(lines):
+            if not line.startswith("## "):
+                continue
+            following = [text for text in lines[index + 1:index + 4] if text.strip()]
+            assert following, line
+
+    def test_the_note_names_no_action_when_no_model_ran(self, tmp_path):
+        _, md = render_note(tmp_path, make_result())
+
+        assert "Action:" not in md
+
+
+class TestAnAbsenceIsAlwaysExplained:
+    """R4 and R12 in the rendered table — AE4."""
+
+    def test_a_metric_with_no_declaration_renders_unknown_with_its_reason(
+        self, tmp_path
+    ):
+        """Stripped in memory rather than in YAML: every shipped metric carries
+        a declaration after U3, so the only honest way to render AE4's case is
+        to take one away for the length of a test."""
+        from boundless100x.compute_engine.engine import ComputeEngine
+
+        engine = ComputeEngine()
+        engine.metrics["dupont_margin"].pop("presentation", None)
+
+        generator = ReportGenerator(output_dir=str(tmp_path))
+        generator._registry = engine
+        context = generator._clarity_context(clarity_result())
+
+        quality = next(s for s in context["sections"]
+                       if s.key == "quality_business")
+        stripped = next(row for row in quality.rows
+                        if row.metric_id == "dupont_margin")
+
+        # A row, not a dropped metric and not a bare number: the label is
+        # there, the reading cell carries the reason, and there is no value to
+        # show because a metric with no declared unit has nothing R12 would let
+        # it render.
+        assert not stripped.known
+        assert stripped.label
+        assert "nothing declares how to read this metric" in stripped.unknown.reason
+
+    def test_a_row_with_no_figure_says_so_rather_than_showing_a_dash(
+        self, tmp_path
+    ):
+        """R4's "never an empty cell", at the one place it is easy to leave one."""
+        from boundless100x.output.report_vocabulary import NO_FIGURE_LABEL
+
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        _, md = render_note(tmp_path, result)
+
+        rows = [row for section in context["sections"] for row in section.rows]
+        assert any(not row.value for row in rows), "the fixture must have one"
+        assert NO_FIGURE_LABEL in md
+        assert "| — |" not in md
+
+    def test_every_rendered_row_carries_all_three_of_its_cells(self, tmp_path):
+        from boundless100x.output.report_surfaces import metric_cells
+
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(clarity_result())
+
+        for section in context["sections"]:
+            for row in section.rows:
+                assert all(cell.strip() for cell in metric_cells(row)), row.label
+
+
+class TestCoverageIsStatedWhereItMatters:
+    """R18 — AE7."""
+
+    def test_a_thin_element_states_its_coverage_in_the_one_line_reading(
+        self, tmp_path
+    ):
+        result = clarity_result()
+        # The number AE7 names, set on the fixture so the assertion is about
+        # the rendering rather than about whatever the fixture happened to hold.
+        result.scores["coverage"]["elements"]["quality_business"] = 0.32
+
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        _, md = render_note(tmp_path, result)
+
+        quality = next(s for s in context["sections"]
+                       if s.key == "quality_business")
+
+        assert "32%" in quality.reading.qualifier
+        assert quality.reading.qualifier in md
+
+    def test_an_element_above_the_bar_recites_no_number(self, tmp_path):
+        result = clarity_result()
+        result.scores["coverage"]["elements"]["growth"] = 1.0
+
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+
+        growth = next(s for s in context["sections"] if s.key == "growth")
+
+        assert growth.reading.qualifier == ""
+
+
+class TestTheMultiYearTablesLiveInTheAppendix:
+    """R10 — the twelve rows of cash-flow history that outweighed the score."""
+
+    APPENDIX_TABLES = ("Ten-year snapshot", "Cash-flow history",
+                       "Shareholding history")
+
+    @pytest.mark.parametrize("heading", APPENDIX_TABLES)
+    def test_each_table_renders_after_the_appendix_heading(self, tmp_path, heading):
+        html, md = render_note(tmp_path)
+
+        for surface, marker in ((md, "## Appendix"), (visible_text(html), "Appendix")):
+            assert heading in surface, heading
+            assert surface.index(marker) < surface.index(heading), heading
+
+    def test_no_element_section_body_holds_one_of_them(self, tmp_path):
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        _, md = render_note(tmp_path, result)
+
+        appendix_at = md.index("## Appendix")
+        for section in context["sections"]:
+            start = md.index(f"## {section.title}")
+            body = md[start:].split("\n## ", 1)[0]
+            assert start < appendix_at
+            for heading in self.APPENDIX_TABLES:
+                assert heading not in body, (section.title, heading)
+
+
+class TestTheExplanationIsReachableAndNeverInline:
+    """R3's two halves, and the second is what makes the first safe."""
+
+    def test_every_row_reference_resolves_to_a_body_in_the_appendix(self, tmp_path):
+        from boundless100x.output.report_surfaces import anchor_id
+
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        html, md = render_note(tmp_path, result)
+
+        bodies = {d.anchor for d in context["appendix"]["disclosures"]}
+        # Only the rows a reader can actually see: a collapsed section renders
+        # no rows and therefore no references, while its explanations are in
+        # the appendix all the same — R3 is about every metric being reachable,
+        # not about every metric being on the page.
+        referenced = {
+            row.disclosure.anchor
+            for section in [*context["sections"], context["unscored"]]
+            if section and section.expanded
+            for row in section.rows
+            if row.disclosure
+        }
+
+        assert referenced, "the fixture must reference at least one explanation"
+        assert referenced <= bodies
+        for anchor in referenced:
+            assert f'id="{anchor_id(anchor)}"' in html
+            assert f"(#{anchor_id(anchor)})" in md
+
+    def test_no_explanation_body_appears_inside_a_section(self, tmp_path):
+        """The half a type system enforces: `Section.flow` excludes the bodies,
+        so this asserts the template did not go around it."""
+        result = clarity_result()
+        context = ReportGenerator(
+            output_dir=str(tmp_path)
+        )._clarity_context(result)
+        _, md = render_note(tmp_path, result)
+
+        appendix_at = md.index("## Appendix")
+        before_appendix = md[:appendix_at]
+
+        for disclosure in context["appendix"]["disclosures"]:
+            assert disclosure.body not in before_appendix, disclosure.title
+
+
+class TestTheNoteNeverCostsTheRunItsOtherReports:
+    """The fence around the new block. R16 is a promise about every run."""
+
+    def test_a_failing_note_leaves_the_legacy_reports_on_disk(self, tmp_path,
+                                                              monkeypatch):
+        monkeypatch.setattr(
+            ReportGenerator, "_clarity_context",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        result = clarity_result()
+
+        report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
+            result, formats=["html", "md", "clarity"],
+        )
+
+        assert (report_dir / "TEST_dashboard.html").exists()
+        assert (report_dir / "TEST_report.md").exists()
+        assert not (report_dir / "TEST_note.md").exists()
+        assert any("Research note" in e for e in result.errors)

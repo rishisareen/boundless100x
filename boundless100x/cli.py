@@ -129,7 +129,13 @@ def analyze(
         None, "--llm-provider",
         help="Which transport carries the LLM calls (default: config's llm.provider)",
     ),
-    formats: str = typer.Option("html,md,json", help="Output formats (comma-separated)"),
+    # `clarity` is the research note (U10). This call site passes `formats=`
+    # explicitly, so the generator's own default never reaches it — the token
+    # has to be here or an `analyze` run produces every report except the new
+    # one (KTD3).
+    formats: str = typer.Option(
+        "html,md,clarity,json", help="Output formats (comma-separated)"
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """Run full SQGLP analysis pipeline for a company."""

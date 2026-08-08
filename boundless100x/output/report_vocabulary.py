@@ -107,8 +107,30 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "heavy_reinvestment": ("Heavy Reinvestment", "neutral"),
     "consistent_fcf_generator": ("Consistent Free Cash Flow Generator", "good"),
     "consistent_organic_fcf_generator": ("Consistent Organic FCF (Excl. M&A)", "good"),
+    # The sector-tailwind metric's own three flags. All three were
+    # unregistered: `sector_tailwind` had a *metric* display name, which is
+    # what every audit of this file saw, while the flags it emits had no
+    # wording at all and reached a reader as auto-humanised text.
+    "sector_strong_tailwind": ("Sector With a Strong Tailwind", "good"),
+    "sector_non_consideration": (
+        "Sector the Study Rules Out", "bad"
+    ),
+    "sector_unclassified": ("Sector Not in the Study's Lists", "neutral"),
     # Composite
     "possible_bonus_split": ("Possible Bonus/Split Event Detected", "neutral"),
+    # `growth.py` appends one flag *per suspect year* (`..._year_1`,
+    # `..._year_2`), so the base id above never matches what a metric actually
+    # emits. Generated rather than listed: a hand-written set would stop at
+    # whatever year someone happened to have seen, and the year index runs to
+    # the length of the annual window. Same wording, so several spikes read as
+    # several years rather than as several different findings.
+    **{
+        f"possible_bonus_split_year_{year}": (
+            f"Possible Bonus/Split Event Detected (year {year} of the window)",
+            "neutral",
+        )
+        for year in range(1, 13)
+    },
     # Forward signals (Phase 2, zero weight — see FORWARD_SIGNALS_ELEMENT)
     "rerating_headroom_favourable": ("Re-rating Headroom — Favourable", "good"),
     "rerating_headroom_stretched": ("Re-rating Headroom — Stretched", "bad"),
@@ -266,8 +288,15 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "heavy_reinvestment": "longevity",
     "consistent_fcf_generator": "longevity",
     "consistent_organic_fcf_generator": "longevity",
+    "sector_strong_tailwind": "longevity",
+    "sector_non_consideration": "longevity",
+    "sector_unclassified": "longevity",
     # Composite
     "possible_bonus_split": "composite",
+    **{
+        f"possible_bonus_split_year_{year}": "composite"
+        for year in range(1, 13)
+    },
     # The scorer's own flag. Mapped explicitly to the same element the `.get`
     # default would have returned, so the registration is visible rather than
     # accidental — the default is what let it go unnoticed in FLAG_LABELS.
@@ -589,6 +618,66 @@ CATEGORICAL_VALUE_LABELS: dict[str, dict[str, tuple[str, str]]] = {
 SCORE_SCALE = 10
 SCORE_BANDS: tuple[tuple[float, str], ...] = ((7.0, "strong"), (4.0, "middling"))
 SCORE_LOW_LABEL = "weak"
+
+
+# ── The research note (U10) ───────────────────────────────────────────────
+#
+# Wording the new report needs and no existing table holds. It lives here for
+# the same reason everything else in this file does: these are the words a
+# reader meets, and the alternative is a literal inside a renderer where
+# nothing keeps it in step with the rest of the report's voice.
+
+# The action, as a reader meets it. The existing surfaces render this enum as
+# `action | replace("_", " ") | upper`, which is one of the five routes around
+# the vocabulary layer the problem frame names — "STRONG BUY" is the key
+# shouting rather than a label. `guard_text` refuses any of the five raw keys
+# as a whole field, so a new report cannot render one by accident; this is what
+# it renders instead.
+ACTION_LABELS: dict[str, str] = {
+    "avoid": "Avoid",
+    "watchlist": "Watchlist",
+    "hold": "Hold",
+    "buy": "Buy",
+    "strong_buy": "Strong buy",
+}
+
+# An action outside `ACTION_ORDER`. Never auto-humanised — see `FLAG_LABELS`'s
+# note on why a derived label is a leak with better typography.
+ACTION_UNKNOWN_LABEL = "an action this report has no wording for"
+
+RESEARCH_NOTE_TITLE = "Research Note"
+
+# What a metric row says when the metric produced no figure at all. R4 forbids
+# the empty cell and R12 forbids the bare number; a dash is the empty cell with
+# a character in it, so the cell says what happened instead.
+NO_FIGURE_LABEL = "no figure"
+
+# The contribution cell for a metric that carries no weight — the zero-weight
+# signals, and any metric the scorer waived. Distinct from a metric that scored
+# zero, which has a score to show.
+UNWEIGHTED_CONTRIBUTION = "Does not contribute to the score"
+
+# R3's link text. The same words on both surfaces, so a reader who learns what
+# the phrase means in one report recognises it in the other.
+DISCLOSURE_LINK_TEXT = "what this measures"
+
+# Why a collapsed section shows no rows, said once rather than per section.
+# R5 is deliberate — length is the verdict (KD5) — but a reader meeting six
+# one-line sections deserves to be told the rows still exist somewhere.
+COLLAPSED_SECTIONS_NOTE = (
+    "A section with nothing to explain renders as its score and one line. "
+    "Every metric's own row, and the model's written thesis where there is "
+    "one, stay in the full dashboard generated beside this note."
+)
+
+# The section carrying every metric that sits outside the six scored elements.
+# They are not a seventh element and must not read like one: nothing in here
+# reaches a score, a coverage denominator, or the composite.
+UNSCORED_SECTION_TITLE = "Signals that move no score"
+
+UNSCORED_SECTION_READING = (
+    "Read for context. Nothing below contributed to any score on this page."
+)
 
 
 # ── SQGLP element display config ──

@@ -1,0 +1,142 @@
+{# The research note, in Markdown. R14's second surface.
+
+   Thin on purpose. Every word a reader sees comes from a component rendered
+   by `surface`; what is written here is the frame — headings, table wrappers,
+   the appendix's multi-year tables (R10). Compare it with its HTML twin: the
+   loops are the same loops in the same order, which is what makes "a section
+   present in one surface is present in all three" checkable by reading. #}
+# {{ company }} — {{ title }}
+
+{{ subtitle }}
+Generated: {{ generation_date }}
+
+---
+
+{% macro section_block(section) %}
+## {{ section.title }}
+
+{{ surface.render_reading(section.reading) }}
+{% if section.expanded %}
+{% if section.findings %}
+
+{% for finding in section.findings %}
+{{ surface.render_finding(finding) }}
+{% endfor %}
+{% endif %}
+{% if section.rows %}
+
+| {{ row_headers[0] }} | {{ row_headers[1] }} | {{ row_headers[2] }} |
+|---|---|---|
+{% for row in section.rows %}
+{{ surface.render_metric_row(row) }}
+{% endfor %}
+{% endif %}
+{% if section.unknowns %}
+
+{% for unknown in section.unknowns %}
+{{ surface.render_unknown(unknown) }}
+{% endfor %}
+{% endif %}
+{% if section.caveats %}
+
+{% for caveat in section.caveats %}
+{{ surface.render_caveat(caveat) }}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endmacro %}
+{{ section_block(lead) }}
+
+---
+
+{% for section in sections %}
+{{ section_block(section) }}
+{% endfor %}
+{% if unscored %}
+{{ section_block(unscored) }}
+{% endif %}
+
+---
+
+## Appendix
+
+{# R10: the multi-year tables live here rather than in a section body. #}
+{% if appendix.snapshot %}
+### Ten-year snapshot
+
+| Year |{% for s in appendix.snapshot %} {{ s.year[-4:] }} |{% endfor %}
+
+|---|{% for s in appendix.snapshot %}---:|{% endfor %}
+
+| Revenue (₹ Cr) |{% for s in appendix.snapshot %} {% if s.revenue is not none %}{{ "{:,.0f}".format(s.revenue) }}{% else %}not reported{% endif %} |{% endfor %}
+
+| Profit after tax (₹ Cr) |{% for s in appendix.snapshot %} {% if s.pat is not none %}{{ "{:,.0f}".format(s.pat) }}{% else %}not reported{% endif %} |{% endfor %}
+
+| Earnings per share (₹) |{% for s in appendix.snapshot %} {% if s.eps is not none %}{{ "%.1f"|format(s.eps) }}{% else %}not reported{% endif %} |{% endfor %}
+
+| Operating margin (%) |{% for s in appendix.snapshot %} {% if s.opm is not none %}{{ "%.1f"|format(s.opm) }}{% else %}not reported{% endif %} |{% endfor %}
+
+| Return on capital employed (%) |{% for s in appendix.snapshot %} {% if s.roce is not none %}{{ "%.1f"|format(s.roce) }}{% else %}not reported{% endif %} |{% endfor %}
+
+| Debt to equity (times) |{% for s in appendix.snapshot %} {% if s.de is not none %}{{ "%.2f"|format(s.de) }}{% else %}not reported{% endif %} |{% endfor %}
+
+| Cash from operations (₹ Cr) |{% for s in appendix.snapshot %} {% if s.cfo is not none %}{{ "{:,.0f}".format(s.cfo) }}{% else %}not reported{% endif %} |{% endfor %}
+
+{# Two blank lines, not one: `trim_blocks` eats the newline after the inline
+   `endfor` above, so a single one would leave the next heading touching the
+   table's last row — which most Markdown renderers read as another row. #}
+
+{% endif %}
+{% if appendix.cashflow and appendix.cashflow.yearly_data %}
+### Cash-flow history
+
+Cumulative cash from operations against cumulative profit: {{ "%.0f"|format(appendix.cashflow.cumulative_ratio) }}%.
+
+| Year | Cash from operations (₹ Cr) | Profit after tax (₹ Cr) | Cash as a share of profit (%) |
+|---|---:|---:|---:|
+{% for yr in appendix.cashflow.yearly_data %}
+| {{ yr.year[-4:] }} | {{ "{:,.0f}".format(yr.cfo) }} | {{ "{:,.0f}".format(yr.pat) }} | {% if yr.ratio is not none %}{{ "%.0f"|format(yr.ratio) }}{% else %}not comparable{% endif %} |
+{% endfor %}
+
+{% endif %}
+{% if appendix.shareholding %}
+### Shareholding history
+
+| Quarter | Promoter (%) | Foreign institutions (%) | Domestic institutions (%) | Public (%) | Government (%) | Promoter shares pledged (%) |
+|---|---:|---:|---:|---:|---:|---:|
+{% for sh in appendix.shareholding %}
+| {{ sh.quarter }} | {% if sh.promoter_pct is not none %}{{ "%.1f"|format(sh.promoter_pct) }}{% else %}not reported{% endif %} | {% if sh.fii_pct is not none %}{{ "%.1f"|format(sh.fii_pct) }}{% else %}not reported{% endif %} | {% if sh.dii_pct is not none %}{{ "%.1f"|format(sh.dii_pct) }}{% else %}not reported{% endif %} | {% if sh.public_pct is not none %}{{ "%.1f"|format(sh.public_pct) }}{% else %}not reported{% endif %} | {% if sh.govt_pct is not none %}{{ "%.1f"|format(sh.govt_pct) }}{% else %}not reported{% endif %} | {% if sh.promoter_pledge_pct is not none %}{{ "%.1f"|format(sh.promoter_pledge_pct) }}{% else %}not reported{% endif %} |
+{% endfor %}
+
+{% endif %}
+{% if appendix.signals or appendix.signal_unknowns %}
+### Signals
+
+{% for finding in appendix.signals %}
+{{ surface.render_finding(finding) }}
+{% endfor %}
+{% for unknown in appendix.signal_unknowns %}
+{{ surface.render_unknown(unknown) }}
+{% endfor %}
+
+{% endif %}
+{# R3's deferred half: the explanations are reachable from every metric row
+   above and appear nowhere in the reading flow. #}
+{% if appendix.disclosures %}
+### What each metric measures
+
+{% for disclosure in appendix.disclosures %}
+{{ surface.render_disclosure(disclosure) }}
+
+{% endfor %}
+{% endif %}
+{% if appendix.caveats %}
+### Run notes
+
+{% for caveat in appendix.caveats %}
+{{ surface.render_caveat(caveat) }}
+{% endfor %}
+
+{% endif %}
+---
+*Generated by Boundless100x SQGLP Research System | {{ generation_date }}*
