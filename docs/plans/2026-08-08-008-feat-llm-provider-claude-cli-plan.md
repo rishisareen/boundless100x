@@ -199,11 +199,54 @@ literally two tokens, answered with one word, measured:
 | `--system-prompt` override | $0.1711 | 28,412 | 0 |
 
 The third row is the important one: a second identical call moments later
-pays the same, so this is a per-call floor, not a warm-up. For scale, the
-whole extraction sweep prices at ~$0.79 on the API path, and the CLI path
-would add ~$0.065 × 15 ≈ $1 of pure harness on top. **That does not sink the
-feature** — it is metered against a subscription pool ~100× larger than this
-workload — but it has two consequences the code must respect:
+pays the same, so this is a per-call floor **across independent sessions**.
+For scale, the whole extraction sweep prices at ~$0.79 on the API path, and
+the naive CLI path would add ~$0.065 × 15 ≈ $1 of pure harness on top.
+
+**Mitigations, measured (2026-08-08, same probe, all on 2.1.225):**
+
+| Lever | cost | cache_create | What it did |
+|---|---|---|---|
+| baseline (settings off) | $0.0651 | 9,337 | — |
+| `--tools ""` | $0.0370 | 5,889 | Strips the built-in tool schemas — documented syntax, halves the call |
+| + `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | $0.0331 | 5,349 | Removes the auxiliary haiku call entirely (`modelUsage` shows sonnet only) |
+| **`-p --resume <session_id>`, follow-up turn** | **$0.0030** | **19** | The harness prefix is read from cache at 0.1×, not rewritten. Verified twice. |
+
+So the overhead **does amortize — within a resumed session**. The "does not
+amortize" reading above was true of what it measured (fresh sessions) and
+wrong as a conclusion; a session-per-company design pays the harness write
+once per company, and turns 2 and 3 ride at ~$0.003 plus their own tokens.
+
+**The floor under all of it: a 2× write multiplier.** Claude Code writes
+every prompt token at 1-hour-TTL cache-write rates — 2× the standard input
+price ($6/MTok on Sonnet 5 vs the API path's $3). The arithmetic checks:
+9,337 × $6/M + 28,083 × $0.3/M ≈ the measured $0.065. Session reuse
+eliminates the *fixed* overhead but nothing removes the multiplier, so the
+optimized CLI path converges to ≈ 1.7–1.8× the API path per company in
+metered dollars — the remaining question is only which pool those dollars
+come from.
+
+**Optimized invocation** (first turn per company; subsequent turns add
+`--resume <sid>`):
+
+```
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude -p \
+  --model <id> --output-format json \
+  --setting-sources "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+  --tools ""
+```
+
+**Session-per-company is the contract-safe shape for reuse.** One session
+carrying one company's extraction → Pass 1 → Pass 2 keeps every turn about
+the same company (history contamination cannot cross tickers), and Pass 2
+already receives Pass 1's output in its prompt, so the shared history adds
+redundancy, not new information. Sessions must never be reused across
+companies. This adds real transport complexity — session-id plumbing,
+resume-failure handling (a dead session falls back to a fresh one), and the
+service handing the transport a per-company session scope — and is v2 of
+the transport, not v1.
+
+The remaining consequences the code must respect:
 
 1. **The sweep's `--ceiling` meters on `estimated_cost_usd`, which on this
    path carries actual cost including the overhead.** A ceiling calibrated
