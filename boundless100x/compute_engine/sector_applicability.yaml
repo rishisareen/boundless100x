@@ -1,0 +1,105 @@
+# Sector-by-metric applicability — which metrics measure nothing useful for
+# which kind of company.
+#
+# Read by `compute_engine/sector.py`. R6's first expansion trigger fires off
+# this table, and R7 puts the reason string below in front of the reader
+# verbatim — so every reason here is written for an owner reading a report,
+# not for whoever maintains the metric. "does not apply" on its own tells a
+# reader nothing; the sentence explaining why is the deliverable.
+#
+# THREE-VALUED, and the absent case is the common one. A sector key present
+# here has been **reviewed**: everything not listed under its `not_applicable`
+# applies to it. A sector with no key at all is **indeterminate** — nobody has
+# looked — and must never read as "applies" (KTD6, R4). That asymmetry is the
+# whole point of the file. A silent "applies" is how Power Finance Corporation
+# came to be scored as a failing manufacturer: three of the five visible rows
+# in its Quality — Business section measured the wrong thing, at 0% each, and
+# nothing on the page said so.
+#
+# Keys match the way `sector.py` already matches study sectors: whole-phrase,
+# word-boundary, plural-tolerant. So `Finance` covers Screener's own "Finance"
+# breadcrumb and would cover a future "Housing Finance" with no new entry —
+# that inheritance is why the table keys on the sector bucket rather than on
+# the company.
+
+sectors:
+
+  Finance:
+    label: "Lenders and financing NBFCs"
+    # PFC, JIOFIN and EDELWEISS in the cached corpus. Every exclusion below
+    # traces to one of two facts about a lending balance sheet: the assets ARE
+    # the business rather than equipment supporting it, and money lent out is
+    # booked as an operating cash outflow, so the whole CFO+CFI free-cash-flow
+    # chain inverts. Measured 2026-08-08 — PFC: turnover 0.09x, equity
+    # multiplier 9.37x, FCF yield -5.7%, 2 of 10 FCF-positive years, DCF margin
+    # pinned at the -100% floor. EDELWEISS: 0.24x, 9.46x, -0.6%, and a DCF
+    # margin of +147% flagged `dcf_undervalued`. That last one matters: the
+    # readings are excluded because they are meaningless, not because they are
+    # unflattering, and the same broken series swings both ways.
+    not_applicable:
+      dupont_turnover: >-
+        A lender's assets are the loan book it earns on, not plant it has to
+        sweat. Revenue is the interest spread on those assets, so this ratio
+        measures how thin the spread is rather than how hard the business
+        works what it owns — and it reads near zero for a perfectly healthy
+        lender.
+      dupont_equity_multiplier: >-
+        Borrowing many times equity is a lender's product, not a risk it took
+        on by accident. The balance sheet is funded deliberately and its size
+        is set by capital-adequacy rules, so a high multiple here is the
+        business model working rather than a warning about it.
+      fcf_yield: >-
+        Money lent out is counted as an operating outflow, so a lender that
+        grows its loan book reports deeply negative free cash flow for
+        succeeding. The figure tracks how fast the book is growing, not what
+        cash is left over for owners.
+      fcf_consistency: >-
+        Counts the years that same lending-distorted cash flow came out
+        positive — which, for a lender, counts the years the loan book shrank.
+        A low score here is a record of growth.
+      dcf_margin_of_safety: >-
+        Values the company by discounting that same free cash flow, so a
+        lender growing its book averages negative and the calculation returns
+        its -100% floor before reaching any judgement about the business. When
+        the lending flows happen to net out positive it swings just as far the
+        other way, for reasons equally unrelated to what the company is worth.
+
+  Industrial Products:
+    label: "Manufacturers of physical goods"
+    # Reviewed, and nothing is excluded. This is the shape every metric above
+    # was written for: revenue produced by a productive asset base, investing
+    # cash flow that is capital expenditure, borrowings that fund plant rather
+    # than being the product. ASTRAL reads turnover 1.13x, equity multiplier
+    # 1.43x, FCF yield +1.6%, nine of ten years FCF-positive, and a DCF margin
+    # of -74% that is a genuine "priced richly" reading rather than a
+    # structural floor — five metrics all measuring what they claim to.
+    #
+    # The entry exists so a manufacturer resolves to `applies` rather than
+    # `indeterminate`. It is the baseline the lender case is a departure from,
+    # and without it stated the departure has nothing to be a departure from.
+    not_applicable: {}
+
+# ── Considered and deliberately NOT declared ──────────────────────────────
+#
+# A wrong `does_not_apply` suppresses a real quality signal and leaves no
+# trace, which is a worse failure than an indeterminate nobody acts on. So the
+# bar for adding an entry is evidence from the metric's implementation, not
+# intuition about the industry. Three cases cleared the intuition bar and not
+# the evidence one:
+#
+#   Finance / cash_conversion — CFO carries the same lending flows that break
+#   FCF yield, and the readings are visibly broken (JIOFIN 981%, PFC errors
+#   outright). But EDELWEISS reads 87% and earns a `cash_cow` flag off it, so
+#   excluding this removes a *favourable* misreading — a different judgement
+#   from the five above, and one nobody has reviewed against a company where
+#   cash conversion would have been the signal that mattered.
+#
+#   Finance / working_capital_days_trend — reads -457 days for EDELWEISS and
+#   errors for PFC. Whether "working capital" means anything for a
+#   balance-sheet business is a case that needs arguing rather than asserting.
+#
+#   Capital Markets (BSE, CAMS, CDSL, KFINTECH) — exchanges, depositories and
+#   registrars carry large investment and client-float balances that depress
+#   asset turnover, but their cash flows are genuinely free cash flow and
+#   nothing in their statements inverts the way a lender's does. Unreviewed is
+#   the honest answer, and unreviewed reads indeterminate.

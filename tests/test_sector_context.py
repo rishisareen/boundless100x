@@ -1,16 +1,63 @@
-"""Sector tailwind classification, scoring, and prompt context.
+"""Sector tailwind classification, scoring, prompt context, and applicability.
 
 sector_context.yaml encoded the Dec 2025 study's sector findings but no code
 read it, so two of the study's strongest empirical results influenced nothing.
+
+sector_applicability.yaml answers the other sector question — not "is this a
+good sector?" but "does this metric measure anything for a company of this
+kind?". It exists because PFC, a lender, was scored at 0% on asset turnover,
+equity multiplier and free cash flow yield for doing exactly what a lender
+does, and nothing in the report said so.
 """
+
+import json
+from pathlib import Path
 
 import pytest
 
 from boundless100x.compute_engine.engine import ComputeEngine
-from boundless100x.compute_engine.sector import classify_sector, load_sector_context
+from boundless100x.compute_engine.sector import (
+    APPLIES,
+    DOES_NOT_APPLY,
+    INDETERMINATE,
+    SectorApplicability,
+    classify_sector,
+    load_sector_applicability,
+    load_sector_context,
+    validate_sector_applicability,
+)
 from boundless100x.compute_engine.metrics.builtin.longevity import compute_sector_tailwind
 from boundless100x.llm_layer.checklist import build_sector_context
 from tests.conftest import make_data
+
+RAW_DATA_DIR = (
+    Path(__file__).parent.parent / "boundless100x" / "data_fetcher" / "raw_data"
+)
+
+# The five the plan names, by their registry ids.
+LENDER_EXCLUSIONS = {
+    "dupont_turnover",
+    "dupont_equity_multiplier",
+    "fcf_yield",
+    "fcf_consistency",
+    "dcf_margin_of_safety",
+}
+
+
+@pytest.fixture(scope="module")
+def registry_metric_ids():
+    return set(ComputeEngine().metrics)
+
+
+@pytest.fixture(scope="module")
+def applicability(registry_metric_ids):
+    """The shipped table, validated against the real registry.
+
+    Construction is where validation runs, so this fixture existing at all is
+    the assertion that the shipped table names no metric the engine does not
+    define.
+    """
+    return SectorApplicability(registry_metric_ids)
 
 
 class TestClassification:
@@ -107,3 +154,203 @@ class TestPromptContext:
 
         assert text
         assert "unknown" in text.lower() or "not available" in text.lower()
+
+
+class TestApplicabilityVerdicts:
+    """The three-valued answer, and which absences produce which value."""
+
+    def test_a_lender_reports_asset_turnover_as_not_applicable(self, applicability):
+        outcome = applicability.evaluate("dupont_turnover", "Finance")
+
+        assert outcome["verdict"] == DOES_NOT_APPLY
+        assert outcome["applies"] is False
+        assert "loan book" in outcome["reason"]
+
+    def test_a_manufacturer_reports_the_same_metric_as_applicable(self, applicability):
+        outcome = applicability.evaluate("dupont_turnover", "Industrial Products")
+
+        assert outcome["verdict"] == APPLIES
+        assert outcome["applies"] is True
+
+    def test_an_unreviewed_sector_is_indeterminate_not_applicable(self, applicability):
+        """The load-bearing case: most sectors are unreviewed."""
+        outcome = applicability.evaluate("dupont_turnover", "Interstellar Freight")
+
+        assert outcome["verdict"] == INDETERMINATE
+        assert outcome["applies"] is None
+        assert "not been reviewed" in outcome["reason"]
+
+    def test_a_cached_sector_nobody_reviewed_is_indeterminate(self, applicability):
+        """Capital Markets was deliberately left out, and must not read as fitting."""
+        outcome = applicability.evaluate("fcf_yield", "Capital Markets")
+
+        assert outcome["verdict"] == INDETERMINATE
+        assert outcome["reason"]
+
+    @pytest.mark.parametrize("sector", [None, "", "   "])
+    def test_a_company_with_no_sector_is_indeterminate(self, applicability, sector):
+        outcome = applicability.evaluate("dupont_turnover", sector)
+
+        assert outcome["verdict"] == INDETERMINATE
+        assert outcome["applies"] is None
+        assert "No sector is recorded" in outcome["reason"]
+
+    def test_a_metric_the_registry_does_not_define_is_indeterminate(self, applicability):
+        outcome = applicability.evaluate("interstellar_freight_yield", "Finance")
+
+        assert outcome["verdict"] == INDETERMINATE
+        assert outcome["applies"] is None
+
+    def test_every_outcome_carries_a_reason(self, applicability):
+        """R4: unknown always renders with its reason, never as a blank."""
+        cases = [
+            ("dupont_turnover", "Finance"),
+            ("dupont_turnover", "Industrial Products"),
+            ("dupont_turnover", "Interstellar Freight"),
+            ("dupont_turnover", None),
+            ("no_such_metric", "Finance"),
+        ]
+        for metric_id, sector in cases:
+            assert applicability.evaluate(metric_id, sector)["reason"].strip(), (
+                f"{metric_id} / {sector} produced a verdict with no reason"
+            )
+
+
+class TestApplicabilityMatching:
+    """Sector names match the way the study lists already match (KTD6)."""
+
+    def test_matching_ignores_case_and_spacing(self, applicability):
+        assert applicability.evaluate("fcf_yield", "  finance ")["applies"] is False
+
+    def test_a_narrower_sector_inherits_without_a_new_entry(self, applicability):
+        """The whole reason the table keys on a bucket rather than a company."""
+        outcome = applicability.evaluate("dupont_equity_multiplier", "Housing Finance")
+
+        assert outcome["verdict"] == DOES_NOT_APPLY
+        assert outcome["matched_sectors"] == ["Finance"]
+
+    def test_an_unrelated_sector_does_not_match_on_a_substring(self, applicability):
+        assert applicability.matching_sectors("Chemicals & Petrochemicals") == []
+
+    def test_a_more_specific_entry_supplies_the_wording(self, registry_metric_ids):
+        """Two keys can both be true of one company; the narrower one is written
+        about it, so its sentence is the one the reader gets."""
+        table = {
+            "Finance": {"not_applicable": {"fcf_yield": "the general reason"}},
+            "Housing Finance": {"not_applicable": {"fcf_yield": "the specific reason"}},
+        }
+        evaluator = SectorApplicability(registry_metric_ids, table)
+
+        outcome = evaluator.evaluate("fcf_yield", "Housing Finance")
+
+        assert outcome["reason"] == "the specific reason"
+        assert outcome["matched_sectors"] == ["Finance", "Housing Finance"]
+
+    def test_exclusions_from_both_matching_entries_merge(self, registry_metric_ids):
+        table = {
+            "Finance": {"not_applicable": {"fcf_yield": "general"}},
+            "Housing Finance": {"not_applicable": {"dupont_turnover": "specific"}},
+        }
+        evaluator = SectorApplicability(registry_metric_ids, table)
+
+        assert set(evaluator.not_applicable_metrics("Housing Finance")) == {
+            "fcf_yield",
+            "dupont_turnover",
+        }
+
+
+class TestApplicabilityValidation:
+    """A rule that can never fire looks exactly like one whose condition is
+    never met, so every one of these is a startup error rather than a log line."""
+
+    def test_a_metric_id_the_registry_does_not_define_is_a_startup_error(
+        self, registry_metric_ids
+    ):
+        table = {"Finance": {"not_applicable": {"assett_turnover": "typo'd id"}}}
+
+        with pytest.raises(ValueError, match="unknown metric id"):
+            SectorApplicability(registry_metric_ids, table)
+
+    def test_a_blank_reason_is_a_startup_error(self, registry_metric_ids):
+        """R7 makes the sentence the deliverable; an exclusion with no reason
+        reaches the reader as a shrug."""
+        table = {"Finance": {"not_applicable": {"fcf_yield": "   "}}}
+
+        with pytest.raises(ValueError, match="reason a reader can act on"):
+            SectorApplicability(registry_metric_ids, table)
+
+    def test_a_misspelled_entry_key_is_a_startup_error(self, registry_metric_ids):
+        """`not_applicible:` would otherwise mark the sector reviewed with
+        nothing excluded — the wrong answer, reached by a spelling mistake."""
+        table = {"Finance": {"not_applicible": {"fcf_yield": "reason"}}}
+
+        with pytest.raises(ValueError, match="unknown key"):
+            SectorApplicability(registry_metric_ids, table)
+
+    def test_a_non_mapping_exclusion_block_is_a_startup_error(self, registry_metric_ids):
+        table = {"Finance": {"not_applicable": ["fcf_yield"]}}
+
+        with pytest.raises(ValueError, match="must be a mapping"):
+            SectorApplicability(registry_metric_ids, table)
+
+    def test_a_reviewed_sector_may_exclude_nothing(self, registry_metric_ids):
+        for empty in ({}, None):
+            evaluator = SectorApplicability(
+                registry_metric_ids, {"Widgets": {"not_applicable": empty}}
+            )
+
+            assert evaluator.evaluate("fcf_yield", "Widgets")["applies"] is True
+
+    def test_the_shipped_table_validates_against_the_real_registry(
+        self, registry_metric_ids
+    ):
+        errors = validate_sector_applicability(
+            load_sector_applicability(), registry_metric_ids
+        )
+
+        assert errors == []
+
+    def test_an_unreadable_table_degrades_to_indeterminate_not_to_applies(
+        self, registry_metric_ids, tmp_path
+    ):
+        """The safe direction: a lost table costs a signal, never asserts a fit."""
+        missing = tmp_path / "absent.yaml"
+        evaluator = SectorApplicability(registry_metric_ids, load_sector_applicability(str(missing)))
+
+        assert evaluator.evaluate("dupont_turnover", "Finance")["applies"] is None
+
+
+class TestShippedApplicabilityTable:
+    def test_finance_excludes_exactly_the_five_lender_metrics(self, applicability):
+        assert set(applicability.not_applicable_metrics("Finance")) == LENDER_EXCLUSIONS
+
+    def test_the_three_cached_lenders_resolve_all_five(self, applicability):
+        """Read off the real cached metadata, not a fixture — the plan's
+        verification is that these three tickers actually resolve."""
+        lenders = [
+            d.name
+            for d in sorted(RAW_DATA_DIR.iterdir())
+            if (d / "metadata.json").exists()
+            and json.loads((d / "metadata.json").read_text()).get("sector") == "Finance"
+        ]
+
+        assert lenders == ["EDELWEISS", "JIOFIN", "PFC"]
+        for ticker in lenders:
+            sector = json.loads(
+                (RAW_DATA_DIR / ticker / "metadata.json").read_text()
+            )["sector"]
+            for metric_id in LENDER_EXCLUSIONS:
+                outcome = applicability.evaluate(metric_id, sector)
+                assert outcome["verdict"] == DOES_NOT_APPLY, f"{ticker}/{metric_id}"
+                assert outcome["reason"].strip()
+
+    def test_every_declared_reason_is_prose_a_reader_could_use(self, applicability):
+        """Not a length check for its own sake: 'n/a' passes a non-blank test
+        and fails a reader."""
+        for sector in applicability.table:
+            for metric_id, reason in applicability.not_applicable_metrics(sector).items():
+                assert len(reason.split()) >= 10, f"{sector}.{metric_id}: {reason!r}"
+
+    def test_industrial_products_is_reviewed_and_excludes_nothing(self, applicability):
+        assert "Industrial Products" in applicability.table
+        assert applicability.not_applicable_metrics("Industrial Products") == {}
