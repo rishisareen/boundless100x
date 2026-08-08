@@ -692,10 +692,19 @@ class TestCommands:
         assert WatchlistManager(path=str(store)).tickers() == []
 
     def test_a_rerating_entry_round_trips_through_show(self, run):
+        """The lane survives the round trip, as its label rather than its key.
+
+        `show` used to print the stored `rerating` straight into the column,
+        which is the lifecycle key R15 keeps off the page. Asserted through
+        `LANE_SHORT_LABELS` so the check follows the wording rather than
+        outliving it.
+        """
+        from boundless100x.output.report_vocabulary import LANE_SHORT_LABELS
+
         run("watchlist", "add", "astral", "--lane", "rerating")
         result = run("watchlist", "show")
         assert result.exit_code == 0
-        assert "rerating" in result.output
+        assert LANE_SHORT_LABELS["rerating"] in result.output
 
     def test_catalyst_records_description_and_window(self, run, store):
         run("watchlist", "add", "ASTRAL", "--lane", "rerating")

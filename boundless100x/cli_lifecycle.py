@@ -26,8 +26,34 @@ import typer
 from rich.table import Table
 
 from boundless100x.cli_common import console, setup_logging
+# The lifecycle's own vocabulary, from the table the report reads. `core` and
+# `exit_review` are the lane and lifecycle keys R15 names outright, and this
+# surface printed both straight out of the store.
+from boundless100x.output.report_vocabulary import (
+    LANE_LABELS,
+    LANE_SHORT_LABELS,
+    LIFECYCLE_UNKNOWN_LABEL,
+    STATE_LABELS,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _lane_label(lane, *, short: bool = False) -> str:
+    """A lane, in words. Never the key, and never a key with its underscores
+    taken out — an unregistered lane says so, because a derived label succeeds
+    silently on a lane nobody has thought about.
+
+    `short` is for a table column, where the full label wraps to four lines and
+    pushes every other column into an ellipsis.
+    """
+    table = LANE_SHORT_LABELS if short else LANE_LABELS
+    return table.get(lane) or LIFECYCLE_UNKNOWN_LABEL
+
+
+def _state_label(state) -> str:
+    """A lifecycle state, in words. `_lane_label`'s twin, same rule."""
+    return STATE_LABELS.get(state) or LIFECYCLE_UNKNOWN_LABEL
 
 def _record_checkpoints_if_tracked(ticker: str, result, as_of=None) -> None:
     """Persist Pass 2's structured monitorables for a watchlisted company.
@@ -108,9 +134,13 @@ def _print_lane_status(context: dict | None) -> None:
     if not context:
         return
 
+    # Labels, not keys. This line read `Lane: core (lifecycle state: probe)`,
+    # which is two lifecycle keys in one sentence — and `probe` in particular
+    # says nothing to a reader about capital being committed, which is the
+    # whole point of printing the state here.
     console.print(
-        f"\n[bold]Lane:[/bold] {escape(str(context.get('lane')))} "
-        f"[dim](lifecycle state: {escape(str(context.get('state')))})[/dim]"
+        f"\n[bold]Lane:[/bold] {escape(_lane_label(context.get('lane')))} "
+        f"[dim]({escape(_state_label(context.get('state')))})[/dim]"
     )
 
     catalyst = context.get("catalyst") or {}
@@ -162,6 +192,20 @@ def watchlist_show():
     back before. An owner could record one and then have no way to see which
     companies held one, or whose window had passed, short of running a full
     `advance` or opening the JSON.
+
+    **Lane and state render as prose** (R15). They were printed straight out of
+    the store, so the two columns an owner scans first read `core` and
+    `exit_review` — a lane key and a lifecycle key, in the one place in this
+    system where "which of these rows has money in it" is the question being
+    asked. The labels say that; the keys never did.
+
+    **The two optional columns appear only when something fills them.** Words
+    cost characters that `core` and `screen` did not, and eight columns already
+    filled an eighty-column terminal exactly — so labelling the lane pushed the
+    whole table into ellipsis, which is R15 fixed by making everything else
+    unreadable. Catalyst and Notes are the two most rows leave empty and the two
+    widest when they do not, so they earn their place per run rather than
+    holding it permanently.
     """
     from rich.markup import escape
 
@@ -174,6 +218,9 @@ def watchlist_show():
         console.print("[dim]Watchlist is empty. Add companies with: watchlist add TICKER[/dim]")
         return
 
+    show_catalyst = any(e.get("catalyst") for e in entries)
+    show_notes = any(str(e.get("notes") or "").strip() for e in entries)
+
     table = Table(title="Watchlist")
     table.add_column("Ticker", style="cyan bold")
     table.add_column("Lane", style="dim")
@@ -181,22 +228,27 @@ def watchlist_show():
     table.add_column("Last Run", style="dim")
     table.add_column("Composite", justify="right")
     table.add_column("Checks", justify="right")
-    table.add_column("Catalyst", max_width=34)
-    table.add_column("Notes")
+    if show_catalyst:
+        table.add_column("Catalyst", max_width=34)
+    if show_notes:
+        table.add_column("Notes")
 
     for e in entries:
         last_run = e["last_run"][:10] if e["last_run"] else "never"
         composite = f"{e['last_composite']}/10" if e["last_composite"] else "—"
-        table.add_row(
+        row = [
             e["ticker"],
-            e["lane"],
-            f"[{STATE_COLOURS.get(e['state'], 'white')}]{e['state']}[/]",
+            _lane_label(e["lane"], short=True),
+            f"[{STATE_COLOURS.get(e['state'], 'white')}]{_state_label(e['state'])}[/]",
             last_run,
             composite,
             str(e["checkpoints"]) if e["checkpoints"] else "—",
-            _catalyst_cell(e),
-            escape(e.get("notes", "")),
-        )
+        ]
+        if show_catalyst:
+            row.append(_catalyst_cell(e))
+        if show_notes:
+            row.append(escape(str(e.get("notes") or "")))
+        table.add_row(*row)
 
     console.print(table)
 

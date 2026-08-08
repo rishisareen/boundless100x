@@ -396,6 +396,50 @@ LANE_LABELS: dict[str, str] = {
     "rerating": "Re-rating — the fast lane",
 }
 
+# The same two lanes where a heading's worth of words will not fit — a table
+# column an owner scans down, rather than a section title they read once.
+# `ELEMENT_CONFIG` already carries `label` beside `short` for exactly this, so
+# a second length is the established shape here and not a new idea. Still one
+# statement per lane: a test pins that these keys are `LANE_LABELS`'s keys, and
+# that each short form opens the long one, so the two cannot come to name
+# different things.
+LANE_SHORT_LABELS: dict[str, str] = {
+    "core": "Core",
+    "rerating": "Re-rating",
+}
+
+# The lifecycle states, in words. `LANE_LABELS`'s sibling and added for the
+# same surface: `watchlist show` printed `exit_review` and `probe` straight out
+# of the store, which is exactly the lifecycle key R15 keeps off the page.
+#
+# **Each label says what the state means for capital**, because that is the
+# distinction `states.py` opens on — the order is by commitment, and a reader
+# scanning a column wants to know which rows have money in them. Short by
+# necessity: this renders in a narrow table column beside six others.
+#
+# The keys are spelled rather than imported, matching `LANE_LABELS` above; a
+# test derives the expected set from `lifecycle.states.STATES`, so a state
+# added without a label fails the suite rather than rendering as its key.
+STATE_LABELS: dict[str, str] = {
+    "screen": "Screening",
+    "qualify": "Qualifying",
+    "watch": "Watching for entry",
+    "probe": "Probe position",
+    "scale": "Scaled position",
+    "exit_review": "Exit under review",
+    # Not "Exited" and not "Dropped": a key with a capital letter is the
+    # identifier wearing a hat, which is the fallback this vocabulary exists to
+    # replace rather than a shorter way of writing it. A test refuses any label
+    # that is its own key with the underscores taken out.
+    "exited": "Sold and closed",
+    "dropped": "No longer tracked",
+}
+
+# A lane or state the vocabulary has no wording for. Never auto-humanised —
+# see `FLAG_LABELS`'s note on why a derived label is a leak with better
+# typography.
+LIFECYCLE_UNKNOWN_LABEL = "a lifecycle value this system has no wording for"
+
 # The fast lane's verdict vocabulary, kept **out of** the 100x badge's words on
 # purpose. `not_qualified` and `not_eligible` are different findings about
 # different questions — a company can fail every 100x gate and still be a sound
@@ -618,6 +662,22 @@ CATEGORICAL_VALUE_LABELS: dict[str, dict[str, tuple[str, str]]] = {
 SCORE_SCALE = 10
 SCORE_BANDS: tuple[tuple[float, str], ...] = ((7.0, "strong"), (4.0, "middling"))
 SCORE_LOW_LABEL = "weak"
+
+# The composite, as a surface names it and reads it. `report_generator`'s
+# `_clarity_lead` builds the note's opening line from the same band walk, so
+# the word after "Reads" is the same word on every surface by construction —
+# what this adds is that the *sentence* is too, rather than two spellings of
+# one reading that nobody would notice diverging.
+COMPOSITE_TITLE = "Composite"
+COMPOSITE_READING = "Reads {band} across the six scored elements."
+
+# What the console says instead of a score it has no band for. `section_reading`
+# already produces an unknown-with-reason for an unscored element; this is the
+# composite's equivalent, which no element-shaped builder covers.
+COMPOSITE_UNKNOWN_REASON = (
+    "nothing in this company could be scored, so there is no overall reading "
+    "— which is not the same as a score of zero"
+)
 
 
 # ── The research note (U10) ───────────────────────────────────────────────

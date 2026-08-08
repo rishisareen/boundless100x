@@ -428,7 +428,14 @@ class TestTheCliGate:
         })
 
         printed = capsys.readouterr().out
-        assert "rerating" in printed and "probe" in printed
+        # Through the vocabulary, not spelled: U11 stopped this line printing
+        # `rerating` and `probe`, which are a lane key and a lifecycle key, and
+        # the property under test is that both facts reach the reader — not
+        # which characters carry them.
+        from boundless100x.output.report_vocabulary import LANE_LABELS, STATE_LABELS
+
+        assert LANE_LABELS["rerating"] in printed
+        assert STATE_LABELS["probe"] in printed
         assert "Catalyst overdue" in printed and "no transition" in printed
         assert "gross +48.0%" in printed and "net +41.1%" in printed
         assert "modeled" in printed

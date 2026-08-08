@@ -10,10 +10,19 @@ import typer
 load_dotenv()
 from rich.table import Table
 
-from boundless100x.cli_common import console, setup_logging
+from boundless100x.cli_common import ConsoleComponents, console, setup_logging
 # The two legal provider literals, single-sourced from the transport that
 # implements them so a flag value and a config value are never two vocabularies.
 from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED, LLMProvider
+# Words a reader meets, taken from the report's vocabulary rather than spelled
+# here. The console is a decision surface — it prints the eligibility gates and
+# the action — so an enum leaking onto it is the same defect as an enum leaking
+# into the report, and one table is what keeps the two saying the same thing.
+from boundless100x.output.report_vocabulary import (  # noqa: E402
+    ACTION_LABELS,
+    ACTION_UNKNOWN_LABEL,
+    COMPOSITE_TITLE as _COMPOSITE_TITLE,
+)
 
 app = typer.Typer(
     name="boundless100x",
@@ -21,6 +30,10 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
+
+# A gate that recorded neither a reason nor a label. Stated rather than filled
+# in with the gate id, which is what the fallback here used to do.
+_GATE_UNNAMED = "a gate this run recorded no reason for"
 
 # The lifecycle surface — `watchlist`, its `queue` subgroup, and the helpers
 # they render through — lives in `cli_lifecycle.py`. Registered here the way
@@ -141,6 +154,7 @@ def analyze(
     """Run full SQGLP analysis pipeline for a company."""
     setup_logging(verbose)
 
+    from boundless100x.output.report_components import caveat_from_run_error
     from boundless100x.service import Boundless100xService
     from boundless100x.output.report_generator import ReportGenerator
 
@@ -187,9 +201,17 @@ def analyze(
     console.print(f"\n[bold green]Reports saved to:[/bold green] {report_dir}")
 
     if result.errors:
+        # `service.py` writes `f"Data fetch failed: {e}"` here, and this block
+        # used to print the whole thing — the raw `str(exc)` reaching the reader
+        # verbatim, which is the fifth of the problem frame's five routes around
+        # the vocabulary layer and the one R15 names outright.
+        # `caveat_from_run_error` keeps the authored clause in front of the
+        # colon and sends the rest to the log, where it is useful and where
+        # nobody reads it as prose.
+        surface = ConsoleComponents()
         console.print(f"\n[bold yellow]Warnings ({len(result.errors)}):[/bold yellow]")
-        for e in result.errors:
-            console.print(f"  [yellow]! {e}[/yellow]")
+        for error in result.errors:
+            console.print(f"  {surface.render_caveat(caveat_from_run_error(error))}")
 
 
 @app.command()
@@ -208,24 +230,7 @@ def compute(
     result = svc.analyze_quick(ticker)
 
     _print_scores(result, svc)
-
-    # Print all metrics
-    table = Table(title="Computed Metrics")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_column("Flags", style="yellow")
-
-    for mid, mr in sorted(result.metrics.items()):
-        if mr.ok:
-            val = mr.value
-            if isinstance(val, float):
-                val = f"{val:.2f}"
-            flags = ", ".join(mr.flags) if mr.flags else ""
-            table.add_row(mid, str(val), flags)
-        else:
-            table.add_row(mid, f"[red]ERR: {mr.error}[/red]", "")
-
-    console.print(table)
+    _print_metrics(result, svc)
 
 
 @app.command()
@@ -855,50 +860,185 @@ def corpus_audit_cmd(
 
 
 # ── Display Helpers ──
+#
+# Everything below renders through the same two layers the research note does:
+# `report_reading` turns a declaration plus a computed value into a reading,
+# and `report_components` turns that into one of six components which
+# `ConsoleComponents` finally marks up. That is R14 — "the same content from the
+# same declarations" — as a property of where the content is built rather than
+# of how carefully three surfaces were matched by hand.
+#
+# It is also where three of the problem frame's five routes around the
+# vocabulary layer were: the element-label map this file kept, the raw metric
+# ids in the `unscored:` line, and the raw exception strings reaching the
+# Warnings block. Each is now a lookup or a component, and a lookup fails
+# loudly where a derived label succeeds on everything.
+
+
+def _declaration_view(result, svc):
+    """`(vocabulary, readings, configs)` — the declarations, read for this run.
+
+    The same three inputs `_clarity_context` assembles from: the registry's
+    `presentation:` blocks, the sector-applicability table, and this run's own
+    `MetricResult`s. Built here rather than passed in because both display
+    helpers need it and building it twice is how two surfaces come to disagree
+    about one company.
+
+    The registry comes off the **service's own engine**, not a fresh one: the
+    values on screen were computed by that engine, and reading the declarations
+    from a second instance would be reading a registry nothing on this screen
+    was scored against.
+    """
+    from boundless100x.compute_engine.sector import SectorApplicability
+    from boundless100x.output.report_components import Vocabulary
+    from boundless100x.output.report_reading import read_metrics
+
+    configs = getattr(getattr(svc, "engine", None), "metrics", None) or {}
+    metadata = (getattr(result, "data", None) or {}).get("metadata") or {}
+    readings = read_metrics(
+        configs,
+        result.metrics or {},
+        sector=metadata.get("sector"),
+        applicability=SectorApplicability(configs.keys()) if configs else None,
+    )
+    return Vocabulary(configs), readings, configs
+
+
+def _score_cell(score, rendered: str) -> str:
+    """A rendered reading, coloured by the band its own score falls in.
+
+    The colour is the console's addition and nothing else's — the words are
+    already the note's. Cutoffs come from `score_band` rather than from the
+    `>= 7 / >= 4` this function used to inline, so the colour and the word
+    beside it cannot disagree about the same number.
+    """
+    from boundless100x.output.report_components import score_band
+
+    colour = {"strong": "green", "middling": "yellow"}.get(
+        score_band(score) or "", "red" if score is not None else "dim"
+    )
+    return f"[{colour}]{rendered}[/{colour}]"
+
 
 def _print_scores(result, svc):
+    """The six element scores, each with the reading the report gives it.
+
+    The labels come from `ELEMENT_CONFIG` — the report's own — rather than from
+    the map this function used to keep. That map spelled three of the six
+    differently (`Quality - Business` against `Quality — Business`,
+    `Quality - Mgmt` against `Quality — Management`) with nothing keeping the
+    two in step, which is the plainest version of the defect this unit exists
+    to remove: two surfaces naming the same thing two ways.
+
+    The `Score` column is gone and the score is now the headline *inside* the
+    reading, for R12's reason. A column of bare figures beside a column of
+    words invites reading one without the other, and `4.7/10` on its own says
+    nothing about whether that is a problem.
+    """
+    from boundless100x.output.report_reading import read_element_coverages
+    from boundless100x.output.report_vocabulary import ELEMENT_CONFIG
+
+    surface = ConsoleComponents()
+    vocabulary, _readings, _configs = _declaration_view(result, svc)
     summary = svc.get_element_summary(result)
+    coverages = read_element_coverages((result.scores or {}).get("coverage"))
 
     table = Table(title=f"SQGLP Scores — {result.ticker}")
     table.add_column("Element", style="bold")
-    table.add_column("Score", justify="right")
+    table.add_column("Reading")
     table.add_column("Weight", justify="right", style="dim")
 
-    element_order = [
-        "size", "quality_business", "quality_management",
-        "growth", "longevity", "price",
-    ]
-    element_names = {
-        "size": "Size (S)",
-        "quality_business": "Quality - Business (Q)",
-        "quality_management": "Quality - Mgmt (Q)",
-        "growth": "Growth (G)",
-        "longevity": "Longevity (L)",
-        "price": "Price (P)",
-    }
+    for element, config in ELEMENT_CONFIG.items():
+        score = (summary.get(element) or {}).get("score")
+        line = _element_reading(element, vocabulary, score, coverages.get(element))
+        table.add_row(
+            str(config["label"]),
+            _score_cell(score, surface.render_reading(line)),
+            str(config["weight"]),
+        )
 
-    for el in element_order:
-        info = summary.get(el, {})
-        score = info.get("score")
-        weight = info.get("weight", "")
-        if score is not None:
-            color = "green" if score >= 7 else "yellow" if score >= 4 else "red"
-            table.add_row(element_names.get(el, el), f"[{color}]{score:.1f}/10[/{color}]", weight)
-        else:
-            table.add_row(element_names.get(el, el), "[dim]N/A[/dim]", weight)
-
-    composite = summary.get("composite")
     table.add_section()
-    table.add_row("[bold]COMPOSITE[/bold]", f"[bold]{composite}/10[/bold]", "100%")
+    composite = summary.get("composite")
+    table.add_row(
+        f"[bold]{_COMPOSITE_TITLE}[/bold]",
+        _score_cell(composite, surface.render_reading(_composite_reading(composite))),
+        "100%",
+    )
 
     console.print(table)
-    _print_coverage(result)
-    _print_eligibility(result)
+    _print_coverage(result, vocabulary)
+    _print_eligibility(result, vocabulary)
 
 
-def _print_coverage(result):
-    """Say how much evidence the composite rests on — a renormalised score
-    otherwise looks identical to a fully measured one."""
+def _element_reading(element, vocabulary, score, coverage):
+    """One element's collapsed line (R5) with R18's clause, or the reason there
+    is none. `section_reading` is the note's builder, called unchanged."""
+    from boundless100x.output.report_components import section_reading
+
+    return section_reading(element, vocabulary, score=score, coverage=coverage)
+
+
+def _composite_reading(composite):
+    """The composite as a `ReadingLine`, built by hand for `_clarity_lead`'s
+    reason: it is not an element, so no element-shaped builder covers it.
+
+    The score is rounded **before** it is banded, which is the rule
+    `section_reading` states: banding the raw figure while the headline rounds
+    it produced `7.0 / 10 — Reads middling` against a band boundary at exactly
+    seven, and a number disagreeing with its own interpretation on the same
+    line is the defect this whole report exists to remove.
+    """
+    from boundless100x.output.report_components import (
+        ReadingLine,
+        Unknown,
+        score_band,
+    )
+    from boundless100x.output.report_vocabulary import (
+        COMPOSITE_READING,
+        COMPOSITE_UNKNOWN_REASON,
+        SCORE_SCALE,
+    )
+
+    shown = (
+        round(float(composite), 1)
+        if isinstance(composite, (int, float)) and not isinstance(composite, bool)
+        else None
+    )
+    band = score_band(shown)
+    if band is None:
+        return ReadingLine(
+            subject=_COMPOSITE_TITLE,
+            unknown=Unknown(
+                subject=f"No score for {_COMPOSITE_TITLE.lower()}",
+                reason=COMPOSITE_UNKNOWN_REASON,
+            ),
+            key="composite",
+        )
+    return ReadingLine(
+        subject=_COMPOSITE_TITLE,
+        text=COMPOSITE_READING.format(band=band),
+        headline=f"{shown:.1f} / {SCORE_SCALE}",
+        key="composite",
+    )
+
+
+def _print_coverage(result, vocabulary):
+    """How much evidence the composite rests on, and what is missing by name.
+
+    A renormalised score otherwise looks identical to a fully measured one.
+
+    Two things this used to print are gone. The **per-element** line read
+    `thin elements: quality_business 32%` — the raw element key R15 keeps off
+    the page — and it is not relabelled but removed: R18's coverage clause now
+    renders inside that element's own row above, which is where a reader meets
+    the score it qualifies rather than four lines below it.
+
+    The **unscored list** printed nineteen metric ids. Every metric the engine
+    discovers carries a registered `name`, so this is a lookup and not a
+    fallback: a metric with none is counted and named as such rather than
+    quietly humanised, because a derived label is the leak with better
+    typography that `finding_from_flag` refuses for exactly the same reason.
+    """
     coverage = (result.scores or {}).get("coverage") or {}
     composite = coverage.get("composite")
     if composite is None or composite >= 0.999:
@@ -908,22 +1048,43 @@ def _print_coverage(result):
     console.print(
         f"[{colour}]Scored on {composite * 100:.0f}% of metric weight[/{colour}]"
     )
-    thin = [
-        f"{el} {cov * 100:.0f}%"
-        for el, cov in (coverage.get("elements") or {}).items()
-        if cov is not None and cov < 0.85
-    ]
-    if thin:
-        console.print(f"  [dim]thin elements: {', '.join(thin)}[/dim]")
+
     unscored = coverage.get("unscored") or []
-    if unscored:
-        shown = ", ".join(unscored[:6])
-        more = f" (+{len(unscored) - 6} more)" if len(unscored) > 6 else ""
-        console.print(f"  [dim]unscored: {shown}{more}[/dim]")
+    if not unscored:
+        return
+    named, unnamed = [], []
+    for metric_id in unscored:
+        name = vocabulary.metric_name(metric_id)
+        (named if name else unnamed).append(name or metric_id)
+    for metric_id in unnamed:
+        logger.warning(
+            f"Metric {metric_id!r} has no registered display name, so the "
+            f"unscored line counts it rather than naming it (R15)"
+        )
+
+    shown = ", ".join(named[:6])
+    more = [f"+{len(named) - 6} more"] if len(named) > 6 else []
+    if unnamed:
+        more.append(f"{len(unnamed)} this report has no name for")
+    suffix = f" ({', '.join(more)})" if more else ""
+    console.print(f"  [dim]Not scored: {shown}{suffix}[/dim]")
 
 
-def _print_eligibility(result):
-    """The 100x verdict — necessary conditions the weighted composite cannot express."""
+def _print_eligibility(result, vocabulary):
+    """The 100x verdict — necessary conditions the weighted composite cannot express.
+
+    The gate reason is **narrated**: `EligibilityEvaluator._summarise` writes
+    `market_cap 138604.00 lte 3000`, and `Vocabulary.narrate` swaps each
+    registered id for its display name. That is a lookup, so an id nobody
+    registered is left alone and visible rather than silently prettified — and
+    the comparator words (`lte`, `gte`) survive it, which is a residual this
+    unit does not fix: they are the evaluator's own sentence, shared with
+    `action_policy`'s constraints, and rewording them there would move text
+    three other surfaces render.
+
+    A gate with no reason recorded falls back to its declared label, never to
+    its id, which is what the `detail.get('reason', gate_id)` here used to do.
+    """
     eligibility = getattr(result, "eligibility", None)
     if not eligibility:
         return
@@ -935,12 +1096,136 @@ def _print_eligibility(result):
     }.get(verdict, ("yellow", "ELIGIBILITY UNKNOWN"))
 
     console.print(f"\n[{style}][bold]{label}[/bold][/{style}]")
-    for gate_id, detail in eligibility.get("gates", {}).items():
+    for detail in eligibility.get("gates", {}).values():
         mark, colour = {
             True: ("PASS", "green"),
             False: ("FAIL", "red"),
         }.get(detail.get("passed"), ("????", "yellow"))
-        console.print(f"  [{colour}]{mark}[/{colour}]  {detail.get('reason', gate_id)}")
+        reason = vocabulary.narrate(detail.get("reason") or "").strip()
+        console.print(
+            f"  [{colour}]{mark}[/{colour}]  "
+            f"{reason or detail.get('label') or _GATE_UNNAMED}"
+        )
+
+
+def _print_metrics(result, svc):
+    """Every computed metric, grouped by element and read rather than listed.
+
+    This replaced a three-column table of `metric_id | 25.7 | flag_id`, which
+    was R12 and R15's failure in one place: a bare figure with no unit beside
+    another with a different one, under a raw id, next to a raw flag — and an
+    errored metric rendered `ERR: 'borrowings'`, a `KeyError` reaching the
+    reader verbatim.
+
+    A line per metric rather than a row, per `render_metric_row`'s note: the
+    figure and its interpretation have to be seen together, and a table puts
+    them in different columns as soon as the terminal is narrow enough to wrap.
+
+    Order inside a group is `Section.flow`'s — findings, then rows, then the
+    unknowns — so the console walks a section the way both document surfaces
+    do, without needing the expansion decision that decides a *report's* shape
+    and has nothing to say about a listing that shows everything anyway.
+    """
+    from boundless100x.output.report_components import (
+        Unknown,
+        finding_from_flag,
+        metric_row,
+    )
+    from boundless100x.output.report_vocabulary import (
+        ELEMENT_CONFIG,
+        UNSCORED_SECTION_TITLE,
+    )
+
+    surface = ConsoleComponents()
+    vocabulary, readings, configs = _declaration_view(result, svc)
+    shares = _weight_shares(configs, svc)
+    details = (result.scores or {}).get("details") or {}
+
+    groups: dict[str, list[str]] = {}
+    for metric_id in sorted(readings, key=lambda mid: vocabulary.metric_name(mid) or mid):
+        element = (configs.get(metric_id) or {}).get("element", "")
+        groups.setdefault(
+            element if element in ELEMENT_CONFIG else "", []
+        ).append(metric_id)
+
+    console.print(f"\n[bold]Metrics — {result.ticker}[/bold]")
+    ordered = [
+        (str(ELEMENT_CONFIG[element]["label"]), members)
+        for element, members in (
+            (element, groups.get(element, [])) for element in ELEMENT_CONFIG
+        ) if members
+    ]
+    if groups.get(""):
+        ordered.append((UNSCORED_SECTION_TITLE, groups[""]))
+
+    for title, members in ordered:
+        console.print(f"\n[bold]{title}[/bold]")
+        rows, unknowns, findings = [], [], []
+        for metric_id in members:
+            detail = details.get(metric_id) or {}
+            built = metric_row(
+                metric_id, readings[metric_id], vocabulary,
+                score=detail.get("score") if isinstance(detail, dict) else None,
+                weight_share=shares.get(metric_id),
+            )
+            (unknowns if isinstance(built, Unknown) else rows).append(built)
+            for flag in getattr(result.metrics.get(metric_id), "flags", None) or []:
+                findings.append(finding_from_flag(flag))
+        for finding in findings:
+            renderer = (
+                surface.render_unknown if isinstance(finding, Unknown)
+                else surface.render_finding
+            )
+            console.print(f"  {renderer(finding)}")
+        for row in rows:
+            console.print(f"  {surface.render_metric_row(row)}")
+        for unknown in unknowns:
+            console.print(f"  {surface.render_unknown(unknown)}")
+
+
+def _weight_shares(configs, svc) -> dict:
+    """Each metric's share of its own element's declared weight.
+
+    Read off `ExpansionDecider`, which is where that arithmetic is declared and
+    where a test already pins it against the scorer's. Restating it here would
+    be a third copy of `_declared_weights`, and the note's own comment says the
+    risk in restating is drift — a contribution cell reading `25% of this
+    element` in the report and something else on the console is the drift
+    nobody would see.
+
+    No registry, no shares. `ContradictionPairs` validates its declared pairs
+    against the configs it is given, so building one from an empty mapping
+    raises on the first pair — turning "this caller has no engine" into a
+    startup error in a display helper, which is the wrong place to discover it.
+    """
+    if not configs:
+        return {}
+
+    from boundless100x.compute_engine.eligibility import effective_gates
+    from boundless100x.output.contradiction import ContradictionPairs
+    from boundless100x.output.report_expansion import (
+        ExpansionDecider,
+        load_scored_corpus,
+    )
+
+    gates = effective_gates(getattr(getattr(svc, "engine", None), "gates", None))
+    decider = ExpansionDecider(
+        configs, ContradictionPairs(configs, gates), load_scored_corpus()
+    )
+    return {metric_id: decider.weight_share(metric_id) for metric_id in configs}
+
+
+def _action_label(action) -> str:
+    """An action, in the reader's words. Absent is absent, not "N/A".
+
+    `ACTION_UNKNOWN_LABEL` rather than the key itself for an action outside the
+    vocabulary: an unrecognised action is already capped by `action_policy`, so
+    printing its raw name here would put a string nobody chose beside a
+    decision somebody did.
+    """
+    if not action:
+        return "none — the model produced no action"
+    return ACTION_LABELS.get(action, ACTION_UNKNOWN_LABEL)
 
 
 def _print_llm_summary(result):
@@ -957,7 +1242,11 @@ def _print_llm_summary(result):
         from boundless100x.action_policy import resolve_for_result
 
         decision = resolve_for_result(result) or {}
-        action = decision.get("action") or "N/A"
+        # The label, never the enum. `strong_buy` is a key of the action
+        # vocabulary and R15 keeps keys off the page; `_action_label` is the
+        # same lookup the research note's action finding makes, so the two
+        # decision surfaces name one decision one way.
+        action = _action_label(decision.get("action"))
 
         console.print("\n[bold]Investment Thesis:[/bold]")
         console.print(f"  {p2.get('thesis', 'N/A')}")
@@ -969,8 +1258,9 @@ def _print_llm_summary(result):
         if decision.get("constraints"):
             if decision.get("capped"):
                 console.print(
-                    f"  [yellow]Capped from {decision['llm_action']} "
-                    f"to {decision['ceiling']}:[/yellow]"
+                    f"  [yellow]Capped from "
+                    f"{_action_label(decision['llm_action'])} "
+                    f"to {_action_label(decision['ceiling'])}:[/yellow]"
                 )
             for reason in decision["constraints"]:
                 console.print(f"    [yellow]- {reason}[/yellow]")

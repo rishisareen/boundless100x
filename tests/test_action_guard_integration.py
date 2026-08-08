@@ -15,6 +15,7 @@ from boundless100x.llm_layer.transport import (
     LLMProvider,
 )
 from boundless100x.output.report_generator import ReportGenerator
+from boundless100x.output.report_vocabulary import ACTION_LABELS
 from boundless100x.service import Boundless100xService
 from tests.conftest import make_result, make_scores
 
@@ -253,7 +254,19 @@ def usage_line(output: str) -> str:
 
 class TestConsoleOutputIsGuardedToo:
     """The CLI prints the eligibility gates immediately above the action, so
-    it is a decision surface with the same contradiction risk as the report."""
+    it is a decision surface with the same contradiction risk as the report.
+
+    **The action is asserted through `ACTION_LABELS`, not spelled.** U11 stopped
+    the console rendering `strong_buy` — an enum key, which R15 keeps off every
+    reader-facing surface — and these three cases are about *which* decision is
+    displayed rather than about how it is spelled. Reading the label out of the
+    same table the surface renders from keeps them that way: a re-worded label
+    moves the assertion with it, while a hardcoded "Watchlist" would go on
+    passing after the vocabulary stopped saying it.
+
+    The negative assertion stays spelled, deliberately. It is about the raw key
+    *not* being there, and it must not follow the vocabulary anywhere.
+    """
 
     def test_absent_final_action_does_not_fall_back_to_the_raw_model_action(self):
         result = result_with("strong_buy", failed_eligibility())
@@ -261,8 +274,8 @@ class TestConsoleOutputIsGuardedToo:
 
         output = printed(result)
 
-        assert "watchlist" in output
-        assert "Action: [bold]strong_buy" not in output
+        assert ACTION_LABELS["watchlist"] in output
+        assert "strong_buy" not in output
 
     def test_stale_final_action_does_not_reach_the_console(self):
         result = result_with("strong_buy", failed_eligibility())
@@ -273,14 +286,14 @@ class TestConsoleOutputIsGuardedToo:
 
         output = printed(result)
 
-        assert "watchlist" in output
+        assert ACTION_LABELS["watchlist"] in output
 
     def test_clean_verdict_still_prints_the_models_action(self):
         result = result_with("strong_buy", clean_eligibility())
 
         output = printed(result)
 
-        assert "strong_buy" in output
+        assert f"Action: [bold]{ACTION_LABELS['strong_buy']}" in output
 
 
 class TestConsoleUsageLineStatesItsBasis:
