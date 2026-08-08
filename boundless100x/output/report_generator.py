@@ -197,6 +197,28 @@ def _paragraphize(text: str) -> Markup:
     return Markup(html)
 
 
+def _md_text(text) -> str:
+    """A scraped string made safe for Markdown, which is not HTML escaping.
+
+    The research note's Markdown twin interpolates the same slots its HTML twin
+    does — the company name, the masthead, the year and quarter labels in the
+    appendix tables — and those are the slots that never became components, so
+    `guard_text` never saw them. HTML-escaping them would be actively wrong
+    here: `&` is a literal in Markdown, and "Indian Railway Catering &amp;
+    Tourism Corporation Ltd" is an entity printed at a reader of a plain-text
+    file. `report_surfaces` states the asymmetry — escape everything on one
+    surface, nothing on the other — and its "nothing" rests on `guard_text`
+    upstream, which these slots bypass.
+
+    So this fixes what Markdown actually breaks on. A `|` inside a table cell
+    ends the cell and shifts every column after it; a newline ends the row, or
+    the heading. Both are structural, both are what an unescaped scraped string
+    can do to this document, and neither is visible in the rendered output as
+    anything but a wrong table.
+    """
+    return re.sub(r"\s*\n\s*", " ", str(text)).replace("|", r"\|")
+
+
 def _sanitize_filename(name: str, max_length: int = 40) -> str:
     """Sanitize a string for use in filenames."""
     clean = re.sub(r"[^\w\s-]", "", name)  # Remove special chars
@@ -215,6 +237,11 @@ class ReportGenerator:
             lstrip_blocks=True,
         )
         self.env.filters["paragraphize"] = _paragraphize
+        # The Markdown note's counterpart to `|e` on its HTML twin. Registered
+        # rather than inlined as a `replace()` chain in the template, so the
+        # two surfaces' escaping rules read as one decision made twice and the
+        # reason for the difference lives with the code.
+        self.env.filters["md_text"] = _md_text
         self.output_dir = Path(output_dir) if output_dir else Path(__file__).parent / "reports"
         # The research note's registry and vocabulary, built on first use and
         # kept for the life of the generator. Both are declaration-level —
@@ -522,10 +549,16 @@ class ReportGenerator:
         # test generator writes to a tmp directory that holds nothing. An
         # empty corpus reads as below the minimum and therefore expands with
         # its reason, never as "nothing to suppress" (U8's own note).
+        #
+        # `exclude` is this company. `generate()` writes the run's own
+        # `scores.json` before it reaches this line and into this very
+        # directory, so without it the subject would be one of the votes on
+        # whether its own zero is corpus-wide — and at the six-comparable
+        # minimum with a strict majority, one self-vote can flip the answer.
         decider = ExpansionDecider(
             configs,
             ContradictionPairs(configs, effective_gates(engine.gates)),
-            load_scored_corpus(self.output_dir),
+            load_scored_corpus(self.output_dir, exclude=result.ticker),
         )
         decisions = decider.evaluate(
             readings, result.scores,
@@ -534,10 +567,18 @@ class ReportGenerator:
         )
         weight_shares = {mid: decider.weight_share(mid) for mid in configs}
 
+        # Which flags each section is handed, kept rather than rebuilt inline:
+        # the appendix has to know what the sections already showed, and a
+        # second comprehension spelling the same filter is a second thing to
+        # keep in step (see `_clarity_appendix`).
+        flags_by_element: dict[str, list[str]] = {}
+        for flag in flags:
+            flags_by_element.setdefault(flag.get("element"), []).append(flag["raw"])
+
         sections = [
             build_section(
                 element, decisions[element], readings, vocabulary, result.scores,
-                flags=[f["raw"] for f in flags if f.get("element") == element],
+                flags=flags_by_element.get(element, []),
                 weight_shares=weight_shares,
             )
             for element in ELEMENT_CONFIG
@@ -555,6 +596,15 @@ class ReportGenerator:
             "appendix": self._clarity_appendix(
                 result, [*sections, unscored] if unscored else sections, flags,
                 financial_snapshot, cashflow_quality, shareholding_data,
+                # Only an *expanded* section renders its findings — both
+                # templates gate on `section.expanded` — so a flag carried by a
+                # collapsed section has still not reached the page and must
+                # keep its place in the appendix.
+                already_shown={
+                    raw
+                    for section in sections if section.expanded
+                    for raw in flags_by_element.get(section.key, ())
+                },
             ),
             "row_headers": ROW_HEADERS,
             "generation_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -786,7 +836,8 @@ class ReportGenerator:
 
     def _clarity_appendix(self, result, sections, flags,
                           financial_snapshot, cashflow_quality,
-                          shareholding_data) -> dict:
+                          shareholding_data, *,
+                          already_shown: set[str] | None = None) -> dict:
         """R10's exile, R3's deferred half, and the run's own warnings.
 
         Three multi-year tables move here out of the section bodies where the
@@ -795,14 +846,28 @@ class ReportGenerator:
         plan opens on. The disclosure *bodies* live here too, which is what
         makes R3 structural rather than a convention — `Section.flow` excludes
         them, so a reading flow physically cannot contain the explanation.
+
+        **`already_shown` is the flags an expanded section has already put on
+        the page.** `build_section` turns every element-mapped flag into a
+        section finding, and this once re-derived signals from the whole flag
+        list with no filter — so most of the note's signals printed twice in
+        one document, once under their element and once here. That is not
+        KD4's rule that several *sections* may independently state the same
+        finding; it is one flag rendered twice. Flags no section showed —
+        `composite`, the forward signals, and everything in a section that
+        stayed collapsed — still belong here, which is why the filter is a set
+        of what was rendered rather than "drop anything with an element".
         """
         bodies: dict[str, object] = {}
         for section in sections:
             for disclosure in section.disclosures:
                 bodies.setdefault(disclosure.anchor, disclosure)
 
+        shown = already_shown or set()
         signals, signal_unknowns = [], []
         for flag in flags or []:
+            if flag["raw"] in shown:
+                continue
             built = finding_from_flag(flag["raw"])
             (signal_unknowns if isinstance(built, Unknown) else signals).append(built)
 

@@ -327,6 +327,9 @@ class TestShippedApplicabilityTable:
     def test_the_three_cached_lenders_resolve_all_five(self, applicability):
         """Read off the real cached metadata, not a fixture — the plan's
         verification is that these three tickers actually resolve."""
+        if not RAW_DATA_DIR.is_dir():
+            pytest.skip("no cached corpus on this machine")
+
         lenders = [
             d.name
             for d in sorted(RAW_DATA_DIR.iterdir())

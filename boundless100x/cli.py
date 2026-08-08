@@ -132,6 +132,32 @@ def _print_cli_cost_caveat(config: dict, *, dry_run: bool) -> None:
         )
 
 
+def _service(config: dict | None = None):
+    """This run's service, or a legible refusal in place of a traceback.
+
+    Every command starts by building one, and the build validates the metric
+    registry. That validation is fatal by design and stays that way — a metric
+    missing its `presentation:` block must stop the run rather than reach a
+    reader as a bare number — but the thing it guards against is a hand-edited
+    YAML file in the documented `custom/` drop-in directory, and a stack trace
+    is the wrong answer to a typo. `RegistryValidationError` names the file,
+    the metric and the key, so all this has to do is print it and stop.
+
+    `config=None` is not a special case: `Boundless100xService` loads the
+    default config for exactly that, so the sites that pass a provider-adjusted
+    config and the sites that pass nothing share one construction.
+    """
+    from rich.markup import escape
+
+    from boundless100x.service import Boundless100xService, RegistryValidationError
+
+    try:
+        return Boundless100xService(config=config)
+    except RegistryValidationError as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(1)
+
+
 @app.command()
 def analyze(
     ticker: str = typer.Argument(help="NSE symbol (e.g., ASTRAL)"),
@@ -155,7 +181,6 @@ def analyze(
     setup_logging(verbose)
 
     from boundless100x.output.report_components import caveat_from_run_error
-    from boundless100x.service import Boundless100xService
     from boundless100x.output.report_generator import ReportGenerator
 
     config = _config_with_provider(llm_provider)
@@ -166,7 +191,7 @@ def analyze(
     mode += _provider_banner(config)
     console.print(f"\n[bold blue]Boundless100x SQGLP Analysis: {ticker}[/bold blue]{mode}\n")
 
-    svc = Boundless100xService(config=config)
+    svc = _service(config)
     result = svc.analyze(
         ticker=ticker,
         bse_code=bse_code,
@@ -222,11 +247,9 @@ def compute(
     """Compute metrics only (no peers, no LLM, no reports)."""
     setup_logging(verbose)
 
-    from boundless100x.service import Boundless100xService
-
     console.print(f"\n[bold blue]Computing metrics for {ticker}[/bold blue]\n")
 
-    svc = Boundless100xService()
+    svc = _service()
     result = svc.analyze_quick(ticker)
 
     _print_scores(result, svc)
@@ -248,9 +271,8 @@ def backtest(
     from datetime import date
 
     from boundless100x.compute_engine.backtest import WalkForwardBacktest
-    from boundless100x.service import Boundless100xService
 
-    svc = Boundless100xService()
+    svc = _service()
 
     console.print("\n[bold blue]Walk-forward backtest[/bold blue]")
     report = WalkForwardBacktest(
@@ -419,7 +441,6 @@ def screen(
     """Screen a list of companies using preset criteria."""
     setup_logging(verbose)
 
-    from boundless100x.service import Boundless100xService
     from boundless100x.compute_engine.screener import Screener
 
     ticker_list = [t.strip() for t in tickers.split(",")]
@@ -428,7 +449,7 @@ def screen(
         f"with preset: {preset}[/bold blue]\n"
     )
 
-    svc = Boundless100xService()
+    svc = _service()
     screener = Screener()
 
     # Show preset info
@@ -500,10 +521,9 @@ def sweep(
     setup_logging(verbose)
 
     from boundless100x.llm_layer import sweep as sweep_module
-    from boundless100x.service import Boundless100xService
 
     config = _config_with_provider(llm_provider)
-    svc = Boundless100xService(config=config)
+    svc = _service(config)
     requested = [t.strip() for t in tickers.split(",")] if tickers else None
 
     console.print(
@@ -748,10 +768,9 @@ def corpus_refetch_cmd(
     setup_logging(verbose)
 
     from boundless100x.data_fetcher import corpus_snapshot, refetch as refetch_module
-    from boundless100x.service import Boundless100xService
 
     config = _load_config()
-    svc = Boundless100xService(config=config)
+    svc = _service(config)
     requested = [t.strip() for t in tickers.split(",")] if tickers else None
 
     console.print("\n[bold blue]Corpus refetch[/bold blue]\n")
@@ -888,6 +907,18 @@ def _declaration_view(result, svc):
     values on screen were computed by that engine, and reading the declarations
     from a second instance would be reading a registry nothing on this screen
     was scored against.
+
+    The applicability table is fenced, and the fence is not defensive
+    housekeeping. `sector_applicability.yaml` is hand-maintained, expected to
+    grow by manual edits, and validated **nowhere else** — the engine never
+    reads it — so a bad edit surfaces first at `SectorApplicability`'s
+    constructor, which is here. Here is after the fetch, the compute and the
+    whole LLM spend, and before a single report has been written: unfenced, a
+    typo in a *display* table aborts `analyze` with a traceback and leaves
+    nothing on disk to show for the run. `ReportGenerator.generate` already
+    fences the identical construction inside its clarity block, appending to
+    `result.errors` rather than raising; this is the same decision on the
+    console's side of the boundary.
     """
     from boundless100x.compute_engine.sector import SectorApplicability
     from boundless100x.output.report_components import Vocabulary
@@ -895,28 +926,70 @@ def _declaration_view(result, svc):
 
     configs = getattr(getattr(svc, "engine", None), "metrics", None) or {}
     metadata = (getattr(result, "data", None) or {}).get("metadata") or {}
+
+    # `None` is not a silent pass. `read_metrics` reads an absent table as
+    # indeterminate-because-nobody-asked for every metric — the same answer an
+    # unreviewed sector already gets — so the console loses the applicability
+    # note and keeps everything else, which is the trade the log line states.
+    applicability = None
+    if configs:
+        try:
+            applicability = SectorApplicability(configs.keys())
+        except ValueError as exc:
+            logger.warning(
+                f"Sector applicability is unavailable this run, so no metric "
+                f"is reported as applying or not applying to this company's "
+                f"sector: {exc}"
+            )
+
     readings = read_metrics(
         configs,
         result.metrics or {},
         sector=metadata.get("sector"),
-        applicability=SectorApplicability(configs.keys()) if configs else None,
+        applicability=applicability,
     )
     return Vocabulary(configs), readings, configs
 
 
-def _score_cell(score, rendered: str) -> str:
-    """A rendered reading, coloured by the band its own score falls in.
+def _shown_score(line) -> float | None:
+    """The figure a reading puts in front of the reader, read back off the line.
+
+    `ReadingLine.headline` is `f"{shown:.1f} / 10"`, and `shown` is the score
+    *after* the one rounding both builders do before they band it. Recovering
+    it is therefore not a re-derivation — it is the same number the words were
+    built from, which is the whole point of asking the line rather than the
+    caller.
+
+    `None` for a line with no headline, which is the line with no score.
+    """
+    headline = (getattr(line, "headline", "") or "").split("/")[0].strip()
+    try:
+        return float(headline)
+    except ValueError:
+        return None
+
+
+def _score_cell(line, rendered: str) -> str:
+    """A rendered reading, coloured by the band its own words were built from.
 
     The colour is the console's addition and nothing else's — the words are
-    already the note's. Cutoffs come from `score_band` rather than from the
-    `>= 7 / >= 4` this function used to inline, so the colour and the word
-    beside it cannot disagree about the same number.
+    already the note's — and the two have to agree about the same number. They
+    did not. This banded the **raw** score while `composite_reading` and
+    `section_reading` both round to one decimal before banding, so a real
+    composite of 6.97 rendered a yellow cell around the words `7.0 / 10 —
+    Reads strong`: the exact figure-against-interpretation disagreement the
+    single builder was introduced to end, reappearing one layer out where the
+    builder could not reach it. Element rows were spared only because
+    `get_element_summary` happens to pre-round.
+
+    So the band is read off the built line rather than asked a second time of
+    a number the line no longer shows. One banding call per row, on the figure
+    the reader is looking at.
     """
     from boundless100x.output.report_components import score_band
 
-    colour = {"strong": "green", "middling": "yellow"}.get(
-        score_band(score) or "", "red" if score is not None else "dim"
-    )
+    band = score_band(_shown_score(line)) if getattr(line, "known", True) else None
+    colour = {"strong": "green", "middling": "yellow", "weak": "red"}.get(band, "dim")
     return f"[{colour}]{rendered}[/{colour}]"
 
 
@@ -953,15 +1026,18 @@ def _print_scores(result, svc):
         line = _element_reading(element, vocabulary, score, coverages.get(element))
         table.add_row(
             str(config["label"]),
-            _score_cell(score, surface.render_reading(line)),
+            _score_cell(line, surface.render_reading(line)),
             str(config["weight"]),
         )
 
     table.add_section()
-    composite = summary.get("composite")
+    # Built once and both rendered and coloured from it, for `_score_cell`'s
+    # reason: the cell's colour comes off the line, so the line has to be the
+    # same object the reader is shown.
+    composite = _composite_reading(summary.get("composite"))
     table.add_row(
         f"[bold]{_COMPOSITE_TITLE}[/bold]",
-        _score_cell(composite, surface.render_reading(_composite_reading(composite))),
+        _score_cell(composite, surface.render_reading(composite)),
         "100%",
     )
 

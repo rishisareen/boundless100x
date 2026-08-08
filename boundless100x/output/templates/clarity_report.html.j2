@@ -6,13 +6,27 @@
    in the dashboard this is generated beside (a Scope Boundary of the plan).
 
    Collapsed sections carry `class="collapsed"` rather than being hidden by
-   script: R5's shape has to survive a printed page and a text-only reader. #}
+   script: R5's shape has to survive a printed page and a text-only reader.
+
+   **Every slot that is not a `surface.` call carries `|e`.** The environment
+   is built with `autoescape=False` on purpose — the component renderers hand
+   back fragments they have already escaped, and `_paragraphize` returns
+   Markup, so a global flip would double-escape this note and move the legacy
+   dashboard's bytes, which the goldens forbid. That leaves the slots the
+   components never touch: the company name, the masthead, and the scraped
+   year and quarter labels in the appendix tables. Seven of the twenty-six
+   cached tickers have an ampersand in their name or their sector — IRCTC is
+   "Indian Railway Catering & Tourism Corporation Ltd" in "Chemicals &
+   Petrochemicals" — and those reached the page raw. The rule here is "every
+   non-`surface.` string slot", not "the ones that are scraped today", because
+   the second is a judgement to re-make every time a value's provenance
+   changes and the first is one a reviewer can check by reading. #}
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ company }} — {{ title }}</title>
+<title>{{ company|e }} — {{ title|e }}</title>
 <style>
   :root {
     --bg: #ffffff; --panel: #f8fafc; --ink: #1e293b; --muted: #64748b;
@@ -78,14 +92,14 @@
 <div class="note">
 
 <header>
-  <h1>{{ company }} — {{ title }}</h1>
-  <p class="masthead">{{ subtitle }}</p>
-  <p class="masthead">Generated: {{ generation_date }}</p>
+  <h1>{{ company|e }} — {{ title|e }}</h1>
+  <p class="masthead">{{ subtitle|e }}</p>
+  <p class="masthead">Generated: {{ generation_date|e }}</p>
 </header>
 
 {% macro section_block(section) %}
-<section id="section-{{ section.key }}" class="{{ 'expanded' if section.expanded else 'collapsed' }}">
-  <h2>{{ section.title }}</h2>
+<section id="section-{{ section.key|e }}" class="{{ 'expanded' if section.expanded else 'collapsed' }}">
+  <h2>{{ section.title|e }}</h2>
   {{ surface.render_reading(section.reading) }}
   {% if section.expanded %}
   {% for finding in section.findings %}
@@ -94,7 +108,7 @@
   {% if section.rows %}
   <table>
     <thead><tr>
-      <th>{{ row_headers[0] }}</th><th>{{ row_headers[1] }}</th><th>{{ row_headers[2] }}</th>
+      <th>{{ row_headers[0]|e }}</th><th>{{ row_headers[1]|e }}</th><th>{{ row_headers[2]|e }}</th>
     </tr></thead>
     <tbody>
     {% for row in section.rows %}
@@ -131,7 +145,7 @@
   {% if appendix.snapshot %}
   <h3>Ten-year snapshot</h3>
   <table class="years">
-    <thead><tr><th>Year</th>{% for s in appendix.snapshot %}<th>{{ s.year[-4:] }}</th>{% endfor %}</tr></thead>
+    <thead><tr><th>Year</th>{% for s in appendix.snapshot %}<th>{{ s.year[-4:]|e }}</th>{% endfor %}</tr></thead>
     <tbody>
       <tr><th scope="row">Revenue (₹ Cr)</th>{% for s in appendix.snapshot %}<td>{% if s.revenue is not none %}{{ "{:,.0f}".format(s.revenue) }}{% else %}not reported{% endif %}</td>{% endfor %}</tr>
       <tr><th scope="row">Profit after tax (₹ Cr)</th>{% for s in appendix.snapshot %}<td>{% if s.pat is not none %}{{ "{:,.0f}".format(s.pat) }}{% else %}not reported{% endif %}</td>{% endfor %}</tr>
@@ -151,7 +165,7 @@
     <thead><tr><th>Year</th><th>Cash from operations (₹ Cr)</th><th>Profit after tax (₹ Cr)</th><th>Cash as a share of profit (%)</th></tr></thead>
     <tbody>
     {% for yr in appendix.cashflow.yearly_data %}
-      <tr><th scope="row">{{ yr.year[-4:] }}</th><td>{{ "{:,.0f}".format(yr.cfo) }}</td><td>{{ "{:,.0f}".format(yr.pat) }}</td><td>{% if yr.ratio is not none %}{{ "%.0f"|format(yr.ratio) }}{% else %}not comparable{% endif %}</td></tr>
+      <tr><th scope="row">{{ yr.year[-4:]|e }}</th><td>{{ "{:,.0f}".format(yr.cfo) }}</td><td>{{ "{:,.0f}".format(yr.pat) }}</td><td>{% if yr.ratio is not none %}{{ "%.0f"|format(yr.ratio) }}{% else %}not comparable{% endif %}</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -163,7 +177,7 @@
     <thead><tr><th>Quarter</th><th>Promoter (%)</th><th>Foreign institutions (%)</th><th>Domestic institutions (%)</th><th>Public (%)</th><th>Government (%)</th><th>Promoter shares pledged (%)</th></tr></thead>
     <tbody>
     {% for sh in appendix.shareholding %}
-      <tr><th scope="row">{{ sh.quarter }}</th><td>{% if sh.promoter_pct is not none %}{{ "%.1f"|format(sh.promoter_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.fii_pct is not none %}{{ "%.1f"|format(sh.fii_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.dii_pct is not none %}{{ "%.1f"|format(sh.dii_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.public_pct is not none %}{{ "%.1f"|format(sh.public_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.govt_pct is not none %}{{ "%.1f"|format(sh.govt_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.promoter_pledge_pct is not none %}{{ "%.1f"|format(sh.promoter_pledge_pct) }}{% else %}not reported{% endif %}</td></tr>
+      <tr><th scope="row">{{ sh.quarter|e }}</th><td>{% if sh.promoter_pct is not none %}{{ "%.1f"|format(sh.promoter_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.fii_pct is not none %}{{ "%.1f"|format(sh.fii_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.dii_pct is not none %}{{ "%.1f"|format(sh.dii_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.public_pct is not none %}{{ "%.1f"|format(sh.public_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.govt_pct is not none %}{{ "%.1f"|format(sh.govt_pct) }}{% else %}not reported{% endif %}</td><td>{% if sh.promoter_pledge_pct is not none %}{{ "%.1f"|format(sh.promoter_pledge_pct) }}{% else %}not reported{% endif %}</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -200,7 +214,7 @@
   {% endif %}
 </section>
 
-<footer>Generated by Boundless100x SQGLP Research System | {{ generation_date }}</footer>
+<footer>Generated by Boundless100x SQGLP Research System | {{ generation_date|e }}</footer>
 
 </div>
 </body>

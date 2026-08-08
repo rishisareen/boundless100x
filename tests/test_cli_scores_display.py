@@ -31,7 +31,10 @@ An assertion that hardcodes "Quality — Business" keeps passing after
 drifting apart — restated as a test.
 """
 
+import contextlib
+
 import pytest
+import typer
 
 from boundless100x import cli, cli_common, cli_lifecycle
 from boundless100x.cli_common import (
@@ -92,6 +95,31 @@ class StubService:
         return summary
 
 
+@contextlib.contextmanager
+def recording():
+    """Every CLI console replaced by a recorder, for the duration of a block.
+
+    Separate from `printed()` because a helper that *raises* still has to have
+    what it printed read back, and a function that returns its capture cannot
+    give one up on the way out — the registry refusal prints its reason and
+    then exits with `typer.Exit`, which is exactly that shape.
+    """
+    captured: list[str] = []
+
+    def record(*args, **kwargs):
+        captured.append("" if not args else str(args[0]))
+
+    originals = [(module, module.console) for module in (cli, cli_common, cli_lifecycle)]
+    fake = type("Recorder", (), {"print": staticmethod(record)})()
+    try:
+        for module, _ in originals:
+            module.console = fake
+        yield captured
+    finally:
+        for module, original in originals:
+            module.console = original
+
+
 def printed(render) -> str:
     """Everything a helper prints, markup intact and unwrapped.
 
@@ -105,20 +133,8 @@ def printed(render) -> str:
     own binding, so patching one leaves the other writing to the original — the
     trap `cli_common`'s docstring names.
     """
-    captured: list[str] = []
-
-    def record(*args, **kwargs):
-        captured.append("" if not args else str(args[0]))
-
-    originals = [(module, module.console) for module in (cli, cli_common, cli_lifecycle)]
-    fake = type("Recorder", (), {"print": staticmethod(record)})()
-    try:
-        for module, _ in originals:
-            module.console = fake
+    with recording() as captured:
         render()
-    finally:
-        for module, original in originals:
-            module.console = original
     return "\n".join(captured)
 
 
@@ -541,6 +557,267 @@ class TestTheScoreTable:
         text = rendered(lambda: cli._print_scores(scored, service))
 
         assert "100% of this element" not in text
+
+
+# ── The cell's colour and the cell's words ────────────────────────────────
+
+
+class TestTheScoreCellIsColouredByItsOwnWords:
+    """The colour is the console's one addition to the note's words, and it
+    used to be derived from a *differently rounded* figure than they were.
+
+    `composite_reading` and `section_reading` both round to one decimal before
+    banding, and say so; `_score_cell` banded the raw value. At a real
+    composite of 6.97 that put a yellow cell around the words `7.0 / 10 —
+    Reads strong`. Element rows were spared only by the accident that
+    `get_element_summary` pre-rounds, which is not a property anything held.
+    """
+
+    BAND_COLOUR = {"strong": "green", "middling": "yellow", "weak": "red"}
+
+    def cell(self, line) -> str:
+        return cli._score_cell(line, ConsoleComponents().render_reading(line))
+
+    def test_at_a_composite_of_6_97_the_colour_and_the_word_agree(self):
+        line = cli._composite_reading(6.97)
+
+        cell = self.cell(line)
+
+        assert "7.0 / 10" in cell
+        assert "strong" in cell
+        assert cell.startswith("[green]")
+
+    def test_the_raw_figure_is_the_one_that_would_have_disagreed(self):
+        """Named rather than implied: this is the exact number and the exact
+        two answers, so a future rewrite that reaches for the raw score again
+        fails here with the reason written down."""
+        assert rc.score_band(6.97) == "middling"
+        assert rc.score_band(round(6.97, 1)) == "strong"
+
+        assert "strong" in cli._composite_reading(6.97).text
+        assert self.cell(cli._composite_reading(6.97)).startswith("[green]")
+
+    @pytest.mark.parametrize(
+        "score",
+        [0.0, 2.5, 3.94, 3.96, 3.99, 4.0, 4.04, 6.94, 6.96, 6.97, 7.0, 8.2, 9.96],
+    )
+    def test_no_score_colours_a_cell_against_its_own_reading(self, score, engine):
+        """The property, across both builders and across every boundary.
+
+        Asserted as agreement between the colour and the band word the reader
+        is shown rather than against a table of expected colours: a test that
+        spelled out "6.97 is green" would keep passing if the *words* moved to
+        middling, which is the same disagreement in the other direction.
+        """
+        vocabulary = rc.Vocabulary(engine.metrics)
+        for line in (
+            cli._composite_reading(score),
+            cli._element_reading("size", vocabulary, score, None),
+        ):
+            band = [word for word in self.BAND_COLOUR if word in line.text]
+
+            assert len(band) == 1, (score, line.text)
+            assert self.cell(line).startswith(f"[{self.BAND_COLOUR[band[0]]}]"), (
+                score, line.text
+            )
+
+    def test_a_reading_with_no_score_is_dim_rather_than_red(self):
+        """Dim is "there is no score"; red is "the score is bad". An unscored
+        company is not a weak one."""
+        assert self.cell(cli._composite_reading(None)).startswith("[dim]")
+
+    def test_the_table_colours_the_composite_by_the_line_it_prints(
+        self, scored, service, monkeypatch
+    ):
+        """One line per row, built once, rendered and coloured from the same
+        object — the only arrangement in which the two cannot drift."""
+        scored.scores["composite"] = 6.97
+        seen = []
+        real = cli._score_cell
+
+        def spy(line, markup):
+            painted = real(line, markup)
+            seen.append((line, painted))
+            return painted
+
+        monkeypatch.setattr(cli, "_score_cell", spy)
+        rendered(lambda: cli._print_scores(scored, service))
+
+        line, painted = seen[-1]
+        assert line.key == "composite"
+        assert line.headline == "7.0 / 10"
+        assert "strong" in line.text
+        assert painted.startswith("[green]")
+
+
+# ── The console keeps rendering when a hand-maintained table will not ─────
+
+
+class TestAnUnvalidatableApplicabilityTableDoesNotAbortTheRun:
+    """`sector_applicability.yaml` is hand-maintained, expected to grow by
+    manual edits, and validated nowhere else — the engine never reads it. Its
+    constructor raises, and it was constructed unfenced in `_declaration_view`,
+    which runs from `_print_scores`: after the fetch, the compute and the whole
+    LLM spend, and before a single report is written. One bad edit to a display
+    table therefore cost the entire run and left nothing on disk.
+    """
+
+    BAD_TABLE = {
+        "Finance": {"not_applicable": {"a_metric_nobody_declared": "a reason"}}
+    }
+
+    @pytest.fixture
+    def bad_applicability(self, monkeypatch):
+        """The real table loader, returning a table a hand-edit could produce.
+
+        A metric id the registry does not define is the mistake the validator
+        exists to catch, so the failure under test is the real constructor
+        raising the real `ValueError` rather than a stub standing in for one.
+        """
+        from boundless100x.compute_engine import sector
+
+        monkeypatch.setattr(
+            sector, "load_sector_applicability", lambda *a, **k: self.BAD_TABLE
+        )
+        return sector
+
+    def test_the_fixture_really_does_break_the_constructor(
+        self, bad_applicability, engine
+    ):
+        """Without this the two cases below pass on a table that validates."""
+        with pytest.raises(ValueError, match="a_metric_nobody_declared"):
+            bad_applicability.SectorApplicability(engine.metrics.keys())
+
+    def test_the_score_table_still_renders(
+        self, scored, service, bad_applicability, caplog
+    ):
+        with caplog.at_level("WARNING"):
+            text = rendered(lambda: cli._print_scores(scored, service))
+
+        for config in ELEMENT_CONFIG.values():
+            assert str(config["label"]) in text
+        assert "Reads" in text
+        assert any(
+            "applicability" in record.message and record.levelname == "WARNING"
+            for record in caplog.records
+        ), "the loss should be stated in the log, not swallowed"
+
+    def test_the_metric_listing_still_renders(
+        self, scored, service, bad_applicability
+    ):
+        text = rendered(lambda: cli._print_metrics(scored, service))
+
+        assert "Market Cap" in text
+        assert "Founder-led" in text
+
+
+# ── A registry that will not validate stops the run legibly ───────────────
+
+
+class TestARegistryThatWillNotValidateStopsLegibly:
+    """`custom/` is the documented extension point — "1 YAML entry + 1
+    function" — and `presentation:` became required after it was documented.
+    A drop-in missing it must still stop the run; what it must not do is end
+    every CLI command in a stack trace.
+    """
+
+    @pytest.fixture
+    def registry_missing_presentation(self, tmp_path):
+        """A real registry directory holding one real custom drop-in.
+
+        Everything the validator asks for except `presentation`, so the run
+        fails for exactly the reason under test and not incidentally.
+        """
+        (tmp_path / "registry.yaml").write_text("element_weights:\n  size: 1.0\n")
+        custom = tmp_path / "custom"
+        custom.mkdir()
+        (custom / "drop_in.yaml").write_text(
+            "element: size\n"
+            "metrics:\n"
+            "  owner_drop_in:\n"
+            "    name: Owner Drop-In\n"
+            "    module: custom.drop_in\n"
+            "    function: compute_owner_drop_in\n"
+            "    inputs: [financials]\n"
+            "    display:\n"
+            "      format: '{:.1f}'\n"
+            "    scoring:\n"
+            "      weight: 0.1\n"
+            "      mode: threshold\n"
+            "      direction: higher_is_better\n"
+            "      thresholds: [1, 2]\n"
+        )
+        return tmp_path
+
+    @pytest.fixture
+    def service_on_broken_registry(self, registry_missing_presentation, monkeypatch):
+        """A service whose engine loads that registry, and nothing else faked.
+
+        The engine, the validator, the `ValueError` and the service's wrapping
+        of it are all the shipped ones; only the registry directory moves.
+        """
+        from boundless100x import service as service_module
+
+        monkeypatch.setattr(
+            service_module,
+            "ComputeEngine",
+            lambda *a, **k: ComputeEngine(
+                registry_dir=str(registry_missing_presentation)
+            ),
+        )
+        return service_module
+
+    def test_validation_still_refuses_the_registry(
+        self, registry_missing_presentation, caplog
+    ):
+        """The half that must not be weakened: it still stops, and the log
+        still names the file, the metric and the key."""
+        with caplog.at_level("ERROR"), pytest.raises(ValueError) as raised:
+            ComputeEngine(registry_dir=str(registry_missing_presentation))
+
+        assert "Registry validation failed" in str(raised.value)
+        assert any(
+            "drop_in.yaml" in record.message
+            and "owner_drop_in" in record.message
+            and "presentation" in record.message
+            for record in caplog.records
+        )
+
+    def test_the_service_raises_a_type_the_cli_can_recognise(
+        self, service_on_broken_registry
+    ):
+        with pytest.raises(service_on_broken_registry.RegistryValidationError) as raised:
+            service_on_broken_registry.Boundless100xService()
+
+        # A ValueError subclass: `ComputeEngine` raised one and any caller
+        # already catching that must keep catching this.
+        assert isinstance(raised.value, ValueError)
+        assert "presentation" in str(raised.value)
+
+    def test_the_cli_prints_the_reason_and_exits_rather_than_raising(
+        self, service_on_broken_registry
+    ):
+        with recording() as lines:
+            with pytest.raises(typer.Exit) as exited:
+                cli._service()
+
+        assert exited.value.exit_code == 1
+        text = "\n".join(lines)
+        assert "presentation" in text
+        assert "compute_engine/metrics/custom/" in text
+        assert text.startswith("[red]")
+
+    def test_a_sound_registry_still_builds_a_service(self, monkeypatch):
+        """The fence must not become the answer to every construction."""
+        from boundless100x import service as service_module
+
+        built = object()
+        monkeypatch.setattr(
+            service_module, "Boundless100xService", lambda **kwargs: built
+        )
+
+        assert cli._service() is built
+        assert cli._service({"llm": {"enabled": False}}) is built
 
 
 # ── The surface itself ────────────────────────────────────────────────────

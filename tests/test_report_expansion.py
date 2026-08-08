@@ -66,6 +66,7 @@ from boundless100x.output.report_expansion import (
     ScoredCorpus,
     expanded_sections,
     load_scored_corpus,
+    section_applicability_line,
 )
 from boundless100x.output.report_reading import read_metric, read_metrics
 
@@ -970,6 +971,108 @@ class TestTheCorpusRule:
         assert corpus.unreadable == ("BBB",)
 
 
+class TestTheSubjectDoesNotVoteOnItself:
+    """`exclude`, and the reason it is not a nicety.
+
+    `ReportGenerator.generate` writes this run's own `scores.json` before it
+    builds the note, into the same directory the note then scans. R8 asks
+    whether *other* companies read zero here; a corpus that includes the
+    subject is answering a different question, and at the minimum comparable
+    count it can answer it the other way round.
+    """
+
+    def test_the_subject_leaves_the_corpus_entirely(self, tmp_path):
+        root = write_reports(tmp_path / "c", {
+            "AAA_20260808": {AT_THE_BAR: 0.0},
+            "BBB_20260808": {AT_THE_BAR: 1.0},
+            "SUBJ_20260808": {AT_THE_BAR: 0.0},
+        })
+
+        corpus = load_scored_corpus(root, exclude="SUBJ")
+
+        assert corpus.tickers == ("AAA", "BBB")
+        rate = corpus.rate_for(AT_THE_BAR)
+        assert (rate.zero, rate.comparable) == (1, 2)
+
+    def test_every_dated_report_of_the_subject_goes_with_it(self, tmp_path):
+        """The exclusion happens after the latest-per-ticker map resolves, so
+        one `pop` removes a company analysed weekly for a year rather than the
+        most recent run only."""
+        root = write_reports(tmp_path / "c", {
+            "SUBJ_20260101": {AT_THE_BAR: 0.0},
+            "SUBJ_20260401": {AT_THE_BAR: 0.0},
+            "SUBJ_20260808": {AT_THE_BAR: 0.0},
+            "AAA_20260808": {AT_THE_BAR: 1.0},
+        })
+
+        corpus = load_scored_corpus(root, exclude="SUBJ")
+
+        assert corpus.tickers == ("AAA",)
+        assert corpus.rate_for(AT_THE_BAR).zero == 0
+
+    def test_one_self_vote_is_enough_to_flip_the_majority(self, tmp_path):
+        """The measured hazard, not a hypothetical. Six other companies split
+        three-three, which is not a majority and therefore does not suppress —
+        adding the subject's own zero makes it four of seven and buries the
+        very gap the section was about to explain."""
+        reports = {
+            f"Z{index}_20260808": {AT_THE_BAR: 0.0 if index < 3 else 1.0}
+            for index in range(6)
+        }
+        reports["SUBJ_20260808"] = {AT_THE_BAR: 0.0}
+        root = write_reports(tmp_path / "c", reports)
+
+        assert load_scored_corpus(root).rate_for(AT_THE_BAR).suppresses is True
+        assert (
+            load_scored_corpus(root, exclude="SUBJ")
+            .rate_for(AT_THE_BAR).suppresses
+            is False
+        )
+
+    def test_the_subjects_own_unreadable_report_is_not_counted_either(
+        self, tmp_path
+    ):
+        """Dropped before the read, not after. An unreadable report shifts every
+        denominator it should have been in and the count travels with the
+        reading — but the subject was never entitled to a denominator here, so
+        its own malformed file must not make the corpus look short."""
+        root = write_reports(tmp_path / "c", {"AAA_20260808": {AT_THE_BAR: 0.0}})
+        broken = root / "SUBJ_20260808"
+        broken.mkdir()
+        (broken / "scores.json").write_text("{ this is not json")
+
+        corpus = load_scored_corpus(root, exclude="SUBJ")
+
+        assert corpus.unreadable == ()
+        assert corpus.tickers == ("AAA",)
+
+    def test_a_corpus_of_only_the_subject_says_so_rather_than_blaming_the_disk(
+        self, tmp_path
+    ):
+        """Both emptinesses read as "nothing to compare against", and neither
+        suppresses — but they send a reader to different places, and "could not
+        be read" would send them hunting a bug that is not there."""
+        root = write_reports(tmp_path / "c", {"SUBJ_20260808": {AT_THE_BAR: 0.0}})
+
+        corpus = load_scored_corpus(root, exclude="SUBJ")
+
+        assert corpus.reports == 0
+        assert "no other company" in corpus.error
+        assert "could not be read" not in corpus.error
+        assert corpus.rate_for(AT_THE_BAR).suppresses is None
+
+    def test_a_ticker_nobody_analysed_excludes_nothing(self, tmp_path):
+        root = write_reports(tmp_path / "c", {
+            "AAA_20260808": {AT_THE_BAR: 0.0},
+            "BBB_20260808": {AT_THE_BAR: 1.0},
+        })
+
+        corpus = load_scored_corpus(root, exclude="NEVER_SEEN")
+
+        assert corpus.tickers == ("AAA", "BBB")
+        assert corpus.error == ""
+
+
 # ── The zero-score trigger (R6) ───────────────────────────────────────────
 
 
@@ -1580,6 +1683,106 @@ class TestUnknownIsNeverASilentPassInTheDecision:
 
         assert section.fired_triggers == (ZERO_SCORE_GAP,)
         assert section.unresolved
+
+
+class TestAnUnreviewedSectorSaysItOnce:
+    """The same collapse `readings_absent` already makes, for the caveat that
+    actually fires in production.
+
+    Two sectors are reviewed; the other twenty-two cached tickers get
+    indeterminate applicability for **every** metric, with one shared sentence
+    and only the metric's name changing. Thirteen near-identical lines in
+    Quality — Business is not thoroughness — it buries the section's real
+    caveats under a wall of one caveat, which is the density problem this
+    report exists to replace.
+    """
+
+    def test_a_section_states_the_unreviewed_sector_once_not_per_metric(
+        self, tmp_path, decide
+    ):
+        corpus = corpus_where(tmp_path / "c", AT_THE_BAR, zero=0, comparable=7)
+
+        section = decide(
+            corpus, sector=UNREVIEWED, element=BAR_ELEMENT,
+            values={"dupont_turnover": 0.09}, scored={AT_THE_BAR: 0.5},
+        )
+
+        stated = [u for u in section.unresolved if "has not been checked" in u]
+        affected = [d for d in section.metrics if d.applicability_reason]
+        assert len(stated) == 1
+        assert len(affected) > 1, "the fixture must have several metrics to collapse"
+        assert stated[0] == section_applicability_line(
+            len(affected), affected[0].applicability_reason
+        )
+        assert UNREVIEWED in stated[0]
+
+    def test_the_per_metric_lines_survive_on_the_decision(self, tmp_path, decide):
+        """Only the *rendered* section-level output collapses. A caller that
+        wants a line per row has lost nothing, and the decision is still the
+        record of what was checked for each metric."""
+        corpus = corpus_where(tmp_path / "c", AT_THE_BAR, zero=0, comparable=7)
+
+        section = decide(
+            corpus, sector=UNREVIEWED, element=BAR_ELEMENT,
+            values={"dupont_turnover": 0.09}, scored={AT_THE_BAR: 0.5},
+        )
+
+        affected = [d for d in section.metrics if d.applicability_reason]
+        for decision in affected:
+            assert decision.applicability_unresolved in decision.unresolved
+            assert decision.metric_name in decision.applicability_unresolved
+            assert (
+                decision.applicability_unresolved
+                not in decision.unresolved_beyond_applicability
+            )
+
+    def test_a_reviewed_sector_states_nothing_at_all(self, tmp_path, decide):
+        """The collapse must not become a line every section always carries."""
+        corpus = corpus_where(tmp_path / "c", AT_THE_BAR, zero=0, comparable=7)
+
+        section = decide(
+            corpus, sector=MANUFACTURER, element=BAR_ELEMENT,
+            values={"dupont_turnover": 0.09}, scored={AT_THE_BAR: 0.5},
+        )
+
+        assert not [u for u in section.unresolved if "has not been checked" in u]
+        assert not [d for d in section.metrics if d.applicability_reason]
+
+    def test_one_affected_metric_keeps_its_own_name(
+        self, metric_configs, pairs, tmp_path
+    ):
+        """"These 1 metrics" is both ungrammatical and less informative than
+        naming the one metric, so the single case keeps the per-metric wording
+        rather than being described as a group."""
+        corpus = corpus_where(tmp_path / "c", AT_THE_BAR, zero=0, comparable=7)
+        decider = ExpansionDecider(
+            {AT_THE_BAR: metric_configs[AT_THE_BAR]}, pairs, corpus
+        )
+        readings = readings_for(
+            metric_configs, {AT_THE_BAR: 12.0}, sector=UNREVIEWED
+        )
+
+        section = decider.evaluate_section(
+            BAR_ELEMENT, readings, scores_for({AT_THE_BAR: 0.5})
+        )
+
+        stated = [u for u in section.unresolved if "has not been checked" in u]
+        assert len(stated) == 1
+        assert stated[0].startswith(f"Whether {decider._metric_name(AT_THE_BAR)} ")
+
+    def test_a_section_nobody_read_still_says_that_instead(
+        self, metric_configs, pairs, tmp_path
+    ):
+        """The two collapses do not stack. With no readings at all there is no
+        applicability answer to have missed, and the section says the one true
+        thing rather than two overlapping ones."""
+        corpus = corpus_where(tmp_path / "c", AT_THE_BAR, zero=0, comparable=7)
+        decider = ExpansionDecider(metric_configs, pairs, corpus)
+
+        section = decider.evaluate_section(BAR_ELEMENT, {}, scores_for({}))
+
+        assert len(section.unresolved) == 2   # no readings, and no scores
+        assert not [u for u in section.unresolved if "has not been checked" in u]
 
 
 # ── Zero-weight metrics stay out of the shape of the report (KTD5) ────────

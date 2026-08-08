@@ -41,8 +41,11 @@ boundless100x/
 ├── cli_lifecycle.py              # The lifecycle surface: watchlist, its queue
 │                                 # subgroup, and every display helper they
 │                                 # render through
-├── cli_common.py                 # The shared `console` and `setup_logging` —
-│                                 # one Console object, or two wrapping widths
+├── cli_common.py                 # The shared `console`, `setup_logging`, and
+│                                 # `ConsoleComponents` — the console's own
+│                                 # `@component_surface("console")` renderer,
+│                                 # which is what makes R14's three-surface
+│                                 # guarantee a check rather than a promise
 ├── json_store.py                 # Copy-on-write commit mechanics both durable
 │                                 # stores share; a leaf, importing nothing here
 ├── watchlist.py                  # Watchlist management
@@ -67,6 +70,11 @@ boundless100x/
 │   ├── engine.py                 # Auto-discovery metric runner
 │   ├── scorer.py                 # SQGLP weighted scoring (threshold, trend, range, percentile)
 │   ├── screener.py               # Preset-based universe screening
+│   ├── sector_applicability.yaml # Sector-by-metric applicability,
+│   │                             # three-valued: absent from a sector key
+│   │                             # means indeterminate, never "applies" —
+│   │                             # what stopped a lender from scoring as a
+│   │                             # failing manufacturer on turnover and FCF
 │   └── metrics/
 │       ├── registry.yaml         # SQGLP element weights (S:10, QB:20, QM:10, G:25, L:20, P:15)
 │       ├── base.py               # MetricResult dataclass
@@ -131,9 +139,41 @@ boundless100x/
     │                             # bands, lane/friction wording. Data only
     ├── report_charts.py          # The Plotly figures; a builder that
     │                             # cannot draw returns ""
+    ├── report_reading.py         # Pure reading layer (KTD2) — what a number
+    │                             # means, from declarations + computed values.
+    │                             # Imports only compute_engine, never llm_layer or
+    │                             # report_generator, so --no-llm and `advance` still
+    │                             # read, by construction rather than by discipline
+    ├── contradiction.py          # R6's second expansion trigger: declared
+    │                             # pairs, curated not detected (KTD4) — a
+    │                             # sentiment-diff detector would have flagged a
+    │                             # false contradiction on every company scored
+    ├── contradiction_pairs.yaml  # The curated pairs contradiction.py
+    │                             # reads; each `reason` is the reconciling
+    │                             # sentence R7 puts in front of the reader
+    ├── report_expansion.py       # F1's decision: has a section earned
+    │                             # the space to say more than its score (R5–R9)?
+    │                             # Decides only — renders nothing, so every reason
+    │                             # it names is data a surface prints, not markup
+    ├── report_components.py      # The six things a report may say
+    │                             # and nothing else (R13–R15) — data a surface
+    │                             # renders, not markup it parses, so HTML,
+    │                             # Markdown and console can't drift apart
+    ├── report_surfaces.py        # R14's two document renderers
+    │                             # (html, markdown) for the closed component set;
+    │                             # `@component_surface` refuses one missing a
+    │                             # render_* at import time, not as a section
+    │                             # quietly missing from just one surface
     ├── templates/
     │   ├── sqglp_report.html.j2
-    │   └── sqglp_report.md.j2
+    │   ├── sqglp_report.md.j2
+    │   ├── clarity_report.html.j2 # The new report's HTML surface —
+    │   │                          # same loops, same order as its .md.j2 twin below,
+    │   │                          # no Plotly and no charts (those stay in the
+    │   │                          # dashboard sqglp_report.html.j2 generates)
+    │   └── clarity_report.md.j2  # ...its Markdown twin; `md_text` guards
+    │                             # the handful of slots no component ever escapes
+    │                             # (company name, sector, a scraped quarter label)
     └── reports/{TICKER}_{DATE}/  # Generated reports (HTML, JSON)
 ```
 

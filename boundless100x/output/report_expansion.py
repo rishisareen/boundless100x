@@ -66,6 +66,14 @@ module-level cache would be wrong here for a reason the YAML loaders do not
 face — a declaration file does not change while the process runs, and the
 reports directory gains an entry every time `analyze` finishes.
 
+**And the company being rendered is not one of its own comparables.** That same
+"gains an entry every time" is why `load_scored_corpus` takes `exclude`: the
+generator writes this run's `scores.json` before it builds the note, into the
+directory the note then scans, so the subject would arrive as a vote on whether
+its own zero is unusual. At the six-comparable minimum with a strict majority,
+one self-vote is enough to flip the answer. R8's question is about *other*
+companies.
+
 One bound worth stating: a `scores.json` carries no `config_hash`, so unlike
 `trajectory.py` this cannot refuse to compare across scoring regimes. A corpus
 spanning a registry change is read at face value. The exposure is bounded by
@@ -178,6 +186,44 @@ UNKNOWN_METRIC_EXCLUSION = (
 )
 
 
+def applicability_unresolved_line(metric_name: str, reason: str) -> str:
+    """The per-metric "nobody checked whether this fits" line.
+
+    A function rather than an inline f-string because `evaluate_section` has to
+    recognise this exact line to state it once instead of once per metric, and
+    two spellings of one sentence would leave the section printing both.
+    """
+    return (
+        f"Whether {metric_name} means anything for a company of this kind has "
+        f"not been checked, so a category mismatch here would not have been "
+        f"caught. {reason}"
+    )
+
+
+def section_applicability_line(metric_count: int, reason: str) -> str:
+    """The same admission, made once for a whole section.
+
+    Two sectors are reviewed and the other twenty-two cached tickers get the
+    indeterminate answer for **every** metric — the same sentence up to
+    thirteen times in Quality — Business, with only the metric's name changing.
+    Repetition on that scale is not thoroughness: it buries the section's real
+    caveats under a wall of one caveat.
+
+    One metric keeps its own wording rather than being described as "these 1
+    metrics", which is both ungrammatical and less informative than naming it.
+    """
+    if metric_count == 1:
+        raise ValueError(
+            "a single metric states its own line — call "
+            "`applicability_unresolved_line` with its name instead"
+        )
+    return (
+        f"Whether these {metric_count} metrics measure anything for a company "
+        f"of this kind has not been checked, so a category mismatch in this "
+        f"section would not have been caught. {reason}"
+    )
+
+
 def _plural(count: int, noun: str) -> str:
     """`3 reports` / `1 report`. A reason string is prose and reads like it."""
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
@@ -285,12 +331,19 @@ def load_scored_corpus(
     reports_dir: str | Path | None = None,
     *,
     minimum: int = MIN_COMPARABLE_REPORTS,
+    exclude: str | None = None,
 ) -> ScoredCorpus:
     """Read every generated report's `scores.json` and count the zeros.
 
     **Latest report per ticker.** Reports are date-stamped directories and a
     company re-analysed weekly accumulates them; counting each one would let a
     single company decide a majority test about the model.
+
+    **`exclude` drops one ticker — the company being rendered.** `generate()`
+    writes this run's `scores.json` before the note is built and into the very
+    directory this scans, so without it the subject is one of the votes on
+    whether its own zero is corpus-wide, and at the minimum comparable count a
+    single self-vote can carry a majority.
 
     **A metric that errored scores `None`, and `None` is not zero.** It is
     dropped from the numerator *and* the denominator, per R18's own wording. It
@@ -330,6 +383,14 @@ def load_scored_corpus(
         if current is None or _ticker_and_date(current.name)[1] <= date:
             latest[ticker] = entry
 
+    # **After** the map resolves, never during the walk: the subject may have a
+    # dozen dated directories on disk and every one of them is the same
+    # company's vote, so dropping the key removes all of them at once. And
+    # before the read, so the subject leaves the unreadable count too — its own
+    # malformed report must not shift a denominator it was never entitled to be
+    # in.
+    dropped_self = bool(exclude) and latest.pop(exclude, None) is not None
+
     zero_counts: dict[str, int] = {}
     comparable_counts: dict[str, int] = {}
     counted: list[str] = []
@@ -361,7 +422,14 @@ def load_scored_corpus(
 
     error = ""
     if not counted:
+        # Two different emptinesses, and the reader is sent to different places
+        # by each. "Could not be read" says look at the folder; when the only
+        # report on disk was this company's own, nothing is wrong — there is
+        # simply nobody else to compare against yet.
         error = (
+            "no other company has a generated report on file, so there is "
+            "nothing to compare this company against"
+            if dropped_self else
             "no previously generated report could be read, so there is nothing "
             "to compare this company against"
         )
@@ -422,6 +490,12 @@ class MetricDecision:
     reasons), did not fire, or was never eligible to — `excluded_reason` marks
     a zero-weight signal, which is not the same as a metric that was checked
     and had nothing to report.
+
+    `applicability_reason` is a handle, not a second copy of anything: the
+    sentence it produces is already in `unresolved`, and it is carried
+    separately only so `evaluate_section` can tell that one line apart from the
+    rest and say it once for the section. The per-metric line stays here in
+    full, so a caller rendering row by row loses nothing.
     """
 
     metric_id: str
@@ -430,6 +504,7 @@ class MetricDecision:
     reasons: tuple[ExpansionReason, ...] = ()
     unresolved: tuple[str, ...] = ()
     excluded_reason: str = ""
+    applicability_reason: str = ""
 
     @property
     def fired(self) -> bool:
@@ -438,6 +513,23 @@ class MetricDecision:
     @property
     def considered(self) -> bool:
         return not self.excluded_reason
+
+    @property
+    def applicability_unresolved(self) -> str:
+        """The one line in `unresolved` a section states for itself, or ``""``."""
+        if not self.applicability_reason:
+            return ""
+        return applicability_unresolved_line(
+            self.metric_name, self.applicability_reason
+        )
+
+    @property
+    def unresolved_beyond_applicability(self) -> tuple[str, ...]:
+        """`unresolved` minus the line the section is about to state once."""
+        line = self.applicability_unresolved
+        if not line:
+            return self.unresolved
+        return tuple(text for text in self.unresolved if text != line)
 
 
 @dataclass(frozen=True)
@@ -741,11 +833,10 @@ class ExpansionDecider:
                 metric_id=metric_id, metric_name=name, element=element,
                 reasons=(self._sector_reason(metric_id, reading),),
             )
-        if not applies.known:
+        applicability_reason = "" if applies.known else applies.reason
+        if applicability_reason:
             unresolved.append(
-                f"Whether {name} means anything for a company of this kind has "
-                f"not been checked, so a category mismatch here would not have "
-                f"been caught. {applies.reason}"
+                applicability_unresolved_line(name, applicability_reason)
             )
 
         # 2. Does a declared pair disagree?
@@ -756,6 +847,7 @@ class ExpansionDecider:
                 return MetricDecision(
                     metric_id=metric_id, metric_name=name, element=element,
                     reasons=tuple(reasons), unresolved=tuple(unresolved),
+                    applicability_reason=applicability_reason,
                 )
         elif outcome.get("contradicts") is None:
             unresolved.extend(
@@ -777,6 +869,7 @@ class ExpansionDecider:
             return MetricDecision(
                 metric_id=metric_id, metric_name=name, element=element,
                 unresolved=tuple(unresolved),
+                applicability_reason=applicability_reason,
             )
 
         share = self.weight_share(metric_id)
@@ -784,6 +877,7 @@ class ExpansionDecider:
             return MetricDecision(
                 metric_id=metric_id, metric_name=name, element=element,
                 unresolved=tuple(unresolved),
+                applicability_reason=applicability_reason,
             )
 
         reason = self._zero_score_reason(
@@ -793,6 +887,7 @@ class ExpansionDecider:
             metric_id=metric_id, metric_name=name, element=element,
             reasons=(reason,) if reason is not None else (),
             unresolved=tuple(unresolved),
+            applicability_reason=applicability_reason,
         )
 
     # ── Per section ───────────────────────────────────────────────────────
@@ -838,6 +933,25 @@ class ExpansionDecider:
                 "scored zero on something that matters could not be spotted"
             )
 
+        # The same collapse the branch above makes, for the caveat that
+        # actually fires in production. An unreviewed sector answers
+        # indeterminate for *every* metric with one shared sentence, so the
+        # section states it once — grouped by that sentence rather than assumed
+        # to be a single one, because a company matching two declared sector
+        # keys can legitimately be told two different things.
+        by_reason: dict[str, list[str]] = {}
+        for decision in decisions:
+            if decision.applicability_reason and not readings_absent:
+                by_reason.setdefault(
+                    decision.applicability_reason, []
+                ).append(decision.metric_name)
+        for reason, names in by_reason.items():
+            unresolved.append(
+                applicability_unresolved_line(names[0], reason)
+                if len(names) == 1
+                else section_applicability_line(len(names), reason)
+            )
+
         reasons: list[ExpansionReason] = []
         for decision in decisions:
             reasons.extend(decision.reasons)
@@ -847,7 +961,7 @@ class ExpansionDecider:
                 # once. The per-metric lines are still on the `MetricDecision`,
                 # so a caller that wants them per row has lost nothing.
                 continue
-            unresolved.extend(decision.unresolved)
+            unresolved.extend(decision.unresolved_beyond_applicability)
 
         return SectionDecision(
             element=element,
@@ -913,6 +1027,8 @@ __all__ = [
     "TRIGGER_LABELS",
     "ZERO_SCORE_GAP",
     "ZERO_SCORE_NOT_COMPARABLE",
+    "applicability_unresolved_line",
     "expanded_sections",
     "load_scored_corpus",
+    "section_applicability_line",
 ]

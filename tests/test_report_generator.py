@@ -22,6 +22,7 @@ green. When a change to the legacy report *is* intended:
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from boundless100x.compute_engine.metrics.base import MetricResult
@@ -1252,6 +1253,267 @@ class TestTheExplanationIsReachableAndNeverInline:
 
         for disclosure in context["appendix"]["disclosures"]:
             assert disclosure.body not in before_appendix, disclosure.title
+
+
+class TestTheNoteStatesAFlagOnce:
+    """One flag, one appearance. Not KD4's rule, which is about something else.
+
+    KD4 deliberately lets several *sections* state the same finding
+    independently — each of them reached it, and deduplicating into a roll-up
+    would leave a reader unable to tell which section the finding was about.
+    This is the other thing: `build_section` turns every element-mapped flag
+    into a section finding, and the appendix used to re-derive its Signals list
+    from the whole flag list with no filter, so most flags printed twice in one
+    document — once under their element and once at the foot.
+    """
+
+    @staticmethod
+    def _context(tmp_path, result=None):
+        return ReportGenerator(output_dir=str(tmp_path))._clarity_context(
+            result if result is not None else clarity_result()
+        )
+
+    def test_no_appendix_signal_repeats_one_an_expanded_section_showed(
+        self, tmp_path
+    ):
+        context = self._context(tmp_path)
+
+        shown = {
+            finding.headline
+            for section in context["sections"] if section.expanded
+            for finding in section.findings
+        }
+        appendix = [f.headline for f in context["appendix"]["signals"]]
+
+        assert shown, "the fixture must expand at least one section with a flag"
+        assert appendix, "and must leave something for the appendix to carry"
+        assert not shown & set(appendix)
+
+    def test_the_rendered_document_prints_each_label_once(self, tmp_path):
+        """The claim measured on the page rather than on the model: a flag from
+        an expanded section appears exactly once in each surface."""
+        result = clarity_result()
+        generator = ReportGenerator(output_dir=str(tmp_path))
+        raw_flags = {f["raw"] for f in generator._collect_flags(result.metrics)}
+        context = generator._clarity_context(result)
+        html, md = render_note(tmp_path, result)
+
+        labels = [
+            finding.headline
+            for section in context["sections"] if section.expanded
+            for finding in section.findings
+            if finding.source in raw_flags
+        ]
+
+        assert labels, "the fixture must expand a section carrying a flag"
+        for label in labels:
+            assert visible_text(html).count(label) == 1, label
+            assert plain_text(md).count(label) == 1, label
+
+    def test_a_flag_from_a_collapsed_section_still_reaches_the_appendix(
+        self, tmp_path
+    ):
+        """The filter is "what was rendered", never "what has an element".
+
+        A collapsed section renders no findings at all — both templates gate on
+        `section.expanded` — so dropping its flags from the appendix too would
+        delete them from the note entirely, which is a worse failure than
+        printing them twice.
+        """
+        result = clarity_result()
+        context = self._context(tmp_path, result)
+        html, md = render_note(tmp_path, result)
+
+        collapsed = {
+            finding.headline
+            for section in context["sections"] if not section.expanded
+            for finding in section.findings
+        }
+        appendix = {f.headline for f in context["appendix"]["signals"]}
+
+        assert collapsed, "the fixture must collapse a section that carries a flag"
+        assert collapsed <= appendix
+        for label in collapsed:
+            assert label in visible_text(html), label
+            assert label in plain_text(md), label
+
+    def test_a_flag_belonging_to_no_section_is_untouched(self, tmp_path):
+        """The zero-weight signals map to `forward_signals`, which is not one of
+        the six scored sections, so nothing ever showed them and the appendix is
+        the only place they can appear."""
+        context = self._context(tmp_path)
+
+        assert "Re-rating Headroom — Favourable" in {
+            f.headline for f in context["appendix"]["signals"]
+        }
+
+
+class TestTheSubjectIsNotOneOfItsOwnComparables:
+    """R8 asks how *other* companies read this metric.
+
+    `generate()` writes the run's own `scores.json` before the clarity block
+    and into the same directory `load_scored_corpus` then scans, so without an
+    exclusion the ticker being rendered arrives as one of the votes on whether
+    its own zero is corpus-wide.
+    """
+
+    def test_the_note_passes_its_own_ticker_as_the_exclusion(self, tmp_path,
+                                                             monkeypatch):
+        from boundless100x.output import report_generator as module
+
+        seen: dict = {}
+        real = module.load_scored_corpus
+
+        def spy(reports_dir=None, **kwargs):
+            seen.update(kwargs)
+            return real(reports_dir, **kwargs)
+
+        monkeypatch.setattr(module, "load_scored_corpus", spy)
+
+        ReportGenerator(output_dir=str(tmp_path)).generate(
+            clarity_result(), formats=["json", "clarity"],
+        )
+
+        assert seen.get("exclude") == "TEST"
+
+    def test_the_self_written_scores_would_otherwise_be_in_the_corpus(
+        self, tmp_path
+    ):
+        """The precondition, asserted rather than assumed: the vote really is
+        on disk by the time the note is built, so the exclusion is doing work
+        rather than guarding against something that cannot happen."""
+        from boundless100x.output.report_expansion import load_scored_corpus
+
+        ReportGenerator(output_dir=str(tmp_path)).generate(
+            clarity_result(), formats=["json", "clarity"],
+        )
+
+        assert load_scored_corpus(tmp_path).tickers == ("TEST",)
+        assert load_scored_corpus(tmp_path, exclude="TEST").tickers == ()
+
+
+class TestTheNoteEscapesWhatItInterpolates:
+    """The slots no component ever guarded, on both surfaces.
+
+    `guard_text` refuses markup at the point a component is constructed, and
+    `report_surfaces` rests its "Markdown escapes nothing" on exactly that. The
+    masthead and the appendix tables interpolate values that never became
+    components — a company name, a sector, a scraped quarter label — so they
+    reached the page raw. Seven of the twenty-six cached tickers carry an
+    ampersand in one or the other.
+    """
+
+    AMPERSAND_NAME = "Indian Railway Catering & Tourism Corporation Ltd"
+    AMPERSAND_SECTOR = "Chemicals & Petrochemicals"
+
+    def result_with_ampersands(self):
+        result = clarity_result()
+        result.data["metadata"]["name"] = self.AMPERSAND_NAME
+        result.data["metadata"]["sector"] = self.AMPERSAND_SECTOR
+        return result
+
+    def test_no_raw_ampersand_survives_into_the_html(self, tmp_path):
+        import re as re_module
+
+        html, _ = render_note(tmp_path, self.result_with_ampersands())
+
+        assert self.AMPERSAND_NAME not in html
+        assert self.AMPERSAND_SECTOR not in html
+        assert "Catering &amp; Tourism" in html
+        assert "Chemicals &amp; Petrochemicals" in html
+        # Every `&` in the document opens a valid entity — a bare one is what
+        # makes the markup invalid, and one slot missed is one bare ampersand.
+        assert not re_module.findall(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);)",
+                                     html)
+
+    def test_the_reader_still_sees_the_name_they_typed(self, tmp_path):
+        """Escaped, not mangled. R14 is a claim about content, and the content
+        is the company's actual name."""
+        html, _ = render_note(tmp_path, self.result_with_ampersands())
+
+        assert self.AMPERSAND_NAME in visible_text(html)
+        assert self.AMPERSAND_SECTOR in visible_text(html)
+
+    def test_the_markdown_note_prints_the_ampersand_literally(self, tmp_path):
+        """The asymmetry, and why the Markdown twin does not get `|e`: `&` is
+        an ordinary character there, and `&amp;` would be an HTML entity shown
+        to a reader of a plain-text file."""
+        _, md = render_note(tmp_path, self.result_with_ampersands())
+
+        assert self.AMPERSAND_NAME in md
+        assert "&amp;" not in md
+
+    def test_a_pipe_in_a_scraped_label_cannot_break_a_markdown_table(
+        self, tmp_path
+    ):
+        """What Markdown actually breaks on. A `|` inside a table cell ends the
+        cell and shifts every column after it, so the shareholding row would
+        silently gain a column and misalign every figure in it.
+        """
+        result = clarity_result()
+        result.data["shareholding_bse"] = None
+        result.data["shareholding"] = pd.DataFrame([
+            {"quarter": "Mar | 2026", "promoter_pct": 51.0, "fii_pct": 9.0,
+             "dii_pct": 8.0, "public_pct": 32.0},
+        ])
+
+        html, md = render_note(tmp_path, result)
+
+        row = next(line for line in md.splitlines() if "Mar" in line and "2026" in line)
+        assert r"Mar \| 2026" in row
+        # Seven declared columns means eight pipes; an unescaped one would make
+        # nine and push every reading one column right.
+        assert row.count("|") - row.count(r"\|") == 8
+        assert "Mar | 2026" in visible_text(html)
+
+    def test_the_html_note_escapes_the_scraped_quarter_label(self, tmp_path):
+        result = clarity_result()
+        result.data["shareholding_bse"] = None
+        result.data["shareholding"] = pd.DataFrame([
+            {"quarter": "Mar 2026 <b>", "promoter_pct": 51.0},
+        ])
+
+        html, _ = render_note(tmp_path, result)
+
+        assert "Mar 2026 &lt;b&gt;" in html
+        assert "Mar 2026 <b>" not in html
+
+    @pytest.mark.parametrize("template_name,filter_token", [
+        ("clarity_report.html.j2", "|e"),
+        ("clarity_report.md.j2", "|md_text"),
+    ])
+    def test_every_non_surface_slot_carries_its_surfaces_filter(
+        self, template_name, filter_token
+    ):
+        """The rule stated as a rule, so a slot added later is caught here
+        rather than by whoever first analyses a company with an ampersand.
+
+        `autoescape` stays off — the component renderers return pre-escaped
+        fragments and `_paragraphize` returns Markup, so a global flip would
+        double-escape this note *and* move the legacy dashboard's bytes, which
+        the goldens forbid. So the rule is per slot, and it is "every
+        non-`surface.` string slot" rather than "the ones that are scraped
+        today": the second is a judgement to re-make every time a value's
+        provenance changes, and the first is one this test can make for us.
+
+        Both templates, because they are twins and a rule enforced on one of
+        them is a rule that drifts on the other.
+        """
+        import re as re_module
+
+        template = (PACKAGE_ROOT / "output" / "templates"
+                    / template_name).read_text()
+
+        unguarded = [
+            slot for slot in re_module.findall(r"\{\{(.*?)\}\}", template)
+            if "surface." not in slot        # already escaped by its renderer
+            and filter_token not in slot
+            and "format(" not in slot        # a float, not a string
+            and "if " not in slot            # an inline literal choice
+            and "section_block" not in slot  # a macro call, not a value
+        ]
+
+        assert unguarded == [], unguarded
 
 
 class TestTheNoteNeverCostsTheRunItsOtherReports:

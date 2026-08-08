@@ -531,13 +531,63 @@ class TestTheLayerIsPure:
 
         return pathlib.Path(boundless100x.__file__).parent / "output" / "report_reading.py"
 
-    def imports_of(self, path: pathlib.Path) -> set[str]:
-        """Every dotted module name the file imports, relative or absolute."""
+    def package_of(self, path: pathlib.Path) -> str:
+        """The dotted package containing `path`, needed to resolve `node.level`.
+
+        `from . import x` names a different target depending on which package
+        the importing file sits in — `report_reading.py`'s "current package"
+        is `boundless100x.output`, not `report_reading` itself. Derived from
+        the file's location under the installed `boundless100x` tree; the
+        negative control below exercises a file that was never written to
+        disk there, so it passes `package` to `imports_of` explicitly instead
+        of going through this.
+        """
+        import boundless100x
+
+        root = pathlib.Path(boundless100x.__file__).parent.parent
+        parts = path.relative_to(root).with_suffix("").parts
+        return ".".join(parts[:-1])
+
+    def imports_of(self, path: pathlib.Path, *, package: str | None = None) -> set[str]:
+        """Every dotted module name the file imports, relative or absolute.
+
+        A relative import's `node.module` is `None` for `from . import x` and
+        a bare, unqualified name for `from ..llm_layer import y` — neither
+        reads as `boundless100x.llm_layer` on its own. The old walk either
+        dropped the import outright (`module is None`, nothing to add at
+        all — a `from . import report_generator` vanished completely) or kept
+        a name too short for `test_the_only_project_imports_are_from_the_
+        compute_engine` to recognise as a `boundless100x` import in the first
+        place (finding #11: a relative escape from this layer was invisible to
+        the very guard meant to catch it). `node.level` — the leading-dot
+        count — is resolved against the file's own package the way Python's
+        import system actually resolves it, and `alias.name` is folded in
+        for the `from . import x` shape, where the imported name is the only
+        place the target module appears at all.
+        """
+        if package is None:
+            package = self.package_of(path)
+        package_parts = package.split(".") if package else []
+
         tree = ast.parse(path.read_text())
         found: set[str] = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                found.add(node.module)
+            if isinstance(node, ast.ImportFrom):
+                if node.level:
+                    # level=1 is "this package" (drop nothing); each further
+                    # dot climbs one more level (drop one more trailing part).
+                    base_parts = package_parts[: len(package_parts) - (node.level - 1)]
+                    base = ".".join(base_parts)
+                    resolved = f"{base}.{node.module}" if node.module else base
+                else:
+                    resolved = node.module or ""
+                if resolved:
+                    found.add(resolved)
+                if node.module is None:
+                    found.update(
+                        f"{resolved}.{alias.name}" if resolved else alias.name
+                        for alias in node.names
+                    )
             elif isinstance(node, ast.Import):
                 found.update(alias.name for alias in node.names)
         return found
@@ -569,6 +619,46 @@ class TestTheLayerIsPure:
         offenders = [m for m in self.imports_of(service) if "llm_layer" in m.split(".")]
 
         assert offenders, "the boundary check cannot detect the thing it forbids"
+
+    def test_the_collector_does_flag_a_relative_import_of_a_forbidden_module(
+        self, tmp_path
+    ):
+        """Anti-vacuity, third control, for the blind spot finding #11 closes.
+
+        The two controls above only ever exercise an absolute import
+        (`service.py`'s `from boundless100x.llm_layer import ...`). A relative
+        one is a different AST shape — `from . import x` has `node.module is
+        None`, and `from ..llm_layer import y` has `node.module == "llm_layer"`
+        with no `boundless100x` prefix in it anywhere — and a collector that
+        only worked on the absolute shape would pass every test in this class
+        while being blind to exactly the escape KTD2 exists to prevent.
+
+        Stand-in file, not `report_reading.py` itself: the point is that the
+        collector resolves relative imports *given* a package, which is
+        exercised here against a package (`boundless100x.output`) that never
+        actually needs a passing grade.
+        """
+        fake = tmp_path / "fake_module.py"
+        fake.write_text(
+            "from . import report_generator\n"
+            "from ..llm_layer import forward_growth\n"
+        )
+        imports = self.imports_of(fake, package="boundless100x.output")
+
+        # `from . import report_generator` used to vanish outright
+        # (`node.module is None`) — it must now resolve to something naming
+        # the module the report layer must never import.
+        assert any(
+            m.startswith("boundless100x.output") and m.endswith("report_generator")
+            for m in imports
+        ), imports
+        # `from ..llm_layer import forward_growth` used to resolve to the bare
+        # name "llm_layer" (no `boundless100x` prefix) — properly qualified,
+        # it both trips the llm_layer-specific check and now actually counts
+        # as a `boundless100x` import for the "only from compute_engine" one.
+        offenders = [m for m in imports if "llm_layer" in m.split(".")]
+        assert offenders, imports
+        assert any(m.split(".")[0] == "boundless100x" for m in offenders), imports
 
     def test_the_only_project_imports_are_from_the_compute_engine(self):
         """The dependency direction, stated positively. This catches the

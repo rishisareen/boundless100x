@@ -47,6 +47,7 @@ from boundless100x.output.report_expansion import (
     load_scored_corpus,
 )
 from boundless100x.output.report_reading import (
+    BANDS_NOT_DECLARED,
     Quantity,
     Reading,
     read_metric,
@@ -81,6 +82,28 @@ def vocabulary(metric_configs):
     across tests is sharing a lookup table, not sharing state about a ticker.
     """
     return rc.Vocabulary(metric_configs)
+
+
+@pytest.fixture(autouse=True)
+def _surfaces_registry_is_restored():
+    """Guards the shared `rc.SURFACES` registry itself, not just one test.
+
+    A test that registers under an occupied name (e.g. "console", which
+    `ConsoleComponents` in `cli_common.py` claims at import time) and then
+    tears down by popping rather than restoring silently deletes the real
+    entry instead of undoing its own mutation — invisible within this file,
+    and only a `KeyError`/`KeyError`-shaped failure at a distance, in
+    whichever other test file happens to run after this one (finding #9).
+    Snapshotting before every test and comparing after turns that class of
+    leak into an immediate, loud failure in the test that caused it, rather
+    than a pass that depends on collection order.
+    """
+    before = dict(rc.SURFACES)
+    yield
+    assert rc.SURFACES == before, (
+        "a test left boundless100x.output.report_components.SURFACES "
+        "mutated — restore whatever was there before the test, don't pop it"
+    )
 
 
 def reading_for(metric_configs, metric_id, value, *, error=None, applicability=None):
@@ -744,6 +767,12 @@ class TestASurfaceMustRenderEveryMember:
                 pass
 
     def test_a_complete_surface_registers_under_its_name(self):
+        # "console" is claimed by the real `ConsoleComponents` (`cli_common.py`)
+        # the moment that module is imported anywhere in the suite — which may
+        # or may not have happened yet, depending on run order. Save whatever
+        # is there now and put it back, rather than popping: popping deletes
+        # the real registration outright when it got there first (finding #9).
+        previous = rc.SURFACES.get("console")
         try:
             @rc.component_surface("console")
             class Console(CompleteSurface):
@@ -751,7 +780,10 @@ class TestASurfaceMustRenderEveryMember:
 
             assert rc.SURFACES["console"] is Console
         finally:
-            rc.SURFACES.pop("console", None)
+            if previous is None:
+                rc.SURFACES.pop("console", None)
+            else:
+                rc.SURFACES["console"] = previous
 
     def test_r14_names_three_surfaces(self):
         assert rc.EXPECTED_SURFACES == ("html", "markdown", "console")
@@ -918,20 +950,38 @@ class TestBuildingASectionWithNothingToWorkFrom:
         assert section.caveats
 
     def test_a_reason_a_surface_could_not_render_becomes_an_honest_absence(
-        self, metric_configs, vocabulary
+        self, vocabulary
     ):
         """A declaration the vocabulary cannot clean must not blow up a report.
 
-        `price_lever_signal` explains its grades by naming Python parameters,
-        which have no reader-facing label. The row degrades to a stated
-        absence; it does not raise, and it does not print the parameter name.
+        Hand-built, not read off `price_lever_signal`: its shipped
+        `bands_absent_reason` was rewritten into clean prose once R15 started
+        enforcing this (see `growth.yaml`'s comment on that key), so calling
+        `reading_for(..., "price_lever_signal", "not_a_grade")` — the previous
+        version of this test — produces a reason with no raw identifier in it
+        at all. The assertion that two specific parameter names were absent
+        then passed whether or not `metric_row`'s `except ComponentContentError`
+        fallback worked, because nothing ever reached it.
+
+        A reason containing a genuinely unregistered identifier is what
+        `vocabulary.narrate` cannot clean (it only resolves *registered*
+        metric ids) and what `Unknown.__post_init__`'s R15 guard then refuses
+        — which is what `metric_row` must catch and degrade, rather than let
+        the exception propagate and take the whole row down with it.
         """
-        reading = reading_for(metric_configs, "price_lever_signal", "not_a_grade")
+        reading = Reading(
+            metric_id="price_lever_signal",
+            status=BANDS_NOT_DECLARED,
+            reason="explained only in terms of internal_capex_ratio_helper",
+        )
+
         row = rc.metric_row("price_lever_signal", reading, vocabulary)
 
         assert not row.known
-        assert "strong_real_growth_pct" not in row.unknown.reason
-        assert "compute_price_lever" not in row.unknown.reason
+        assert row.unknown.reason == (
+            "this metric could not be read, and the explanation the model "
+            "recorded is written in terms only the code uses"
+        )
 
 
 class TestTheModuleStaysALeaf:

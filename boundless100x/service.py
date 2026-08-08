@@ -33,6 +33,20 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 FORWARD_GROWTH_SIDECAR = "forward_growth.extraction.json"
 
 
+class RegistryValidationError(ValueError):
+    """The metric registry did not validate, so nothing can be computed.
+
+    A `ValueError` subclass, because that is what `ComputeEngine` already
+    raises and an existing caller catching one must keep catching this. A
+    *distinct* type, because the CLI has to tell "a YAML file on disk is
+    malformed and here is what to do about it" apart from every other
+    `ValueError` a command can meet, and print the one rather than a traceback.
+
+    It carries no verdict of its own — validation stays where it is, and a
+    registry that fails it still refuses to run.
+    """
+
+
 def load_config(config_path: str | None = None) -> dict:
     """The pipeline config, from one place.
 
@@ -80,7 +94,28 @@ class Boundless100xService:
         self.config = config if config is not None else load_config(config_path)
 
         self.suite = DataFetcherSuite(self.config)
-        self.engine = ComputeEngine(macro=self.config.get("macro", {}))
+        # The engine is the one collaborator that may not degrade: a registry
+        # that fails validation has to stop the run, because a metric missing
+        # its `presentation:` block would otherwise reach a reader as a bare
+        # number. What it must not do is *end* the run in a traceback.
+        # `compute_engine/metrics/custom/` is the documented extension point
+        # — "adding a metric = 1 YAML entry + 1 function" — so a drop-in that
+        # forgets a required key is an ordinary hand-edit, and every CLI
+        # command building a service died on it with a stack trace.
+        #
+        # Shape follows `LLMOrchestrator` below: catch the `ValueError` at
+        # construction and hand the caller something it can act on. The only
+        # difference is that this one is fatal rather than degrading.
+        try:
+            self.engine = ComputeEngine(macro=self.config.get("macro", {}))
+        except ValueError as e:
+            raise RegistryValidationError(
+                f"{e} — each was logged as a REGISTRY ERROR naming the file, "
+                f"the metric and the key at fault. Every metric definition "
+                f"needs a presentation block (unit, direction, bands); fix or "
+                f"remove the definition — most often a drop-in under "
+                f"compute_engine/metrics/custom/ — and run again."
+            ) from e
         # Where scored runs are recorded. None means the module default; a
         # caller scoring into a scratch store (tests, the future simulator)
         # points this elsewhere so the real history stays organic.
