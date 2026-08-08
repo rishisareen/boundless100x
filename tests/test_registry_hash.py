@@ -182,6 +182,17 @@ class TestProvenanceIsNotSemantics:
 SHIPPED_REGISTRY_HASH = "8e3c4115e9cf"
 SHIPPED_FORWARD_SIGNAL_HASH = "f693039de714"
 
+# The hash the service actually stamps onto score-history rows. It differs
+# from the pair above because `service.analyze()` constructs the engine with
+# `config.yaml`'s `macro:` block, and macro is inside both hashes on purpose —
+# it reaches every metric as a parameter default.
+#
+# Pinning only the default-construction hash would leave R17 half-guarded:
+# the regime a reader can actually see in `score_history.jsonl` is this one,
+# and a change that moved it while leaving the default alone would fragment
+# real history with every test still green.
+CONFIGURED_REGISTRY_HASH = "1d9f30d09df3"
+
 
 def add_key(registry_dir, filename: str, metric_id: str, key: str, value):
     """Add one top-level key to one metric's definition."""
@@ -220,6 +231,22 @@ class TestPresentationIsNotSemantics:
         engine = ComputeEngine()
         assert engine.registry_hash == SHIPPED_REGISTRY_HASH
         assert engine.forward_signal_hash == SHIPPED_FORWARD_SIGNAL_HASH
+
+    def test_the_hash_the_service_records_is_what_it_was(self):
+        """The regime stamp on real score-history rows, not just the default.
+
+        Built the way `service.analyze()` builds it, so this is the value a
+        reader finds in `score_history.jsonl` and the one a trajectory diff
+        groups on.
+        """
+        import yaml
+        from pathlib import Path
+
+        config_path = Path(ComputeEngine().registry_dir).parent.parent / "config.yaml"
+        macro = (yaml.safe_load(config_path.read_text()) or {}).get("macro")
+        assert macro, "config.yaml declares no macro block — this test is not testing it"
+
+        assert ComputeEngine(macro=macro).registry_hash == CONFIGURED_REGISTRY_HASH
 
     def test_declaring_presentation_on_a_scored_metric_leaves_the_scoring_hash(
         self, registry_dir
