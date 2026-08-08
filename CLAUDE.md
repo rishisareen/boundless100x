@@ -346,6 +346,16 @@ python -m boundless100x sweep --all --llm-provider claude_cli
 python -m pytest tests/                         # Unit tests (the live-network Screener
                                                 # test is deselected by pytest.ini;
                                                 # run it with `-m network`)
+python -m pytest tests/ -m network              # The opt-in ones. Includes the only
+                                                # check a faked subprocess cannot
+                                                # make: that the transport's
+                                                # allowlisted child env still lets
+                                                # the real `claude` resolve the
+                                                # subscription (`auth status` →
+                                                # loggedIn, firstParty). Costs
+                                                # nothing — no model call. Run it
+                                                # after touching INHERITED_ENV_KEYS
+                                                # or bumping the pinned CLI version.
 ```
 
 **Environment note**: the checked-in `venv/` works (Python 3.11.15). Run
