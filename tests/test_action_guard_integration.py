@@ -9,6 +9,11 @@ showing "Not a 100x Candidate" and "STRONG BUY" at once.
 
 import pytest
 
+from boundless100x.llm_layer.transport import (
+    COST_BASIS_ACTUAL,
+    COST_BASIS_ESTIMATED,
+    LLMProvider,
+)
 from boundless100x.output.report_generator import ReportGenerator
 from boundless100x.service import Boundless100xService
 from tests.conftest import make_result, make_scores
@@ -215,25 +220,46 @@ class TestReportNeverShowsAnUnguardedAction:
         assert any("55%" in r for r in summary["action_constraint"]["constraints"])
 
 
+def printed(result) -> str:
+    """Everything `_print_llm_summary` renders, markup intact.
+
+    The console's `print` is replaced rather than its output captured, so what
+    comes back is the string the code composed rather than what rich made of
+    it — no wrapping to defeat a substring assertion, and the markup itself is
+    assertable (`Action: [bold]strong_buy` below is a real assertion about
+    where a token sits, which stripped text could not make).
+    """
+    from unittest.mock import patch
+
+    from boundless100x import cli
+
+    captured = []
+    with patch.object(cli.console, "print", lambda *a, **k: captured.append(str(a[0]) if a else "")):
+        cli._print_llm_summary(result)
+    return "\n".join(captured)
+
+
+def usage_line(output: str) -> str:
+    """The single line the cost is rendered on.
+
+    Asserting against the whole capture would let a fragment matched anywhere
+    — in the thesis text, in a gate reason — stand in for the line actually
+    under test, which is the failure a rendering test exists to catch.
+    """
+    lines = [line for line in output.splitlines() if line.startswith("[dim]LLM:")]
+    assert len(lines) == 1, f"expected exactly one usage line, got {lines!r}"
+    return lines[0]
+
+
 class TestConsoleOutputIsGuardedToo:
     """The CLI prints the eligibility gates immediately above the action, so
     it is a decision surface with the same contradiction risk as the report."""
-
-    def printed(self, result) -> str:
-        from unittest.mock import patch
-
-        from boundless100x import cli
-
-        captured = []
-        with patch.object(cli.console, "print", lambda *a, **k: captured.append(str(a[0]) if a else "")):
-            cli._print_llm_summary(result)
-        return "\n".join(captured)
 
     def test_absent_final_action_does_not_fall_back_to_the_raw_model_action(self):
         result = result_with("strong_buy", failed_eligibility())
         assert result.final_action is None
 
-        output = self.printed(result)
+        output = printed(result)
 
         assert "watchlist" in output
         assert "Action: [bold]strong_buy" not in output
@@ -245,16 +271,103 @@ class TestConsoleOutputIsGuardedToo:
             "capped": False, "ceiling": None, "constraints": [],
         }
 
-        output = self.printed(result)
+        output = printed(result)
 
         assert "watchlist" in output
 
     def test_clean_verdict_still_prints_the_models_action(self):
         result = result_with("strong_buy", clean_eligibility())
 
-        output = self.printed(result)
+        output = printed(result)
 
         assert "strong_buy" in output
+
+
+class TestConsoleUsageLineStatesItsBasis:
+    """The cost line every ordinary `analyze` run prints, one block below the
+    guarded action and rendered by the same function.
+
+    `_summarize_usage` populates `provider` from `self.transport.name`
+    unconditionally, so adding it changed this line on the **default** path
+    too, not only on the new one: a bare `~$0.1234` became
+    `<basis> $0.1234 via <provider>`. Nothing asserted on the rendered text, so
+    a swapped key or a `KeyError` on the most-travelled path in the CLI would
+    have shipped unnoticed.
+
+    The basis constants are imported rather than spelled out, as
+    `tests/test_llm_transport.py` does: a test that hardcodes `"actual"` keeps
+    passing after the constant is renamed and the surface stops matching it.
+
+    `test_llm_transport.py::TestCacheTotalsReachTheReader` also reaches this
+    function, from the other end — real orchestrator totals through to a
+    `capsys` capture. This class pins the *shape* of the composed line; that
+    one pins that the numbers arriving here are the aggregated ones.
+    """
+
+    def with_usage(self, usage: dict):
+        result = result_with("strong_buy", clean_eligibility())
+        result.llm_analysis["usage"] = usage
+        return result
+
+    def test_the_api_path_still_reads_as_an_estimate(self):
+        line = usage_line(printed(self.with_usage({
+            "total_tokens": 34_000,
+            "estimated_cost_usd": 0.1234,
+            "total_seconds": 12.0,
+            "cost_basis": COST_BASIS_ESTIMATED,
+            "provider": LLMProvider.ANTHROPIC.value,
+        })))
+
+        assert f"{COST_BASIS_ESTIMATED} $0.1234" in line
+        assert f"via {LLMProvider.ANTHROPIC.value}" in line
+        # Absence stays distinguishable from zero: the API path reports nothing
+        # about caching, and `(+0 cached)` would read as "every prompt written
+        # fresh", which is the expensive case rather than the absent one.
+        assert "cached" not in line
+
+    def test_the_cli_path_reads_as_a_real_bill(self):
+        line = usage_line(printed(self.with_usage({
+            "total_tokens": 1_600,
+            "estimated_cost_usd": 0.0662,
+            "total_seconds": 41.0,
+            "cost_basis": COST_BASIS_ACTUAL,
+            "provider": LLMProvider.CLAUDE_CLI.value,
+        })))
+
+        assert f"{COST_BASIS_ACTUAL} $0.0662" in line
+        assert f"via {LLMProvider.CLAUDE_CLI.value}" in line
+        # Metered dollars must not carry the word that means "give or take".
+        assert COST_BASIS_ESTIMATED not in line
+
+    def test_cache_totals_correct_the_token_count_they_sit_beside(self):
+        """The clause has to land against the number it corrects.
+
+        1,600 is the envelope's cache-*excluded* count. Printed bare next to an
+        API run's honest 34,000, the CLI path reads as twenty times more
+        token-efficient at twice the price.
+        """
+        line = usage_line(printed(self.with_usage({
+            "total_tokens": 1_600,
+            "total_cached_input_tokens": 33_432,
+            "estimated_cost_usd": 0.0662,
+            "total_seconds": 41.0,
+            "cost_basis": COST_BASIS_ACTUAL,
+            "provider": LLMProvider.CLAUDE_CLI.value,
+        })))
+
+        assert "1600 tokens (+33,432 cached)" in line
+
+    def test_a_usage_block_written_before_these_fields_still_renders(self):
+        """Runs recorded before the seam carry neither key; they are estimates
+        by history, and the line must compose without either."""
+        line = usage_line(printed(self.with_usage({
+            "total_tokens": 34_000,
+            "estimated_cost_usd": 0.1234,
+            "total_seconds": 12.0,
+        })))
+
+        assert f"{COST_BASIS_ESTIMATED} $0.1234" in line
+        assert "via" not in line
 
 
 class TestRenderedReportIsConsistent:

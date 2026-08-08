@@ -1466,3 +1466,145 @@ class TestTheSweepReportsWhatWasReallySpent:
         assert report["results"][0]["cost_usd"] == pytest.approx(
             ActualCostLLM.PER_CALL_USD
         )
+
+
+def _flat(text: str) -> str:
+    """Rendered console output with its wrapping collapsed.
+
+    Rich wraps to the console width, and a caveat that reads correctly on a
+    terminal would otherwise fail a substring assertion at whatever column the
+    runner happened to break it — a failure about the width, not the words.
+    """
+    return " ".join(text.split())
+
+
+@pytest.fixture
+def canned_sweep(monkeypatch):
+    """Drive the `sweep` command's console output off a fixed report.
+
+    The footer is the code under test; the service and the extraction it wraps
+    are not, and standing either up would be scaffolding rather than signal.
+    `cli.sweep` imports the sweep module *inside* the function, so the patch
+    has to land on that module's own attribute — there is no `sweep_module`
+    name on `cli` to replace.
+
+    Returns an installer so each test states only the fields it is about.
+    """
+    from rich.console import Console
+
+    import boundless100x.llm_layer.sweep as sweep_module
+    import boundless100x.service as service_module
+    from boundless100x import cli, cli_common
+
+    class FakeService:
+        def __init__(self, config_path=None, config=None):
+            self.config = config
+
+    monkeypatch.setattr(service_module, "Boundless100xService", FakeService)
+    # Every module that imported the console by name holds its own binding.
+    wide = Console(width=240)
+    for module in (cli, cli_common):
+        monkeypatch.setattr(module, "console", wide)
+
+    def install(**overrides) -> dict:
+        report = {
+            "dry_run": False,
+            "plans": [],
+            "skipped": [],
+            "deferred": [],
+            "estimate": {
+                "tickers": 2, "input_tokens": 40_000, "usd": 0.79, "usd_max": 1.2,
+            },
+            "results": [],
+            "not_reached": [],
+            # Exactly what `sweep()` initialises `actual` to and — on a dry run
+            # — returns untouched: no provider, because nothing ran. Tests of
+            # the live footer override it with what a finished run reports.
+            "actual": {
+                "usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+                "provider": None, "cost_basis": COST_BASIS_ESTIMATED,
+            },
+        }
+        report.update(overrides)
+        monkeypatch.setattr(sweep_module, "sweep", lambda *a, **k: report)
+        return report
+
+    return install
+
+
+class TestTheSweepFooterSaysWhatCLIDollarsAre:
+    """Both of the sweep's cost footers, in both provider directions.
+
+    The dry run is the branch that matters most and was the one that could not
+    warn. `sweep()` returns before any transport runs, so a dry-run report's
+    `actual["provider"]` is `None` — and the caveat was guarded on exactly that
+    key, inside the `else` of `if report["dry_run"]`. The one path whose entire
+    job is to inform a spending decision was the one path structurally unable
+    to qualify the number it was informing it with, while the header banner
+    named `claude_cli` beside it and read as confirmation. The provider is now
+    resolved from the config, the same value the banner reads.
+    """
+
+    def test_a_dry_run_on_the_cli_path_says_the_estimate_is_not_the_bill(
+        self, canned_sweep
+    ):
+        report = canned_sweep(dry_run=True)
+        # The precondition that made the old guard unreachable, asserted rather
+        # than assumed: if `sweep()` ever starts naming a provider on a dry run,
+        # this test stops covering the case it was written for.
+        assert report["actual"]["provider"] is None
+
+        out = _flat(invoke(
+            "sweep", "--tickers", "ASTRAL", "--dry-run",
+            "--llm-provider", "claude_cli",
+        ).output)
+
+        assert "MODEL_PRICING is API pricing" in out
+        assert "1.7–1.8x" in out
+        # The per-call harness floor, which the estimate has no term for at all
+        # — a multiplier alone would still understate a many-ticker sweep.
+        assert "$0.033 per call" in out
+        assert "--ceiling" in out
+
+    def test_a_dry_run_on_the_api_path_adds_no_caveat(self, canned_sweep):
+        canned_sweep(dry_run=True)
+
+        out = _flat(invoke("sweep", "--tickers", "ASTRAL", "--dry-run").output)
+
+        assert "Dry run" in out
+        assert "1.7–1.8x" not in out
+        assert "claude_cli" not in out
+
+    def test_the_live_footer_states_the_basis_provider_and_cache_delta(
+        self, canned_sweep
+    ):
+        canned_sweep(actual={
+            "usd": 0.1324, "input_tokens": 1_600, "output_tokens": 2_700,
+            "cached_input_tokens": 33_432,
+            "provider": LLMProvider.CLAUDE_CLI.value,
+            "cost_basis": COST_BASIS_ACTUAL,
+        })
+
+        out = _flat(invoke(
+            "sweep", "--tickers", "ASTRAL", "--llm-provider", "claude_cli",
+        ).output)
+
+        assert f"Actual: $0.1324 ({COST_BASIS_ACTUAL}, {LLMProvider.CLAUDE_CLI.value})" in out
+        assert "1,600 in + 2,700 out (+33,432 cached)" in out
+        assert "harness overhead" in out
+
+    def test_the_live_footer_on_the_api_path_carries_no_cli_caveat(
+        self, canned_sweep
+    ):
+        canned_sweep(actual={
+            "usd": 0.79, "input_tokens": 40_000, "output_tokens": 4_050,
+            "provider": LLMProvider.ANTHROPIC.value,
+            "cost_basis": COST_BASIS_ESTIMATED,
+        })
+
+        out = _flat(invoke("sweep", "--tickers", "ASTRAL").output)
+
+        assert f"Actual: $0.7900 ({COST_BASIS_ESTIMATED}, {LLMProvider.ANTHROPIC.value})" in out
+        assert "harness overhead" not in out
+        # No cache keys on this path, so no clause — not `(+0 cached)`.
+        assert "cached" not in out

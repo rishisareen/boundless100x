@@ -57,12 +57,66 @@ def _config_with_provider(llm_provider: LLMProvider | None) -> dict:
     return config
 
 
+def _resolved_provider(config: dict) -> str:
+    """Which transport this run will use, read off the config the flag landed in.
+
+    The one place the question is answered. Asking a *result* instead — the
+    `provider` a finished run reports — is only available once something has
+    run, which is exactly the condition a dry run does not meet.
+    """
+    return (config.get("llm") or {}).get("provider", LLMProvider.ANTHROPIC.value)
+
+
 def _provider_banner(config: dict) -> str:
     """Name the transport in a command's header when it is not the API default."""
-    provider = (config.get("llm") or {}).get("provider", LLMProvider.ANTHROPIC.value)
-    if provider != LLMProvider.CLAUDE_CLI.value:
+    if _resolved_provider(config) != LLMProvider.CLAUDE_CLI.value:
         return ""
     return " [bold cyan](claude_cli — subscription-billed)[/bold cyan]"
+
+
+def _print_cli_cost_caveat(config: dict, *, dry_run: bool) -> None:
+    """What `claude_cli` does to a dollar figure, printed beside that figure.
+
+    Both of the sweep's cost footers go through here, and the provider test
+    lives inside rather than at either call site, because the caveat has
+    already been unreachable once from exactly that shape: the live branch
+    guarded on `report["actual"]["provider"]`, which a dry run leaves `None`
+    (`sweep()` returns before any transport runs), so the one path whose entire
+    job is to inform a spending decision was the one path that could not warn.
+    A banner naming `claude_cli` beside a wrong number reads as confirmation
+    of the number.
+    """
+    if _resolved_provider(config) != LLMProvider.CLAUDE_CLI.value:
+        return
+
+    if dry_run:
+        # Yellow, not dim: on a dry run this *is* the decision-relevant content
+        # — the figure above it is priced off `MODEL_PRICING`, which is an API
+        # price table, and there is no claude_cli one. Two separate corrections
+        # apply, and only the first is a multiplier: Claude Code writes every
+        # prompt token at 1-hour-TTL cache-write rates (2x standard input),
+        # which converges to ~1.7–1.8x the API path per company; and each call
+        # additionally pays a measured ~$0.033 of harness prefix that the
+        # estimate has no term for at all, and that does not amortize across
+        # the sweep's independent sessions. Both figures are from
+        # docs/plans/2026-08-08-008-feat-llm-provider-claude-cli-plan.md.
+        console.print(
+            "[yellow]This estimate prices the API path — MODEL_PRICING is API "
+            "pricing and there is no claude_cli table. The claude_cli bill "
+            "converges to ~1.7–1.8x the figure above (every prompt token is "
+            "written at 2x cache-write rates), plus a fixed ~$0.033 per call "
+            "of harness prefix the estimate does not model. Set any --ceiling "
+            "against that, not against the number printed here.[/yellow]"
+        )
+    else:
+        # Most of what a CLI call bills has nothing to do with the ticker,
+        # so the per-ticker column above is not a per-ticker fact — and a
+        # `--ceiling` calibrated against API pricing trips far sooner here.
+        console.print(
+            "[dim]claude_cli bills real dollars including a fixed per-call "
+            "harness overhead, so the per-ticker figures are not comparable "
+            "to the API path and any --ceiling binds sooner.[/dim]"
+        )
 
 
 @app.command()
@@ -487,6 +541,10 @@ def sweep(
 
     if report["dry_run"]:
         console.print("\n[yellow]Dry run — no API call was made.[/yellow]")
+        # The dry run is what stands between a mistyped flag and a corpus-wide
+        # spend, so the caveat about what the estimate is *not* pricing belongs
+        # here more than anywhere else it appears.
+        _print_cli_cost_caveat(config, dry_run=True)
     else:
         results = Table(title="Extraction results")
         results.add_column("Ticker", style="cyan bold")
@@ -527,15 +585,11 @@ def sweep(
             f"{actual['input_tokens']:,} in + {actual['output_tokens']:,} out"
             f"{cached_note}"
         )
-        if actual.get("provider") == LLMProvider.CLAUDE_CLI.value:
-            # Most of what a CLI call bills has nothing to do with the ticker,
-            # so the per-ticker column above is not a per-ticker fact — and a
-            # `--ceiling` calibrated against API pricing trips far sooner here.
-            console.print(
-                "[dim]claude_cli bills real dollars including a fixed per-call "
-                "harness overhead, so the per-ticker figures are not comparable "
-                "to the API path and any --ceiling binds sooner.[/dim]"
-            )
+        # Config, not `actual["provider"]`, for the same reason the dry-run
+        # branch has to use it: one resolution of "which transport is this",
+        # asked identically on both branches. The two cannot disagree here
+        # anyway — the config is what built the transport that reported it.
+        _print_cli_cost_caveat(config, dry_run=False)
 
     _write_report(out, report)
 
