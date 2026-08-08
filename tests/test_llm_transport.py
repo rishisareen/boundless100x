@@ -678,6 +678,65 @@ class TestProviderFlag:
         assert "claude_cli" not in default.output
 
 
+class TestSurfacesStateTheBasis:
+    """A real bill must not be rendered as a guess.
+
+    `estimated_cost_usd` keeps its name on both paths, so every surface that
+    prints it has to say which kind of number it is — otherwise the CLI path's
+    metered dollars appear under the same `~$` that used to mean "priced from
+    MODEL_PRICING, give or take".
+    """
+
+    def _render(self, tmp_path, usage: dict) -> str:
+        from boundless100x.output.report_generator import ReportGenerator
+        from tests.conftest import make_result
+
+        result = make_result()
+        result.llm_analysis = {"pass2": {}, "usage": usage}
+        report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
+            result, formats=["html"]
+        )
+        return (report_dir / f"{result.ticker}_dashboard.html").read_text()
+
+    def test_an_actual_cost_is_labelled_actual(self, tmp_path):
+        html = self._render(
+            tmp_path,
+            {
+                "total_tokens": 30_000,
+                "estimated_cost_usd": 0.0662,
+                "total_seconds": 12.0,
+                "cost_basis": "actual",
+                "provider": "claude_cli",
+            },
+        )
+
+        assert "actual $0.0662" in html
+        assert "claude_cli" in html
+
+    def test_an_estimate_still_reads_as_one(self, tmp_path):
+        html = self._render(
+            tmp_path,
+            {
+                "total_tokens": 30_000,
+                "estimated_cost_usd": 0.0662,
+                "total_seconds": 12.0,
+                "cost_basis": "estimated",
+                "provider": "anthropic",
+            },
+        )
+
+        assert "estimated $0.0662" in html
+
+    def test_a_usage_block_from_before_the_seam_still_renders(self, tmp_path):
+        """Reports already on disk carry no basis; they are estimates by history."""
+        html = self._render(
+            tmp_path,
+            {"total_tokens": 30_000, "estimated_cost_usd": 0.0662, "total_seconds": 12.0},
+        )
+
+        assert "estimated $0.0662" in html
+
+
 class ActualCostLLM(RecordingLLM):
     """A CLI-path orchestrator stub: every call reports a real metered cost."""
 

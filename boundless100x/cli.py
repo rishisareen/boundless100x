@@ -912,9 +912,15 @@ def _print_llm_summary(result):
 
     usage = llm.get("usage", {})
     if usage:
+        # `estimated_cost_usd` holds *actual* metered cost on the claude_cli
+        # path, so the basis is printed rather than a bare `~$` that would
+        # describe a real bill as a guess.
+        provider = usage.get("provider")
+        via = f" via {provider}" if provider else ""
         console.print(
             f"\n[dim]LLM: {usage.get('total_tokens', 0)} tokens | "
-            f"~${usage.get('estimated_cost_usd', 0):.4f} | "
+            f"{usage.get('cost_basis', 'estimated')} "
+            f"${usage.get('estimated_cost_usd', 0):.4f}{via} | "
             f"{usage.get('total_seconds', 0)}s[/dim]"
         )
 

@@ -248,7 +248,9 @@ class Boundless100xService:
                 usage = result.llm_analysis.get("usage", {})
                 logger.info(
                     f"LLM analysis complete: {usage.get('total_tokens', 0)} tokens, "
-                    f"~${usage.get('estimated_cost_usd', 0):.4f}"
+                    f"{usage.get('cost_basis', 'estimated')} "
+                    f"${usage.get('estimated_cost_usd', 0):.4f} "
+                    f"({usage.get('provider', 'anthropic')})"
                 )
             except Exception as e:
                 result.errors.append(f"LLM analysis failed: {e}")

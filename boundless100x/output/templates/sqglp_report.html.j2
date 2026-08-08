@@ -1026,7 +1026,7 @@
 {% set usage = llm_analysis.get('usage', {}) %}
 {% if usage %}
 <div style="margin-top: 15px; color: var(--text-muted); font-size: 0.8em;">
-  LLM: {{ usage.get('total_tokens', 0) }} tokens | ~${{ "%.4f"|format(usage.get('estimated_cost_usd', 0)) }} | {{ usage.get('total_seconds', 0) }}s
+  LLM: {{ usage.get('total_tokens', 0) }} tokens | {{ usage.get('cost_basis', 'estimated') }} ${{ "%.4f"|format(usage.get('estimated_cost_usd', 0)) }}{% if usage.get('provider') %} via {{ usage.get('provider') }}{% endif %} | {{ usage.get('total_seconds', 0) }}s
 </div>
 {% endif %}
 {% endif %}
