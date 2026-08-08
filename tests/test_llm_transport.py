@@ -577,13 +577,38 @@ class FakeClient:
         self.messages = FakeMessages(self)
 
 
-def sdk_response(text='{"ok": true}', input_tokens=1200, output_tokens=800):
-    """The three attributes the API transport reads off an SDK response."""
+def text_block(text):
+    """A `TextBlock` as the SDK actually shapes one: tagged, and `.text`."""
+    return SimpleNamespace(type="text", text=text)
+
+
+def thinking_block(thinking="weighing the multiple"):
+    """A `ThinkingBlock`: tagged `thinking`, and **no** `.text` at all.
+
+    The attribute is `.thinking`, which is the whole reason `content[0].text`
+    was a live defect rather than a style point.
+    """
+    return SimpleNamespace(type="thinking", thinking=thinking)
+
+
+def sdk_response(
+    text='{"ok": true}',
+    input_tokens=1200,
+    output_tokens=800,
+    content=None,
+    stop_reason="end_turn",
+):
+    """The attributes the API transport reads off an SDK response.
+
+    `content` overrides the default single text block, so a test can hand over
+    the block *list* a Claude 5 completion really returns.
+    """
     return SimpleNamespace(
-        content=[SimpleNamespace(text=text)],
+        content=[text_block(text)] if content is None else content,
         usage=SimpleNamespace(
             input_tokens=input_tokens, output_tokens=output_tokens
         ),
+        stop_reason=stop_reason,
     )
 
 
@@ -636,6 +661,48 @@ class TestAnthropicAPITransport:
 
         with pytest.raises(TransportError, match="overloaded"):
             transport.complete("claude-sonnet-5", "prompt", 16000)
+
+    def test_thinking_block_first_still_yields_the_text(self, api_transport):
+        """The regression: Opus 5 opens with `thinking` at these settings.
+
+        `content[0].text` raised `AttributeError` here — not `APIError`, so it
+        escaped `complete()`'s catch and cost a paid two-pass Opus run.
+        """
+        transport = api_transport(
+            sdk_response(content=[thinking_block(), text_block('{"thesis": "x"}')])
+        )
+
+        response = transport.complete("claude-opus-5", "prompt", 16000)
+
+        assert response.text == '{"thesis": "x"}'
+        # The reasoning is dropped, not concatenated: `_parse_json_response`
+        # downstream is looking for the JSON the prompt asked for.
+        assert "weighing" not in response.text
+
+    def test_text_only_response_is_unchanged(self, api_transport):
+        """Sonnet 5 returns text alone today; that path must not move."""
+        transport = api_transport(sdk_response("answer"))
+
+        assert transport.complete("claude-sonnet-5", "prompt", 16000).text == "answer"
+
+    def test_no_text_block_is_a_transport_error_naming_what_came_back(
+        self, api_transport
+    ):
+        """`max_tokens` spent inside a thinking block returns exactly this.
+
+        A normal `TransportError`, so the orchestrator records a failed call
+        the way it does for every other transport failure — not an `IndexError`
+        or an `AttributeError` surfacing three frames away.
+        """
+        transport = api_transport(
+            sdk_response(content=[thinking_block()], stop_reason="max_tokens")
+        )
+
+        with pytest.raises(TransportError, match="no text block") as caught:
+            transport.complete("claude-opus-5", "prompt", 16000)
+
+        assert "thinking" in str(caught.value)
+        assert "max_tokens" in str(caught.value)
 
     def test_missing_key_raises_the_message_the_service_already_prints(
         self, monkeypatch

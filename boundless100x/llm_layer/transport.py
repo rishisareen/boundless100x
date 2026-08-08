@@ -258,11 +258,44 @@ class AnthropicAPITransport:
             raise TransportError(str(e)) from e
 
         return TransportResponse(
-            text=response.content[0].text,
+            text=self._first_text_block(response),
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             cost_usd=None,
             tokens_basis=TOKENS_BASIS_REPORTED,
+        )
+
+    @staticmethod
+    def _first_text_block(response) -> str:
+        """The completion's text, which is **not** reliably `content[0]`.
+
+        On the Claude 5 family a completion can open with a `thinking` block —
+        Opus 5 does so by default at this module's settings — and that block
+        carries `.thinking`, not `.text`. Indexing position 0 therefore raised
+        `AttributeError`, which is not `anthropic.APIError` and so escaped the
+        only catch in `complete()`: it surfaced upstream as a bare
+        `'ThinkingBlock' object has no attribute 'text'` on *both* passes,
+        losing a paid Opus run to what reads like a parsing bug. Selecting by
+        `type` rather than position is the fix, and it is also the SDK's actual
+        contract — a response is a *list* of blocks and only the text ones were
+        ever the answer. The reasoning ahead of it is deliberately dropped:
+        `_parse_json_response` is looking for the JSON the prompt asked for, and
+        a thinking block is not part of that contract.
+
+        A response with no text block at all is a real outcome, not a
+        should-never-happen — `max_tokens` exhausted inside an Opus thinking
+        block yields exactly that — so it fails as a normal `TransportError`
+        carrying what the envelope said, rather than an `IndexError` three
+        frames away.
+        """
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+
+        blocks = [getattr(b, "type", "?") for b in response.content]
+        raise TransportError(
+            f"the API response carried no text block (blocks={blocks}, "
+            f"stop_reason={getattr(response, 'stop_reason', None)!r})"
         )
 
 
