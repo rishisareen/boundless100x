@@ -180,7 +180,7 @@ NOT_CONSULTED_REASON = (
 )
 
 
-def _is_number(value) -> bool:
+def is_number(value) -> bool:
     """A real number the band walk may compare against a threshold.
 
     `numbers.Real` rather than `(int, float)` because numpy scalars reach here
@@ -235,7 +235,7 @@ class Quantity:
 
     @property
     def is_numeric(self) -> bool:
-        return _is_number(self.value)
+        return is_number(self.value)
 
     @property
     def text(self) -> str:
@@ -429,7 +429,7 @@ def resolve_band(bands: Iterable, low_label: str | None, value) -> str | None:
     list authored ascending has its first entry swallow every value, and every
     band beneath it becomes unreachable on every company.
     """
-    if not _is_number(value):
+    if not is_number(value):
         return None
     for band in bands or ():
         try:
@@ -690,7 +690,7 @@ def read_element_coverage(element: str, share, *,
     `report_vocabulary.ELEMENT_CONFIG` and this stays a pure statement about a
     share.
     """
-    if not _is_number(share):
+    if not is_number(share):
         return CoverageReading(
             element=element, share=None, threshold=threshold,
             status=COVERAGE_UNKNOWN,

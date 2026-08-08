@@ -989,37 +989,10 @@ def _composite_reading(composite):
     line is the defect this whole report exists to remove.
     """
     from boundless100x.output.report_components import (
-        ReadingLine,
-        Unknown,
-        score_band,
-    )
-    from boundless100x.output.report_vocabulary import (
-        COMPOSITE_READING,
-        COMPOSITE_UNKNOWN_REASON,
-        SCORE_SCALE,
+        composite_reading,
     )
 
-    shown = (
-        round(float(composite), 1)
-        if isinstance(composite, (int, float)) and not isinstance(composite, bool)
-        else None
-    )
-    band = score_band(shown)
-    if band is None:
-        return ReadingLine(
-            subject=_COMPOSITE_TITLE,
-            unknown=Unknown(
-                subject=f"No score for {_COMPOSITE_TITLE.lower()}",
-                reason=COMPOSITE_UNKNOWN_REASON,
-            ),
-            key="composite",
-        )
-    return ReadingLine(
-        subject=_COMPOSITE_TITLE,
-        text=COMPOSITE_READING.format(band=band),
-        headline=f"{shown:.1f} / {SCORE_SCALE}",
-        key="composite",
-    )
+    return composite_reading(composite, subject=_COMPOSITE_TITLE)
 
 
 def _print_coverage(result, vocabulary):
@@ -1138,7 +1111,7 @@ def _print_metrics(result, svc):
 
     surface = ConsoleComponents()
     vocabulary, readings, configs = _declaration_view(result, svc)
-    shares = _weight_shares(configs, svc)
+    shares = _weight_shares(configs)
     details = (result.scores or {}).get("details") or {}
 
     groups: dict[str, list[str]] = {}
@@ -1183,36 +1156,28 @@ def _print_metrics(result, svc):
             console.print(f"  {surface.render_unknown(unknown)}")
 
 
-def _weight_shares(configs, svc) -> dict:
+def _weight_shares(configs) -> dict:
     """Each metric's share of its own element's declared weight.
 
-    Read off `ExpansionDecider`, which is where that arithmetic is declared and
+    Read off `report_expansion`, which is where that arithmetic is declared and
     where a test already pins it against the scorer's. Restating it here would
     be a third copy of `_declared_weights`, and the note's own comment says the
     risk in restating is drift — a contribution cell reading `25% of this
     element` in the report and something else on the console is the drift
     nobody would see.
 
-    No registry, no shares. `ContradictionPairs` validates its declared pairs
-    against the configs it is given, so building one from an empty mapping
-    raises on the first pair — turning "this caller has no engine" into a
-    startup error in a display helper, which is the wrong place to discover it.
+    It calls the module function rather than `ExpansionDecider`, which is the
+    same arithmetic without the collaborators. Going through the decider meant
+    validating the whole contradiction table and globbing and parsing every
+    `reports/*/scores.json` on disk — neither of which `weight_share` reads —
+    on every `compute`, for a directory that only ever grows.
     """
     if not configs:
         return {}
 
-    from boundless100x.compute_engine.eligibility import effective_gates
-    from boundless100x.output.contradiction import ContradictionPairs
-    from boundless100x.output.report_expansion import (
-        ExpansionDecider,
-        load_scored_corpus,
-    )
+    from boundless100x.output.report_expansion import declared_weight_shares
 
-    gates = effective_gates(getattr(getattr(svc, "engine", None), "gates", None))
-    decider = ExpansionDecider(
-        configs, ContradictionPairs(configs, gates), load_scored_corpus()
-    )
-    return {metric_id: decider.weight_share(metric_id) for metric_id in configs}
+    return declared_weight_shares(configs)
 
 
 def _action_label(action) -> str:

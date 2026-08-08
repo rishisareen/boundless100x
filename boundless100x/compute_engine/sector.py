@@ -239,6 +239,14 @@ class SectorApplicability:
                 f"{'; '.join(errors)}"
             )
 
+        # A company's sector does not change while its report renders, but
+        # `evaluate` is asked once per metric — 114 matches for one company
+        # against a table this instance cannot mutate. Memoised per instance
+        # rather than with `lru_cache`, which would keep `self` alive in a
+        # module-level cache; keyed on the sector string, so two companies can
+        # never share an answer that was not already identical by definition.
+        self._matches_cache: dict[str, list[str]] = {}
+
     def matching_sectors(self, sector: str | None) -> list[str]:
         """Every declared sector key this company's sector falls under.
 
@@ -251,19 +259,30 @@ class SectorApplicability:
         """
         if not sector or not str(sector).strip():
             return []
-        return sorted(
-            (key for key in self.table if _matches(str(sector), key)),
-            key=lambda key: (len(_normalise(key)), key),
-        )
 
-    def not_applicable_metrics(self, sector: str | None) -> dict[str, str]:
+        key = str(sector)
+        if key not in self._matches_cache:
+            self._matches_cache[key] = sorted(
+                (declared for declared in self.table if _matches(key, declared)),
+                key=lambda declared: (len(_normalise(declared)), declared),
+            )
+        # A copy: the list is handed to callers and reaches `matched_sectors`
+        # on every outcome, and a shared mutable would let one reader's edit
+        # rewrite what the next one is told.
+        return list(self._matches_cache[key])
+
+    def not_applicable_metrics(self, sector: str | None,
+                               matched: list[str] | None = None) -> dict[str, str]:
         """The metrics declared inapplicable to this sector, with their reasons.
 
         Empty for a sector nobody has reviewed — which is not the same claim as
         "everything applies here". Ask `evaluate` when the difference matters.
+
+        `matched` lets a caller that has already resolved the sector pass it in
+        rather than have it resolved twice in one call.
         """
         merged: dict[str, str] = {}
-        for key in self.matching_sectors(sector):
+        for key in (self.matching_sectors(sector) if matched is None else matched):
             merged.update((self.table[key] or {}).get("not_applicable") or {})
         return merged
 
@@ -312,7 +331,7 @@ class SectorApplicability:
             )
             return outcome
 
-        excluded = self.not_applicable_metrics(sector)
+        excluded = self.not_applicable_metrics(sector, matched)
         if metric_id in excluded:
             outcome["applies"] = False
             outcome["verdict"] = DOES_NOT_APPLY

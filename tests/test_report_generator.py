@@ -1273,3 +1273,64 @@ class TestTheNoteNeverCostsTheRunItsOtherReports:
         assert (report_dir / "TEST_report.md").exists()
         assert not (report_dir / "TEST_note.md").exists()
         assert any("Research note" in e for e in result.errors)
+
+
+class TestTheCompositeLineAgreesWithItself:
+    """The note's opening figure and its reading must come from one number.
+
+    `section_reading` rounds a score before banding it, because banding the
+    raw figure while the headline rounds it produced `7.0 / 10 — Reads
+    middling` against a band boundary at exactly seven. `_clarity_lead` builds
+    the composite line by hand — the composite is not an element, so no
+    element-shaped builder covered it — and did not carry that rule across.
+
+    The console fixed it independently in `cli._composite_reading` and quoted
+    the same reasoning, which left the two surfaces disagreeing about the same
+    company: at a composite of 6.97 the note read "Reads middling" and the
+    console read "Reads strong", both above a headline of 7.0. R14 says the
+    surfaces render the same content, so one builder now produces both.
+    """
+
+    @staticmethod
+    def lead_line(composite: float):
+        from tests.conftest import make_result
+
+        result = make_result()
+        result.scores = {**(result.scores or {}), "composite": composite}
+        lead = ReportGenerator()._clarity_lead(result, [])
+        return lead.reading
+
+    @pytest.mark.parametrize("composite", [6.97, 6.96, 3.98, 3.96])
+    def test_the_headline_and_the_band_read_the_same_figure(self, composite):
+        """A figure that rounds up across a boundary must band where it lands."""
+        from boundless100x.output.report_components import score_band
+
+        reading = self.lead_line(composite)
+
+        assert reading.headline.startswith(f"{round(composite, 1):.1f}")
+        assert score_band(round(composite, 1)) in reading.text, (
+            f"composite {composite} renders headline {reading.headline!r} "
+            f"beside {reading.text!r} — the number and its reading disagree"
+        )
+
+    def test_the_note_and_the_console_read_a_composite_identically(self):
+        """R14 on the one line every report opens with."""
+        from boundless100x.cli import _composite_reading
+
+        for composite in (6.97, 8.4, 5.32, 2.1):
+            note = self.lead_line(composite)
+            console = _composite_reading(composite)
+
+            assert note.text == console.text, composite
+            assert note.headline == console.headline, composite
+
+    def test_an_unscored_composite_is_unknown_with_the_same_reason(self):
+        from boundless100x.cli import _composite_reading
+        from boundless100x.output.report_vocabulary import COMPOSITE_UNKNOWN_REASON
+
+        note = self.lead_line(None)
+        console = _composite_reading(None)
+
+        assert note.unknown is not None
+        assert note.unknown.reason == COMPOSITE_UNKNOWN_REASON
+        assert note.unknown.reason == console.unknown.reason

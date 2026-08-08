@@ -111,9 +111,13 @@ from boundless100x.output.report_reading import (
     READING_STATUSES,
     CoverageReading,
     Reading,
+    is_number,
 )
 from boundless100x.output.report_vocabulary import (
     CATEGORICAL_VALUE_LABELS,
+    COMPOSITE_READING,
+    COMPOSITE_TITLE,
+    COMPOSITE_UNKNOWN_REASON,
     ELEMENT_CONFIG,
     FLAG_ELEMENT_MAP,
     FLAG_LABELS,
@@ -941,7 +945,7 @@ def _score_text(score) -> str:
     silently rendering it would put a confident wrong number in front of a
     reader.
     """
-    if isinstance(score, bool) or not isinstance(score, (int, float)):
+    if not is_number(score):
         return ""
     if not 0.0 <= float(score) <= 1.0:
         raise ComponentContentError(
@@ -953,14 +957,14 @@ def _score_text(score) -> str:
 
 
 def _weight_text(share: float | None) -> str:
-    if share is None or not isinstance(share, (int, float)) or isinstance(share, bool):
+    if not is_number(share):
         return ""
     return f"{float(share):.0%} of this element"
 
 
 def score_band(score) -> str | None:
     """`strong` / `middling` / `weak`, or `None` when there is no score."""
-    if isinstance(score, bool) or not isinstance(score, (int, float)):
+    if not is_number(score):
         return None
     for threshold, label in SCORE_BANDS:
         if float(score) >= threshold:
@@ -999,7 +1003,7 @@ def section_reading(
     # `7.0 / 10 — Reads middling` against a band boundary at exactly 7. A
     # number disagreeing with its own interpretation on the same line is the
     # defect this report exists to remove, so the rounding happens once.
-    shown = round(float(score), 1) if isinstance(score, (int, float)) and not isinstance(score, bool) else score
+    shown = round(float(score), 1) if is_number(score) else score
     band = score_band(shown)
     if band is None:
         return ReadingLine(
@@ -1021,6 +1025,46 @@ def section_reading(
         headline=f"{shown:.1f} / {SCORE_SCALE}",
         qualifier=qualifier,
         key=element,
+    )
+
+
+def composite_reading(composite, *, subject: str = COMPOSITE_TITLE,
+                      qualifier: str = "") -> ReadingLine:
+    """The whole-company reading — `section_reading`'s sibling for the composite.
+
+    The composite is not an element, so no element-shaped builder covered it,
+    and both surfaces that needed one built their own. They then diverged on
+    the rule `section_reading` exists to state: the note banded the raw figure
+    while rounding the headline, the console rounded first. At a composite of
+    6.97 the note read `7.0 / 10 — Reads middling` and the console read
+    `7.0 / 10 — Reads strong`, for the same company on the same run. That is
+    both the rounding defect and an R14 breach, and one builder is the only
+    fix that keeps them from drifting apart again.
+
+    `subject` differs by surface on purpose — the note opens on a heading, the
+    console labels a table row — but the figure, the band and the sentence do
+    not.
+    """
+    shown = round(float(composite), 1) if is_number(composite) else None
+    band = score_band(shown)
+
+    if band is None:
+        return ReadingLine(
+            subject=subject,
+            unknown=Unknown(
+                subject=f"No score for {COMPOSITE_TITLE.lower()}",
+                reason=COMPOSITE_UNKNOWN_REASON,
+            ),
+            qualifier=qualifier,
+            key="composite",
+        )
+
+    return ReadingLine(
+        subject=subject,
+        text=COMPOSITE_READING.format(band=band),
+        headline=f"{shown:.1f} / {SCORE_SCALE}",
+        qualifier=qualifier,
+        key="composite",
     )
 
 

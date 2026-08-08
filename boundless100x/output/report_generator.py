@@ -44,6 +44,9 @@ from boundless100x.output.report_charts import render_charts
 # lets `report_reading` stay pure and testable without a generator.
 from boundless100x.output.contradiction import ContradictionPairs
 from boundless100x.output.report_components import (
+    BAD,
+    GOOD,
+    NEUTRAL,
     Caveat,
     Finding,
     ReadingLine,
@@ -52,10 +55,10 @@ from boundless100x.output.report_components import (
     Vocabulary,
     build_section,
     caveat_from_run_error,
+    composite_reading,
     disclosure_for,
     finding_from_flag,
     metric_row,
-    score_band,
 )
 from boundless100x.output.report_expansion import ExpansionDecider, load_scored_corpus
 from boundless100x.output.report_reading import read_metrics
@@ -85,7 +88,6 @@ from boundless100x.output.report_vocabulary import (
     METRIC_DISPLAY_NAMES,
     MOMENTUM_UNAVAILABLE_LABEL,
     RESEARCH_NOTE_TITLE,
-    SCORE_SCALE,
     UNSCORED_SECTION_READING,
     UNSCORED_SECTION_TITLE,
 )
@@ -600,29 +602,12 @@ class ReportGenerator:
                 f"weight — the rest could not be computed."
             )
 
-        band = score_band(composite)
-        if band is None:
-            reading = ReadingLine(
-                subject=LEAD_TITLE,
-                unknown=Unknown(
-                    subject="No composite score",
-                    reason=(
-                        "nothing in this company could be scored, so there is "
-                        "no overall reading — which is not the same as a score "
-                        "of zero"
-                    ),
-                ),
-                qualifier=qualifier,
-                key="composite",
-            )
-        else:
-            reading = ReadingLine(
-                subject=LEAD_TITLE,
-                text=f"Reads {band} across the six scored elements.",
-                headline=f"{composite:.1f} / {SCORE_SCALE}",
-                qualifier=qualifier,
-                key="composite",
-            )
+        # One builder, shared with the console. Built by hand here first, it
+        # banded the raw composite while rounding the headline — so a 6.97 read
+        # `7.0 / 10 — Reads middling` in the note and `7.0 / 10 — Reads strong`
+        # on the console, for the same company on the same run.
+        reading = composite_reading(composite, subject=LEAD_TITLE,
+                                    qualifier=qualifier)
 
         findings = [f for f in (
             self._clarity_verdict_finding(result),
@@ -654,7 +639,7 @@ class ReportGenerator:
         return Finding(
             headline=badge["label"],
             text=badge.get("description", ""),
-            sentiment=badge.get("sentiment", "neutral"),
+            sentiment=badge.get("sentiment", NEUTRAL),
             source="eligibility",
         )
 
@@ -672,8 +657,8 @@ class ReportGenerator:
             return None
 
         label = ACTION_LABELS.get(action, ACTION_UNKNOWN_LABEL)
-        sentiment = "good" if action in ("buy", "strong_buy") else (
-            "bad" if action == "avoid" else "neutral"
+        sentiment = {"buy": GOOD, "strong_buy": GOOD, "avoid": BAD}.get(
+            action, NEUTRAL
         )
         text = ""
         if decision.get("capped"):
@@ -685,7 +670,7 @@ class ReportGenerator:
                 f"The model suggested {suggested}; the guard lowered it "
                 f"because {reasons}."
             )
-            sentiment = "neutral"
+            sentiment = NEUTRAL
         return Finding(
             headline=f"Action: {label}", text=text, sentiment=sentiment,
             source="action",
@@ -733,7 +718,7 @@ class ReportGenerator:
                     "explain itself, so the rest of this note is six readings "
                     "long."
                 ),
-                sentiment="good",
+                sentiment=GOOD,
                 source="shape",
             )
         return Finding(
@@ -742,7 +727,7 @@ class ReportGenerator:
                 f"to explain"
             ),
             text="They are " + ", ".join(expanded) + ".",
-            sentiment="neutral",
+            sentiment=NEUTRAL,
             source="shape",
         )
 
@@ -1794,7 +1779,7 @@ class ReportGenerator:
                     if label is None:
                         # Auto-humanize: replace underscores with spaces, title case
                         label = f.replace("_", " ").title()
-                        sentiment = "neutral"
+                        sentiment = NEUTRAL
                     element = FLAG_ELEMENT_MAP.get(f, "composite")
                     flags.append({"label": label, "sentiment": sentiment, "raw": f, "element": element})
 

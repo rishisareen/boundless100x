@@ -85,6 +85,7 @@ from pathlib import Path
 from boundless100x.output.report_reading import (
     CoverageReading,
     Reading,
+    is_number,
     read_element_coverages,
 )
 
@@ -192,7 +193,7 @@ def _is_zero(score) -> bool:
     nearly zero. Bools are excluded for the reason `report_reading._is_number`
     gives: `False == 0` is True, and a bool is not a score.
     """
-    if isinstance(score, bool) or not isinstance(score, (int, float)):
+    if not is_number(score):
         return False
     return score == 0
 
@@ -471,6 +472,52 @@ class SectionDecision:
         return tuple(trigger for trigger in TRIGGERS if trigger in fired)
 
 
+# ── Registry arithmetic, needing no collaborators ─────────────────────────
+#
+# Module functions rather than methods because they are pure functions of the
+# registry: they read no corpus, no declared pairs, and no company. A caller
+# that wants a weight share was otherwise forced to build a whole
+# `ExpansionDecider` — which validates the contradiction table and globs and
+# parses every `reports/*/scores.json` on disk — to perform one division. The
+# console did exactly that on every `compute`, and that directory grows by one
+# entry per ticker per analysis date and is never pruned.
+
+
+def declared_element_weights(metric_configs) -> dict[str, float]:
+    """Total weight each element would carry if every metric computed.
+
+    `SQGLPScorer._declared_weights`'s rule, restated for the reason
+    `contradiction.py` restates `_scored`: it is four lines, and importing a
+    private method to reach it would tie the output layer to the scorer's
+    internals for one sum. The risk in restating is that the two drift, so a
+    test asserts they agree on the shipped registry — the drift is the failure,
+    not the duplication.
+    """
+    declared: dict[str, float] = {}
+    for config in (metric_configs or {}).values():
+        weight = (config.get("scoring") or {}).get("weight", 0) or 0
+        if weight > 0:
+            element = config.get("element", "")
+            declared[element] = declared.get(element, 0) + weight
+    return declared
+
+
+def declared_weight_shares(metric_configs) -> dict[str, float | None]:
+    """Every metric's share of its own element's declared weight.
+
+    `None` for a metric carrying no weight — it has no share of anything, and
+    a zero would read as one that contributes nothing rather than one that
+    was never in the denominator.
+    """
+    totals = declared_element_weights(metric_configs)
+    shares: dict[str, float | None] = {}
+    for metric_id, config in (metric_configs or {}).items():
+        weight = (config.get("scoring") or {}).get("weight", 0) or 0
+        total = totals.get(config.get("element", ""), 0)
+        shares[metric_id] = weight / total if weight > 0 and total > 0 else None
+    return shares
+
+
 # ── The decider ───────────────────────────────────────────────────────────
 
 
@@ -506,22 +553,8 @@ class ExpansionDecider:
     # ── Registry arithmetic ───────────────────────────────────────────────
 
     def _declared_element_weights(self) -> dict[str, float]:
-        """Total weight each element would carry if every metric computed.
-
-        `SQGLPScorer._declared_weights`'s rule, restated for the reason
-        `contradiction.py` restates `_scored`: it is four lines, and importing a
-        private method to reach it would tie the output layer to the scorer's
-        internals for one sum. The risk in restating is that the two drift, so
-        a test asserts they agree on the shipped registry — the drift is the
-        failure, not the duplication.
-        """
-        declared: dict[str, float] = {}
-        for config in self.metric_configs.values():
-            weight = (config.get("scoring") or {}).get("weight", 0) or 0
-            if weight > 0:
-                element = config.get("element", "")
-                declared[element] = declared.get(element, 0) + weight
-        return declared
+        """Total weight each element would carry if every metric computed."""
+        return declared_element_weights(self.metric_configs)
 
     def _weight(self, metric_id: str) -> float:
         config = self.metric_configs.get(metric_id) or {}

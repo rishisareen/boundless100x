@@ -64,6 +64,7 @@ import logging
 from rich.console import Console
 
 from boundless100x.output.report_components import (
+    WARNING,
     Caveat,
     Finding,
     MetricRow,
@@ -230,7 +231,7 @@ class ConsoleComponents:
         return f"[dim]? {component.subject} — {component.reason}[/dim]"
 
     def render_caveat(self, component: Caveat) -> str:
-        colour = "yellow" if component.severity == "warning" else "dim"
+        colour = "yellow" if component.severity == WARNING else "dim"
         return f"[{colour}]! {caveat_line(component)}[/{colour}]"
 
     def render_disclosure(self, component) -> str:
