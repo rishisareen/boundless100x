@@ -121,6 +121,12 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     # the direction the lane's flow gate rewards — but the label says what was
     # counted rather than what it implies, since the metric moves no score.
     "institutional_accumulation_rising": ("FII + DII Accumulating", "good"),
+    # Emitted by `SQGLPScorer`, not by a metric, which is how it went
+    # unregistered: every audit of this table has walked the metric registry.
+    # It is not a cosmetic gap — this is the flag `action_policy` caps a
+    # `buy` on, so the one signal that can change the displayed action was
+    # also the one with no wording of its own.
+    "low_data_coverage": ("Scored on Thin Evidence", "bad"),
 }
 
 # ── Metric-to-element mapping with display labels ──
@@ -262,6 +268,10 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "consistent_organic_fcf_generator": "longevity",
     # Composite
     "possible_bonus_split": "composite",
+    # The scorer's own flag. Mapped explicitly to the same element the `.get`
+    # default would have returned, so the registration is visible rather than
+    # accidental — the default is what let it go unnoticed in FLAG_LABELS.
+    "low_data_coverage": "composite",
     # Forward signals (Phase 2, zero weight)
     "rerating_headroom_favourable": FORWARD_SIGNALS_ELEMENT,
     "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,
@@ -432,6 +442,153 @@ BREAKEVEN_CAVEAT = (
     "inputs do not support — the Phase 4 simulator derives one from owner cost "
     "assumptions."
 )
+
+
+# ── Named grades (R15) ──
+#
+# Five metrics declare `presentation.unit: "category"`, and their value *is* a
+# raw enum: `founder_led_high_holding`, `true_wealth_creator`, `discounting`.
+# R15 forbids those reaching a reader, and the fallback everywhere else in this
+# codebase — `value.replace("_", " ").title()` — is the defect the report
+# clarity work exists to remove, not the fix for it. "Founder Led High Holding"
+# is the identifier wearing a hat: it still says nothing about what the grade
+# means, and it succeeds silently on a grade nobody has thought about.
+#
+# So: `{metric_id: {value: (label, gloss)}}`. Keyed by metric first because the
+# grades are only unique inside their own metric — `unknown` means "this sector
+# was not in the study's lists" for `sector_tailwind` and would mean something
+# else entirely anywhere else — and because that shape lets a test derive the
+# expected key set from each metric's `scoring.categories` table rather than
+# from a list somebody has to remember to update.
+#
+# The `gloss` is the row's actual reading. These metrics declare no numeric
+# bands, so without it the row would render the declared `bands_absent_reason`,
+# which explains to a *developer* why a band walk was skipped. The glosses below
+# are read off the implementations that emit the grades — the promoter-holding
+# cutoffs in `compute_owner_operator`, the driver logic in
+# `_grade_growth_quality`, the inflation comparison in `compute_price_lever`,
+# `classify_sector`'s study buckets, and `compute_qg_quadrant`'s two lines — so
+# no grade here is invented and none is a paraphrase of a paraphrase.
+CATEGORICAL_VALUE_LABELS: dict[str, dict[str, tuple[str, str]]] = {
+    "owner_operator_signal": {
+        "founder_led_high_holding": (
+            "Founder-led, majority stake",
+            "The promoters hold at least half the company, so the people "
+            "running it carry the same downside as the people who own it.",
+        ),
+        "founder_led_moderate": (
+            "Founder-led, substantial stake",
+            "The promoters hold a large minority — enough to think like "
+            "owners, not enough to decide alone.",
+        ),
+        "professional_mgmt": (
+            "Professionally managed",
+            "The promoters hold a modest stake, so the business is run by "
+            "managers rather than by its owners.",
+        ),
+        "low_promoter": (
+            "Little promoter ownership",
+            "Almost nobody running the company owns much of it, so the "
+            "alignment this model looks for is not there.",
+        ),
+    },
+    "growth_quality_grade": {
+        "high_quality": (
+            "High quality",
+            "Growth came from selling more at better prices and from fixed "
+            "costs spreading over a bigger base — the two levers that survive "
+            "a downturn.",
+        ),
+        "moderate": (
+            "Moderate",
+            "Growth came from one durable lever rather than two, and not from "
+            "borrowing.",
+        ),
+        "low_quality": (
+            "Low quality",
+            "Borrowed money was part of what drove growth, or none of the "
+            "durable levers was.",
+        ),
+        "risky": (
+            "Risky",
+            "Borrowed money was the only thing driving growth, which works "
+            "until the cycle turns.",
+        ),
+    },
+    "price_lever_signal": {
+        "strong_pricing_power": (
+            "Well ahead of inflation",
+            "Sales grew a good deal faster than prices generally rose. It "
+            "cannot tell selling more from charging more.",
+        ),
+        "moderate_pricing": (
+            "Ahead of inflation",
+            "Sales outran inflation, but not by much. It cannot tell selling "
+            "more from charging more.",
+        ),
+        "discounting": (
+            "Behind inflation",
+            "Sales failed to keep pace with prices generally rising, so the "
+            "business shrank in real terms.",
+        ),
+    },
+    "sector_tailwind": {
+        "strong_tailwind": (
+            "Strong tailwind",
+            "Sits in one of the sectors the Dec 2025 study found compounders "
+            "cluster in. Context about the pond, not a verdict on the fish.",
+        ),
+        "moderate_tailwind": (
+            "Moderate tailwind",
+            "Sits in a sector where the study found some compounders, though "
+            "not a cluster of them.",
+        ),
+        "unknown": (
+            "Sector not classified",
+            "Either no sector is recorded for this company or its sector is "
+            "not one the study placed, so this says nothing either way.",
+        ),
+        "non_consideration": (
+            "Against the current",
+            "Sits in a sector the study found compounders largely absent "
+            "from.",
+        ),
+    },
+    "quality_growth_quadrant": {
+        "true_wealth_creator": (
+            "True wealth creator",
+            "High returns on capital and high profit growth together — the "
+            "only corner of the grid the Dec 2025 study found wealth creators "
+            "in.",
+        ),
+        "quality_trap": (
+            "Quality trap",
+            "Earns well on its capital, but profit growth sits below the bar, "
+            "so there is little to compound.",
+        ),
+        "growth_trap": (
+            "Growth trap",
+            "Grows profits fast on capital that earns poorly, so growth "
+            "consumes more than it returns.",
+        ),
+        "wealth_destroyer": (
+            "Wealth destroyer",
+            "Neither returns on capital nor profit growth clears the bar.",
+        ),
+    },
+}
+
+
+# ── The ten-point scale, in words ──
+#
+# The cutoffs are the ones `sqglp_report.html.j2` already colours by (7 and 4),
+# lifted rather than chosen so the new report's wording and the existing
+# report's colours cannot disagree about the same score. Walked in order, first
+# threshold reached wins — the same rule as every `presentation.bands` list, so
+# there is one band-walking convention in this codebase rather than two.
+SCORE_SCALE = 10
+SCORE_BANDS: tuple[tuple[float, str], ...] = ((7.0, "strong"), (4.0, "middling"))
+SCORE_LOW_LABEL = "weak"
 
 
 # ── SQGLP element display config ──

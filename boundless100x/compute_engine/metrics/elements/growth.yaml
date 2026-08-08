@@ -267,9 +267,12 @@ metrics:
         tell selling more from charging more — no filing this system reads
         reports unit volumes.
       bands: []
+      # Written for a reader, not a maintainer: R15 forbids a raw parameter
+      # or function name reaching the page, and this string renders verbatim.
+      # The boundaries are the macro inflation rate and the strong-real-growth
+      # line, both configured.
       bands_absent_reason: >-
         The value is already a named grade, so a numeric band walk has
-        nothing to add. The boundaries behind the grades are the
-        `inflation_pct` and `strong_real_growth_pct` params inside
-        `compute_price_lever`, applied to real growth rather than to the
-        value shown.
+        nothing to add. The boundaries behind the grades are the assumed
+        rate of inflation and the line for strong real growth, applied to
+        revenue growth net of inflation rather than to the grade shown here.

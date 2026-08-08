@@ -29,8 +29,11 @@ metrics:
         High on both is the only corner the Dec 2025 study found wealth
         creators in.
       bands: []
+      # Written for a reader, not a maintainer: R15 forbids a raw parameter
+      # or function name reaching the page, and this string renders verbatim.
+      # The thresholds it describes are the two params declared just above.
       bands_absent_reason: >-
         The value is already a named grade, so a numeric band walk has
-        nothing to add. The two lines that place a company in a corner are
-        the `quality_threshold` and `growth_threshold` params above, applied
-        to RoCE and PAT CAGR rather than to the value shown.
+        nothing to add. A company's corner is set by two configured lines —
+        one on return on capital employed, one on profit growth — applied to
+        those two figures rather than to the grade shown here.
