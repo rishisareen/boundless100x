@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SQGLP Analysis: TEST — Test Co</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+  /* Light theme (default) */
+  :root {
+    --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #f59e0b; --gray: #6b7280;
+    --bg-body: #f8fafc; --bg-card: #ffffff; --bg-card-alt: #f8fafc; --bg-input: #f1f5f9;
+    --text-primary: #1e293b; --text-secondary: #475569; --text-muted: #9ca3af;
+    --border: #e2e8f0; --border-light: #f1f5f9;
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.1); --shadow-exec: 0 2px 8px rgba(0,0,0,0.12);
+    --flag-bg: #fef3c7; --flag-text: #92400e; --flag-good-bg: #dcfce7; --flag-good-text: #166534;
+    --flag-bad-bg: #fecaca; --flag-bad-text: #991b1b;
+    --rank-best: #dcfce7; --rank-worst: #fecaca;
+    --thesis-bg: #eff6ff; --risk-bg: #fef2f2;
+    --exec-thesis-bg: #f8fafc;
+    --toc-bg: #ffffff;
+    --contrib-good-bg: #f0fdf4; --contrib-low-bg: #fef2f2; --contrib-mid-bg: transparent;
+  }
+  /* Dark theme */
+  [data-theme="dark"] {
+    --bg-body: #0f172a; --bg-card: #1e293b; --bg-card-alt: #162032; --bg-input: #334155;
+    --text-primary: #f1f5f9; --text-secondary: #cbd5e1; --text-muted: #64748b;
+    --border: #334155; --border-light: #283548;
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.4); --shadow-exec: 0 2px 8px rgba(0,0,0,0.5);
+    --flag-bg: #422006; --flag-text: #fbbf24; --flag-good-bg: #14532d; --flag-good-text: #86efac;
+    --flag-bad-bg: #450a0a; --flag-bad-text: #fca5a5;
+    --rank-best: #14532d; --rank-worst: #450a0a;
+    --thesis-bg: #172554; --risk-bg: #2d0a0a;
+    --exec-thesis-bg: #1e293b;
+    --toc-bg: #1e293b;
+    --blue: #60a5fa; --green: #4ade80; --red: #f87171; --amber: #fbbf24; --gray: #94a3b8;
+    --contrib-good-bg: #0a2618; --contrib-low-bg: #2d0a0a; --contrib-mid-bg: transparent;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-body); color: var(--text-primary); line-height: 1.65; transition: background 0.3s, color 0.3s; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 30px 40px; padding-top: 70px; }
+  h1 { font-size: 2em; margin-bottom: 5px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.7em; margin: 48px 0 20px; padding-bottom: 10px; border-bottom: 3px solid var(--blue); letter-spacing: -0.01em; font-weight: 700; }
+  h3 { font-size: 1.15em; margin: 20px 0 10px; color: var(--text-primary); font-weight: 600; }
+  .composite-score { font-size: 3em; font-weight: 700; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 24px; }
+  .card { background: var(--bg-card); border-radius: 12px; padding: 24px 28px; box-shadow: var(--shadow-card); border: 1px solid var(--border-light); }
+  .element-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-light); }
+  .element-name { font-weight: 500; }
+  .element-score-inline { font-weight: 700; font-size: 1.1em; }
+  .score-bar { height: 6px; background: var(--border); border-radius: 3px; flex: 1; margin: 0 15px; }
+  .score-fill { height: 100%; border-radius: 3px; }
+  .score-high { background: var(--green); }
+  .score-mid { background: var(--amber); }
+  .score-low { background: var(--red); }
+  .flag { display: inline-block; background: var(--flag-bg); color: var(--flag-text); padding: 4px 12px; border-radius: 6px; font-size: 0.8em; margin: 4px; }
+  .flag-good { background: var(--flag-good-bg); color: var(--flag-good-text); }
+  .flag-bad { background: var(--flag-bad-bg); color: var(--flag-bad-text); }
+  .flag-icon { margin-right: 3px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--bg-card-alt); font-weight: 600; }
+  tbody tr:nth-child(even) { background: var(--bg-card-alt); }
+  .rank-1 { background: var(--rank-best); font-weight: 600; }
+  .rank-last { background: var(--rank-worst); }
+  .thesis-box { background: var(--thesis-bg); border-left: 4px solid var(--blue); padding: 18px 24px; border-radius: 0 10px 10px 0; margin: 18px 0; }
+  .risk-box { background: var(--risk-bg); border-left: 4px solid var(--red); padding: 18px 24px; border-radius: 0 10px 10px 0; margin: 18px 0; }
+  .conviction { display: inline-block; padding: 4px 12px; border-radius: 20px; font-weight: 600; font-size: 0.9em; }
+  .conviction-high { background: var(--flag-good-bg); color: var(--flag-good-text); }
+  .conviction-medium { background: var(--flag-bg); color: var(--flag-text); }
+  .conviction-low { background: var(--flag-bad-bg); color: var(--flag-bad-text); }
+  .footer { margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--gray); font-size: 0.85em; text-align: center; }
+  .metric-table td:nth-child(2) { font-weight: 600; }
+  .chart-container { margin: 15px 0; }
+  /* Executive Summary */
+  .exec-summary { background: var(--bg-card); border-radius: 14px; padding: 30px; box-shadow: var(--shadow-exec); margin-bottom: 30px; border: 1px solid var(--border-light); border-top: 4px solid var(--blue); }
+  .action-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: 700; font-size: 1em; text-transform: uppercase; letter-spacing: 0.5px; }
+  .action-strong_buy { background: #166534; color: white; }
+  .action-buy { background: #16a34a; color: white; }
+  .action-hold { background: #f59e0b; color: #1e293b; }
+  .action-watchlist { background: #3b82f6; color: white; }
+  .action-avoid { background: #dc2626; color: white; }
+  .exec-thesis { font-size: 1.05em; line-height: 1.5; margin: 15px 0; padding: 12px 15px; background: var(--exec-thesis-bg); border-radius: 8px; }
+  .kill-risks li { color: var(--red); margin: 4px 0; }
+  .highlight-chips { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0; }
+  .highlight-chip { background: var(--bg-input); padding: 10px 16px; border-radius: 8px; font-size: 0.9em; }
+  .highlight-chip .val { font-weight: 700; color: var(--blue); }
+  /* SQGLP Score Cards Row */
+  .sqglp-scores-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 20px; }
+  .sqglp-score-card { background: var(--bg-input); border-radius: 10px; padding: 14px 12px; text-align: center; }
+  .sqglp-score-card .el-short { font-size: 0.75em; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .sqglp-score-card .el-score { font-size: 1.5em; font-weight: 700; margin: 4px 0 2px; }
+  .sqglp-score-card .el-label { font-size: 0.7em; color: var(--text-muted); }
+  .sqglp-score-card .el-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .sqglp-score-card .el-bar-fill { height: 100%; border-radius: 2px; }
+  /* Financial Snapshot */
+  .snapshot-container { overflow-x: auto; margin: 20px 0; }
+  .snapshot-table { font-size: 0.85em; white-space: nowrap; }
+  .snapshot-table th { position: sticky; left: 0; background: var(--bg-card-alt); z-index: 1; min-width: 90px; }
+  .snapshot-table td { min-width: 80px; text-align: right; }
+  .snapshot-table td:first-child { text-align: left; font-weight: 600; position: sticky; left: 0; background: var(--bg-card); z-index: 1; }
+  .val-good { color: var(--green); }
+  .val-warn { color: var(--amber); }
+  .val-bad { color: var(--red); }
+  /* Sector Context Annotations */
+  .sector-annotation { font-size: 0.75em; font-weight: 400; margin-left: 4px; white-space: nowrap; }
+  .sector-good { color: var(--green); }
+  .sector-bad { color: var(--red); }
+  .sector-neutral { color: var(--gray); }
+  /* DCF Summary Card */
+  .dcf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px; }
+  .dcf-stat { text-align: center; padding: 10px; }
+  .dcf-stat .label { font-size: 0.8em; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; }
+  .dcf-stat .value { font-size: 1.5em; font-weight: 700; }
+  /* Cash Flow Quality */
+  .cf-summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 10px; }
+  .cf-stat { text-align: center; padding: 12px; background: var(--bg-input); border-radius: 8px; }
+  .cf-stat .label { font-size: 0.75em; color: var(--gray); text-transform: uppercase; }
+  .cf-stat .value { font-size: 1.2em; font-weight: 700; margin-top: 4px; }
+  /* Theme Toggle */
+  .theme-toggle { position: fixed; top: 15px; right: 15px; z-index: 200; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 1.2em; box-shadow: var(--shadow-card); transition: background 0.3s; }
+  .theme-toggle:hover { background: var(--bg-input); }
+  /* Table of Contents Nav */
+  .toc-nav { position: sticky; top: 0; z-index: 100; background: var(--toc-bg); border-bottom: 1px solid var(--border); box-shadow: 0 2px 4px rgba(0,0,0,0.05); padding: 10px 24px; overflow-x: auto; white-space: nowrap; }
+  .toc-nav a { display: inline-block; padding: 6px 14px; margin: 2px 3px; font-size: 0.82em; color: var(--text-secondary); text-decoration: none; border-radius: 6px; transition: background 0.2s, color 0.2s; font-weight: 500; }
+  .toc-nav a:hover { background: var(--bg-input); color: var(--blue); }
+  /* Reasoning paragraphs */
+  .reasoning-text p { margin-bottom: 16px; line-height: 1.8; color: var(--text-secondary); }
+  .reasoning-text p:first-child { margin-top: 4px; }
+  .reasoning-text p:last-child { margin-bottom: 0; }
+  /* Element section header */
+  .element-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .element-score-badge { font-size: 1.8em; font-weight: 700; min-width: 80px; }
+  .element-weight { font-size: 0.85em; color: var(--text-muted); }
+  .element-bar { flex: 1; min-width: 100px; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .element-bar-fill { height: 100%; border-radius: 4px; }
+  /* Element summary */
+  .element-summary { border-left: 3px solid var(--border); padding: 8px 16px; margin: 12px 0 16px; color: var(--text-secondary); font-size: 0.95em; line-height: 1.6; }
+  /* Drilldown table */
+  .drilldown-table { font-size: 0.88em; margin: 12px 0; }
+  .drilldown-table th { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px; }
+  .drilldown-table td:nth-child(2), .drilldown-table td:nth-child(3), .drilldown-table td:nth-child(4) { text-align: right; }
+  .drilldown-table th:nth-child(2), .drilldown-table th:nth-child(3), .drilldown-table th:nth-child(4) { text-align: right; }
+  .drilldown-table .contrib-good { background: var(--contrib-good-bg); }
+  .drilldown-table .contrib-low { background: var(--contrib-low-bg); }
+  .drilldown-table .contrib-good td:nth-child(3) { color: var(--green); font-weight: 600; }
+  .drilldown-table .contrib-mid td:nth-child(3) { color: var(--amber); font-weight: 600; }
+  .drilldown-table .contrib-low td:nth-child(3) { color: var(--red); font-weight: 600; }
+  /* Element flags */
+  .element-flags { margin-top: 14px; }
+  /* Signal groups */
+  .signal-group { margin-bottom: 16px; }
+  .signal-group-label { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; color: var(--gray); }
+  /* Signal groups */
+  /* Responsive: narrow screens */
+  @media (max-width: 500px) {
+    .container { padding: 16px; padding-top: 60px; }
+    .grid { grid-template-columns: 1fr; }
+    .sqglp-scores-row { grid-template-columns: repeat(3, 1fr); }
+    h2 { font-size: 1.4em; margin: 32px 0 14px; }
+    .exec-summary { padding: 20px; }
+    .highlight-chips { gap: 8px; }
+    .highlight-chip { padding: 8px 12px; font-size: 0.85em; }
+  }
+  /* Print CSS */
+  @media print {
+    .theme-toggle, .toc-nav { display: none !important; }
+    .container { padding: 20px; padding-top: 20px; }
+    body { background: white !important; color: black !important; }
+    .card { box-shadow: none !important; border: 1px solid #e2e8f0; break-inside: avoid; }
+    .exec-summary { box-shadow: none !important; border: 1px solid #e2e8f0; }
+    h2 { break-after: avoid; margin-top: 30px; }
+    .chart-container { break-inside: avoid; }
+    .grid { grid-template-columns: 1fr 1fr; }
+    .sqglp-scores-row { grid-template-columns: repeat(6, 1fr); }
+  }
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#x1F313;</button>
+
+<!-- Table of Contents Navigation -->
+<nav class="toc-nav">
+  <a href="#summary">Summary</a>
+  <a href="#size">Size</a>
+  <a href="#quality-biz">Quality-Biz</a>
+  <a href="#quality-mgmt">Quality-Mgmt</a>
+  <a href="#growth">Growth</a>
+  <a href="#longevity">Longevity</a>
+  <a href="#price">Price</a>
+<a href="#thesis">Thesis</a>  <a href="#appendix">Appendix</a>
+</nav>
+
+<div class="container">
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 1: Executive Summary                           -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="summary"></div>
+<div class="exec-summary">
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 15px;">
+    <div>
+      <h1 style="margin-bottom: 5px;">TEST — Test Co</h1>
+      <div style="color: var(--gray); font-size: 0.9em;">
+Chemicals | Market Cap: ₹5,000 Cr | <generated>
+      </div>
+    </div>
+    <div style="text-align: right;">
+      <div class="composite-score" style="color: var(--amber);">
+        6.52<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+      </div>
+      <div style="color: var(--gray); font-size: 0.85em;">SQGLP Composite</div>
+      <div style="color: var(--red); font-size: 0.78em; margin-top: 3px;"
+           title="Share of declared metric weight that actually computed. Missing metrics are excluded and the rest reweighted, so a thin score reads like a full one unless this is shown.">
+        scored on 82% of metric weight
+      </div>
+    </div>
+  </div>
+
+  <!-- Quadrant badge + action badges row -->
+  <div style="margin-top: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+    <span class="conviction conviction-low" title="Fails at least one necessary condition">Not a 100x Candidate</span>
+    <span class="conviction conviction-high" title="High quality + High growth | RoCE: 22.0%, PAT CAGR: 25.0%">True Wealth Creator</span>
+    <span class="action-badge action-watchlist" title="Capped from BUY — the 100x verdict or the evidence behind the score does not support an unqualified buy">watchlist</span>
+    <span class="conviction conviction-medium">MEDIUM conviction</span>
+    <span style="color: var(--gray); font-size: 0.9em;">Holding period: 5-7 years</span>
+  </div>
+
+  <div style="margin: 10px 0; padding: 10px 12px; border-left: 3px solid var(--gray); background: rgba(128,128,128,0.06); font-size: 0.88em;">
+    <strong>Action capped to WATCHLIST
+      (model suggested BUY)</strong>
+    <ul style="margin: 6px 0 0 18px;">
+      <li>Small enough to multiply not met: market_cap 5000.00 lte 3000</li>
+      <li>only 82% of the scoring evidence was available</li>
+    </ul>
+  </div>
+
+  <div style="margin: 12px 0; font-size: 0.88em;">
+    <strong style="font-size: 0.9em;">100x Eligibility Gates</strong>
+    <span style="color: var(--gray);"> — necessary conditions, evaluated separately from the composite</span>
+    <ul style="margin: 6px 0 0 18px; padding: 0;">
+      <li style="margin-bottom: 3px; color: var(--red);">
+        Small enough to multiply: fail        <span style="color: var(--gray);">— Small enough to multiply not met: market_cap 5000.00 lte 3000</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--green);">
+        Reinvestment runway: pass        <span style="color: var(--gray);">— Reinvestment runway met: roce_5yr_avg 22.00 gte 18</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--gray);">
+        Market not already pricing it: unknown        <span style="color: var(--gray);">— Market not already pricing it indeterminate: reverse_dcf_growth is unavailable</span>
+      </li>
+    </ul>
+  </div>
+
+  <div class="exec-thesis">A capital-light compounder with a durable distribution edge, priced for the growth it has already delivered.</div>
+  <div style="margin: 10px 0;">
+    <strong style="color: var(--red); font-size: 0.9em;">Kill-the-Thesis Risks:</strong>
+    <ul class="kill-risks">
+      <li>RoCE falls below 15% for two consecutive years.</li>
+      <li>Promoter holding drops below 50%.</li>
+      <li>Receivable days exceed 90 for three consecutive quarters.</li>
+    </ul>
+  </div>
+
+  <!-- Red flags + Analyst cross-check row -->
+  <div style="margin-top: 15px; display: flex; gap: 15px; flex-wrap: wrap;">
+    <div style="flex: 1; min-width: 250px;">
+      <div style="font-size: 0.8em; font-weight: 600; color: var(--red); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Key Concerns</div>
+      <span class="flag flag-bad" style="margin-bottom: 4px;"><span class="flag-icon">&#10007;</span> PE Above 75th Percentile — Expensive</span>
+      <span class="flag flag-bad" style="margin-bottom: 4px;"><span class="flag-icon">&#10007;</span> DCF: Overvalued</span>
+      <span class="flag flag-bad" style="margin-bottom: 4px;"><span class="flag-icon">&#10007;</span> Market Overpricing Growth (Reverse DCF)</span>
+      <span class="flag flag-bad" style="margin-bottom: 4px;"><span class="flag-icon">&#10007;</span> Quarterly Growth Decelerating</span>
+    </div>
+    <div style="flex: 0 0 auto; min-width: 200px; background: var(--bg-input); border-radius: 8px; padding: 12px 16px;">
+      <div style="font-size: 0.8em; font-weight: 600; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Analyst Consensus</div>
+      <div style="font-size: 1.3em; font-weight: 700; color: var(--blue);">₹420</div>
+      <div style="font-size: 0.8em; color: var(--text-secondary);">
+        12 analysts · BUY
+        · <span style="color: var(--green); font-weight: 600;">+40%</span>
+      </div>
+      <div style="font-size: 0.75em; color: var(--text-muted); margin-top: 4px;">DCF intrinsic: ₹262</div>
+    </div>
+  </div>
+
+  <!-- SQGLP Element Score Cards Row -->
+  <div class="sqglp-scores-row">
+    <a href="#size" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
+      <div class="el-short">S</div>
+      <div class="el-score" style="color: var(--amber);">
+5.0      </div>
+      <div class="el-label">Size (10%)</div>
+      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 50.0%;"></div></div>
+    </a>
+    <a href="#quality-business" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
+      <div class="el-short">QB</div>
+      <div class="el-score" style="color: var(--green);">
+7.4      </div>
+      <div class="el-label">Quality — Business (20%)</div>
+      <div class="el-bar"><div class="el-bar-fill score-high" style="width: 74.0%;"></div></div>
+    </a>
+    <a href="#quality-management" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
+      <div class="el-short">QM</div>
+      <div class="el-score" style="color: var(--amber);">
+6.0      </div>
+      <div class="el-label">Quality — Management (10%)</div>
+      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 60.0%;"></div></div>
+    </a>
+    <a href="#growth" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
+      <div class="el-short">G</div>
+      <div class="el-score" style="color: var(--green);">
+7.2      </div>
+      <div class="el-label">Growth (25%)</div>
+      <div class="el-bar"><div class="el-bar-fill score-high" style="width: 72.0%;"></div></div>
+    </a>
+    <a href="#longevity" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
+      <div class="el-short">L</div>
+      <div class="el-score" style="color: var(--amber);">
+6.1      </div>
+      <div class="el-label">Longevity (20%)</div>
+      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 61.0%;"></div></div>
+    </a>
+    <a href="#price" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
+      <div class="el-short">P</div>
+      <div class="el-score" style="color: var(--amber);">
+4.3      </div>
+      <div class="el-label">Price (15%)</div>
+      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 43.0%;"></div></div>
+    </a>
+  </div>
+</div>
+
+
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 2: Size (S)                                    -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<div id="size"></div>
+<h2>Size (S)</h2>
+<div class="card">
+  <!-- Header: score + weight + bar -->
+  <div class="element-header">
+    <div class="element-score-badge" style="color: var(--amber);">
+5.0<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+    </div>
+    <div class="element-weight">Weight: 10%</div>
+    <div class="element-bar">
+      <div class="element-bar-fill score-mid" style="width: 50.0%;"></div>
+    </div>
+  </div>
+
+  <!-- Auto-generated summary -->
+  <div class="element-summary">Average at 5.0/10.</div>
+
+  <!-- Score drilldown table -->
+  <table class="drilldown-table">
+    <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
+    <tbody>
+      <tr class="contrib-mid">
+        <td>Market Cap</td>
+        <td>5,000</td>
+        <td>50%</td>
+        <td style="color: var(--text-muted);">6%</td>
+      </tr>
+      <tr class="contrib-mid">
+        <td>FII + DII Holding</td>
+        <td>13.0</td>
+        <td>50%</td>
+        <td style="color: var(--text-muted);">4%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Element flags -->
+  <div class="element-flags">
+    <span class="flag flag-neutral"><span class="flag-icon">&#8226;</span> Mid Cap</span>
+    <span class="flag flag-neutral"><span class="flag-icon">&#8226;</span> Low Institutional Ownership</span>
+  </div>
+</div>
+
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 3: Quality — Business (QB)                     -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<div id="quality-biz"></div>
+<h2>Quality — Business (QB)</h2>
+<div class="card">
+  <!-- Header: score + weight + bar -->
+  <div class="element-header">
+    <div class="element-score-badge" style="color: var(--green);">
+7.4<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+    </div>
+    <div class="element-weight">Weight: 20%</div>
+    <div class="element-bar">
+      <div class="element-bar-fill score-high" style="width: 74.0%;"></div>
+    </div>
+  </div>
+
+  <!-- Auto-generated summary -->
+  <div class="element-summary">Strong on RoCE 5yr Avg (22.0), OPM 5yr Avg (25.0) and Debt/Equity (0.02).</div>
+
+  <!-- Score drilldown table -->
+  <table class="drilldown-table">
+    <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
+    <tbody>
+      <tr class="contrib-good">
+        <td>RoCE 5yr Avg</td>
+        <td>22.0</td>
+        <td>82%</td>
+        <td style="color: var(--text-muted);">12%</td>
+      </tr>
+      <tr class="contrib-good">
+        <td>OPM 5yr Avg</td>
+        <td>25.0</td>
+        <td>70%</td>
+        <td style="color: var(--text-muted);">5%</td>
+      </tr>
+      <tr class="contrib-good">
+        <td>Debt/Equity</td>
+        <td>0.02</td>
+        <td>95%</td>
+        <td style="color: var(--text-muted);">3%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Element flags -->
+  <div class="element-flags">
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Consistently High RoCE</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> High Operating Margin</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Virtually Debt-Free</span>
+  </div>
+</div>
+
+
+<div class="grid" style="margin-top: 15px;">
+  <div class="card">
+    <div class="chart-container">[chart]</div>
+  </div>
+  <div class="card">
+    <div class="chart-container">[chart]</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">Cash Flow Quality</h3>
+  <div class="cf-summary-grid">
+    <div class="cf-stat">
+      <div class="label">Avg CFO/PAT</div>
+      <div class="value" style="color: var(--green);">112%</div>
+    </div>
+    <div class="cf-stat">
+      <div class="label">Cumul. CFO/PAT</div>
+      <div class="value" style="color: var(--green);">104%</div>
+    </div>
+    <div class="cf-stat">
+      <div class="label">Cumul. CFO</div>
+      <div class="value">₹5,192 Cr</div>
+    </div>
+  </div>
+  <table style="margin-top: 15px; font-size: 0.8em;">
+    <thead><tr><th>Year</th><th style="text-align:right;">CFO</th><th style="text-align:right;">PAT</th><th style="text-align:right;">CFO/PAT</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>2016</td>
+        <td style="text-align:right;">200</td>
+        <td style="text-align:right;">150</td>
+        <td style="text-align:right; color: var(--green);">133%</td>
+      </tr>
+      <tr>
+        <td>2017</td>
+        <td style="text-align:right;">240</td>
+        <td style="text-align:right;">188</td>
+        <td style="text-align:right; color: var(--green);">128%</td>
+      </tr>
+      <tr>
+        <td>2018</td>
+        <td style="text-align:right;">288</td>
+        <td style="text-align:right;">234</td>
+        <td style="text-align:right; color: var(--green);">123%</td>
+      </tr>
+      <tr>
+        <td>2019</td>
+        <td style="text-align:right;">346</td>
+        <td style="text-align:right;">293</td>
+        <td style="text-align:right; color: var(--green);">118%</td>
+      </tr>
+      <tr>
+        <td>2020</td>
+        <td style="text-align:right;">415</td>
+        <td style="text-align:right;">366</td>
+        <td style="text-align:right; color: var(--green);">113%</td>
+      </tr>
+      <tr>
+        <td>2021</td>
+        <td style="text-align:right;">498</td>
+        <td style="text-align:right;">458</td>
+        <td style="text-align:right; color: var(--green);">109%</td>
+      </tr>
+      <tr>
+        <td>2022</td>
+        <td style="text-align:right;">597</td>
+        <td style="text-align:right;">572</td>
+        <td style="text-align:right; color: var(--green);">104%</td>
+      </tr>
+      <tr>
+        <td>2023</td>
+        <td style="text-align:right;">717</td>
+        <td style="text-align:right;">715</td>
+        <td style="text-align:right; color: var(--green);">100%</td>
+      </tr>
+      <tr>
+        <td>2024</td>
+        <td style="text-align:right;">860</td>
+        <td style="text-align:right;">894</td>
+        <td style="text-align:right; color: var(--green);">96%</td>
+      </tr>
+      <tr>
+        <td>2025</td>
+        <td style="text-align:right;">1,032</td>
+        <td style="text-align:right;">1,118</td>
+        <td style="text-align:right; color: var(--green);">92%</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 4: Quality — Management (QM)                   -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<div id="quality-mgmt"></div>
+<h2>Quality — Management (QM)</h2>
+<div class="card">
+  <!-- Header: score + weight + bar -->
+  <div class="element-header">
+    <div class="element-score-badge" style="color: var(--amber);">
+6.0<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+    </div>
+    <div class="element-weight">Weight: 10%</div>
+    <div class="element-bar">
+      <div class="element-bar-fill score-mid" style="width: 60.0%;"></div>
+    </div>
+  </div>
+
+  <!-- Auto-generated summary -->
+  <div class="element-summary">Strong on Equity Dilution 10yr (0.40).</div>
+
+  <!-- Score drilldown table -->
+  <table class="drilldown-table">
+    <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
+    <tbody>
+      <tr class="contrib-mid">
+        <td>Promoter Holding Trend</td>
+        <td>0.00</td>
+        <td>50%</td>
+        <td style="color: var(--text-muted);">5%</td>
+      </tr>
+      <tr class="contrib-good">
+        <td>Equity Dilution 10yr</td>
+        <td>0.40</td>
+        <td>90%</td>
+        <td style="color: var(--text-muted);">5%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Element flags -->
+</div>
+
+
+<div class="card snapshot-container" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">Shareholding Trend</h3>
+  <table class="snapshot-table" style="width: 100%; border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="text-align: left;">Category</th>
+        <th>J'2020</th>
+        <th>S'2020</th>
+        <th>D'2020</th>
+        <th>M'2021</th>
+        <th>J'2021</th>
+        <th>S'2021</th>
+        <th>D'2021</th>
+        <th>M'2022</th>
+        <th>J'2022</th>
+        <th>S'2022</th>
+        <th>D'2022</th>
+        <th>M'2023</th>
+        <th>J'2023</th>
+        <th>S'2023</th>
+        <th>D'2023</th>
+        <th>M'2024</th>
+        <th>J'2024</th>
+        <th>S'2024</th>
+        <th>D'2024</th>
+        <th>M'2025</th>
+        <th style="font-weight: 700;">Chg</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="font-weight: 600;">Promoter</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right;">60.0</td>
+        <td style="text-align: right; font-weight: 700; color: var(--gray);">
++0.0pp        </td>
+      </tr>
+      <tr>
+        <td style="font-weight: 600;">FII</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right;">8.0</td>
+        <td style="text-align: right; font-weight: 700; color: var(--gray);">
++0.0pp        </td>
+      </tr>
+      <tr>
+        <td style="font-weight: 600;">DII</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right;">5.0</td>
+        <td style="text-align: right; font-weight: 700; color: var(--gray);">
++0.0pp        </td>
+      </tr>
+      <tr>
+        <td style="font-weight: 600;">Public</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right;">27.0</td>
+        <td style="text-align: right; font-weight: 700; color: var(--gray);">
++0.0pp        </td>
+      </tr>
+      <tr>
+        <td style="font-weight: 600;">Government</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right;">0.0</td>
+        <td style="text-align: right; font-weight: 700; color: var(--gray);">
++0.0pp        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 5: Growth (G)                                  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<div id="growth"></div>
+<h2>Growth (G)</h2>
+<div class="card">
+  <!-- Header: score + weight + bar -->
+  <div class="element-header">
+    <div class="element-score-badge" style="color: var(--green);">
+7.2<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+    </div>
+    <div class="element-weight">Weight: 25%</div>
+    <div class="element-bar">
+      <div class="element-bar-fill score-high" style="width: 72.0%;"></div>
+    </div>
+  </div>
+
+  <!-- Auto-generated summary -->
+  <div class="element-summary">Strong on Revenue CAGR 5yr (20.0) and PAT CAGR 5yr (25.0).</div>
+
+  <!-- Score drilldown table -->
+  <table class="drilldown-table">
+    <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
+    <tbody>
+      <tr class="contrib-good">
+        <td>Revenue CAGR 5yr</td>
+        <td>20.0</td>
+        <td>75%</td>
+        <td style="color: var(--text-muted);">10%</td>
+      </tr>
+      <tr class="contrib-good">
+        <td>PAT CAGR 5yr</td>
+        <td>25.0</td>
+        <td>85%</td>
+        <td style="color: var(--text-muted);">10%</td>
+      </tr>
+      <tr class="contrib-mid">
+        <td>Growth Quality Grade</td>
+        <td>Moderate</td>
+        <td>50%</td>
+        <td style="color: var(--text-muted);">5%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Element flags -->
+  <div class="element-flags">
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Minimal Equity Dilution</span>
+    <span class="flag flag-neutral"><span class="flag-icon">&#8226;</span> Moderate Growth Quality</span>
+  </div>
+</div>
+
+
+<div class="grid" style="margin-top: 15px;">
+  <div class="card">
+    <div class="chart-container">[chart]</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">The 4-Lever Earnings Decomposition</h3>
+  <p style="color: var(--gray); font-size: 0.85em; margin-bottom: 10px;">
+    <em>Formula: &#916;EPS = &#916;Volume &#215; (&#916;Sales/&#916;Volume) &#215; (&#916;EBIT/&#916;Sales) &#215; (&#916;EPS/&#916;EBIT)</em>
+  </p>
+  <table>
+    <thead>
+      <tr><th>Lever</th><th>Status / Observation</th><th>Analysis</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Real Revenue Growth</strong></td>
+        <td>Strong real growth (well above inflation)</td>
+        <td>Revenue CAGR of 20.0% against a 5.0% inflation assumption implies ~15.0% real growth. This cannot be split into volume and pricing components without unit-sales or ASP data, which this pipeline does not fetch.</td>
+      </tr>
+      <tr>
+        <td><strong>Operating Lever</strong></td>
+        <td>Mild operating leverage</td>
+        <td>EBIT grew at 20.0% vs revenue at 20.0% (operating leverage ratio: 1.00x).</td>
+      </tr>
+      <tr>
+        <td><strong>Financial Lever</strong></td>
+        <td>Moderate positive financial leverage</td>
+        <td>EPS CAGR of 25.0% vs EBIT CAGR of 20.0% (financial leverage ratio: 1.25x).</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">Growth Synthesis</h3>
+  <div style="margin-bottom: 10px;">
+    <span class="conviction conviction-medium">
+      Moderate
+    </span>
+  </div>
+  <ul>
+    <li><strong>Real revenue growth</strong> is a primary growth driver</li>
+  </ul>
+  <p style="margin-top: 8px;">3-year PAT CAGR of 25.0% and 5-year PAT CAGR of 25.0%. Growth primarily driven by: Real revenue growth.</p>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 6: Longevity (L)                               -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<div id="longevity"></div>
+<h2>Longevity (L)</h2>
+<div class="card">
+  <!-- Header: score + weight + bar -->
+  <div class="element-header">
+    <div class="element-score-badge" style="color: var(--amber);">
+6.1<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+    </div>
+    <div class="element-weight">Weight: 20%</div>
+    <div class="element-bar">
+      <div class="element-bar-fill score-mid" style="width: 61.0%;"></div>
+    </div>
+  </div>
+
+  <!-- Auto-generated summary -->
+  <div class="element-summary">Strong on FCF+ Years (9.0).</div>
+
+  <!-- Score drilldown table -->
+  <table class="drilldown-table">
+    <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
+    <tbody>
+      <tr class="contrib-good">
+        <td>FCF+ Years</td>
+        <td>9.0</td>
+        <td>90%</td>
+        <td style="color: var(--text-muted);">10%</td>
+      </tr>
+      <tr class="contrib-mid">
+        <td>CAP Proxy</td>
+        <td>6.0</td>
+        <td>60%</td>
+        <td style="color: var(--text-muted);">10%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Element flags -->
+  <div class="element-flags">
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Consistent Free Cash Flow Generator</span>
+    <span class="flag flag-neutral"><span class="flag-icon">&#8226;</span> Moderate Moat (Market Cap Proxy)</span>
+  </div>
+</div>
+
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 7: Price (P)                                   -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<div id="price"></div>
+<h2>Price (P)</h2>
+<div class="card">
+  <!-- Header: score + weight + bar -->
+  <div class="element-header">
+    <div class="element-score-badge" style="color: var(--amber);">
+4.3<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+    </div>
+    <div class="element-weight">Weight: 15%</div>
+    <div class="element-bar">
+      <div class="element-bar-fill score-mid" style="width: 43.0%;"></div>
+    </div>
+  </div>
+
+  <!-- Auto-generated summary -->
+  <div class="element-summary">Weak on PE TTM (30.0) and DCF Margin of Safety (-12.5).</div>
+
+  <!-- Score drilldown table -->
+  <table class="drilldown-table">
+    <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
+    <tbody>
+      <tr class="contrib-low">
+        <td>PE TTM</td>
+        <td>30.0</td>
+        <td>35%</td>
+        <td style="color: var(--text-muted);">6%</td>
+      </tr>
+      <tr class="contrib-low">
+        <td>DCF Margin of Safety</td>
+        <td>-12.5</td>
+        <td>30%</td>
+        <td style="color: var(--text-muted);">5%</td>
+      </tr>
+      <tr class="contrib-low">
+        <td>P/E vs Traded History</td>
+        <td>82.0</td>
+        <td>20%</td>
+        <td style="color: var(--text-muted);">4%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Element flags -->
+  <div class="element-flags">
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> PE Above 75th Percentile — Expensive</span>
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> DCF: Overvalued</span>
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> Market Overpricing Growth (Reverse DCF)</span>
+  </div>
+</div>
+
+
+<div class="grid" style="margin-top: 15px;">
+  <div class="card">
+    <div class="chart-container">[chart]</div>
+  </div>
+  <div class="card">
+    <div class="chart-container">[chart]</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">DCF Summary</h3>
+  <div class="dcf-grid">
+    <div class="dcf-stat">
+      <div class="label">Intrinsic Value</div>
+      <div class="value" style="color: var(--green);">₹262</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">Current Price</div>
+      <div class="value">₹300</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">Margin of Safety</div>
+      <div class="value" style="color: var(--red);">-12.5%</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">FCF Growth Assumed</div>
+      <div class="value">14.0%</div>
+    </div>
+  </div>
+  <div style="margin-top: 15px; padding: 10px; background: var(--bg-input); border-radius: 8px; font-size: 0.9em;">
+    <strong>Reverse DCF Check:</strong> Market implies 31.0% growth
+    vs actual 25.0% CAGR
+    <span style="color: var(--red);">(gap: +6.0pp)</span>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <div class="chart-container">[chart]</div>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">Valuation Reality Check</h3>
+  <table class="metric-table">
+    <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Current P/E Ratio</td>
+        <td>30.0x</td>
+      </tr>
+      <tr>
+        <td>5-Year PAT CAGR</td>
+        <td>25.0%</td>
+      </tr>
+      <tr>
+        <td>Trailing PEG Ratio</td>
+        <td class="score-mid" style="font-weight: 600;">
+1.20x        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="thesis-box" style="margin-top: 10px;">
+    <strong>Verdict:</strong> Trailing PEG of 1.20x is between 1.0-2.0 — fairly valued relative to growth. Not a screaming bargain but acceptable if growth quality is high.
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 7.5: Forward Signals (Phase 2, zero weight)    -->
+<!-- Deliberately outside the SQGLP element sections above: -->
+<!-- nothing here contributed to the composite, and the     -->
+<!-- reader must never have to infer that.                  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="forward-signals"></div>
+<h2>Forward Signals</h2>
+
+<div class="card" style="margin-top: 15px;">
+  <p style="color: var(--gray); font-style: italic; margin-bottom: 14px;">
+    These signals inform the thesis but do not contribute to the SQGLP composite. They carry zero weight, receive no score, and are excluded from the coverage denominator.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Signal</th>
+        <th style="text-align: right;">Reading</th>
+        <th>Interpretation</th>
+        <th>Direction</th>
+        <th>What it measures</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Re-rating Headroom</strong></td>
+        <td style="text-align: right; font-weight: 600;">+42%</td>
+        <td>
+          favourable
+        </td>
+        <td style="color: var(--gray);">higher is better</td>
+        <td style="color: var(--gray); font-size: 0.92em;">
+          How far above today's traded multiple the company's own RoCE, growth and consistency would justify.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Promises Kept</strong></td>
+        <td style="text-align: right; font-weight: 600;">75%</td>
+        <td>
+          mixed
+        </td>
+        <td style="color: var(--gray);">higher is better</td>
+        <td style="color: var(--gray); font-size: 0.92em;">
+          Share of management's own due targets that the accounts later met. Promises not yet due are excluded from both sides.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>TAM Runway</strong></td>
+        <td style="text-align: right; font-weight: 600;">—</td>
+        <td>
+          <span style="color: var(--gray);">unknown</span>
+        </td>
+        <td style="color: var(--gray);">higher is better</td>
+        <td style="color: var(--gray); font-size: 0.92em;">
+          Years at the current growth rate before revenue meets the addressable market management describes.
+<br><em>no numeric addressable-market figure in the MD&A</em>        </td>
+      </tr>
+      <tr>
+        <td><strong>Quarterly Growth Momentum</strong></td>
+        <td style="text-align: right; font-weight: 600;">-5.4pp</td>
+        <td>
+          decelerating
+        </td>
+        <td style="color: var(--gray);">higher is better</td>
+        <td style="color: var(--gray); font-size: 0.92em;">
+          Change between consecutive year-over-year growth figures — whether growth is speeding up, not how fast it is.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top: 22px;">Score Trajectory</h3>
+  <p>
+    Composite
+    <strong>6.12 &rarr;
+    6.52</strong>
+    (+0.40)
+    over 90 days,
+    2026-01-01 to 2026-04-01.
+  </p>
+  <table>
+    <thead><tr><th>Element</th><th style="text-align: right;">Change</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Growth</td>
+        <td style="text-align: right; font-weight: 600;" class="score-high">
+          +0.40
+        </td>
+      </tr>
+      <tr>
+        <td>Longevity</td>
+        <td style="text-align: right; font-weight: 600;" class="score-mid">
+          +0.00
+        </td>
+      </tr>
+      <tr>
+        <td>Price</td>
+        <td style="text-align: right; font-weight: 600;" class="score-low">
+          -0.20
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 7.6: Lane & Friction (Phase 3)                 -->
+<!-- Rendered only for a watchlisted company.               -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="lane-friction"></div>
+<h2>Lane &amp; Friction</h2>
+
+<div class="card" style="margin-top: 15px;">
+  <p>
+    <strong>Re-rating — the fast lane</strong>
+    <span style="color: var(--gray);">— lifecycle state</span>
+    <strong>probe</strong>
+    <span style="color: var(--gray);">as of 2026-08-07</span>
+  </p>
+
+  <div style="margin: 12px 0; padding: 10px 12px; border-left: 3px solid var(--gray); background: rgba(128,128,128,0.06); font-size: 0.88em;">
+    <strong>Break-even for the fast lane: 6–10 percentage points more per cycle</strong>
+    <p style="margin: 6px 0 0 0; color: var(--text-secondary);">A re-rating round trip pays capital-gains tax and slippage that a held position never pays, so it has to earn more just to come out level. The roadmap's rough estimate for that difference is 6–10 percentage points more per cycle — an estimate, stated with the assumptions it rests on.</p>
+    <ul style="margin: 6px 0 0 18px;">
+      <li>Short-term capital gains 20.0%</li>
+      <li>Long-term capital gains 12.5% at or beyond 365 days</li>
+      <li>Round-trip slippage 100 bps (entry and exit together)</li>
+    </ul>
+    <p style="margin: 6px 0 0 0; color: var(--gray); font-style: italic;">No hurdle number is computed here. A tax rate applies to a gain, not to a number of return points, so any single figure would be arithmetic these inputs do not support — the Phase 4 simulator derives one from owner cost assumptions.</p>
+  </div>
+
+  <div style="margin: 12px 0; font-size: 0.9em;">
+    <strong style="font-size: 0.9em;">Catalyst</strong>
+    <span style="color: var(--gray);"> — owner-recorded; no metric computes it</span>
+    <p style="margin: 4px 0 0 0;">
+      Demerger of the packaging arm
+      <span style="color: var(--gray);">— expected by 2026-01-31, status active</span>
+    </p>
+    <p style="margin: 4px 0 0 0; color: var(--red);">
+      Overdue — the expected window has passed and the catalyst is still active.
+      This is a note for the reader: no transition is proposed or taken on it.
+    </p>
+  </div>
+
+  <div style="margin: 12px 0; font-size: 0.88em;">
+    <strong style="font-size: 0.9em;">Fast-Lane Entry Gates</strong>
+    <span style="color: var(--gray);"> — Does not qualify for the fast lane: Fails at least one fast-lane entry gate</span>
+    <ul style="margin: 6px 0 0 18px; padding: 0;">
+      <li style="margin-bottom: 3px; color: var(--green);">
+        Quality floor: pass        <span style="color: var(--gray);">— Quality floor met: score composite 6.52 gte 5.5</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--green);">
+        Valuation discount: pass        <span style="color: var(--gray);">— Valuation discount met: pe_vs_historical 82.00 lte 90</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--green);">
+        Growth intact: pass        <span style="color: var(--gray);">— Growth intact met: ttm_growth_vs_cagr 4.00 gte 0</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--gray);">
+        Institutional accumulation: unknown        <span style="color: var(--gray);">— Institutional accumulation indeterminate: institutional_accumulation_streak is unavailable</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--green);">
+        Catalyst identified: pass        <span style="color: var(--gray);">— Catalyst identified met: catalyst is active</span>
+      </li>
+      <li style="margin-bottom: 3px; color: var(--red);">
+        Liquidity floor: fail        <span style="color: var(--gray);">— Liquidity floor not met: daily_turnover_ratio 0.01 gte 0.02</span>
+      </li>
+    </ul>
+  </div>
+
+  <h3 style="margin-top: 22px;">Friction</h3>
+  <p style="color: var(--gray); font-style: italic; margin-bottom: 10px;">Modeled estimate — the exit date is still moving</p>
+  <div class="dcf-grid">
+    <div class="dcf-stat">
+      <div class="label">Gross return</div>
+      <div class="value">+48.0%</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">After round-trip slippage</div>
+      <div class="value">+47.0%</div>
+    </div>
+    <div class="dcf-stat">
+      <div class="label">Net return</div>
+      <div class="value">+41.1%</div>
+    </div>
+  </div>
+  <div style="margin-top: 12px; padding: 10px; background: var(--bg-input); border-radius: 8px; font-size: 0.9em;">
+    <strong>Modeled over:</strong> 2025-06-10 &rarr; 2026-08-04,
+    420 days &nbsp;|&nbsp;
+    LTCG at 12.5% &nbsp;|&nbsp;
+    100 bps round-trip slippage
+  </div>
+  <p style="color: var(--gray); font-size: 0.88em; margin-top: 8px;">Every figure here is a model. The holding period runs from the probe confirmation date rather than a broker fill, the prices are market bars rather than trade prices, and no cost basis is recorded anywhere in this system.</p>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 8: Investment Thesis (LLM only)                -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="thesis"></div>
+
+<h2>Investment Thesis</h2>
+
+<div class="thesis-box">
+  <p><strong>A capital-light compounder with a durable distribution edge, priced for the growth it has already delivered.</strong></p>
+  <p style="margin-top: 10px;">
+    <span class="conviction conviction-medium">MEDIUM conviction</span>
+    &nbsp; Action: <strong>WATCHLIST</strong><span style="color: var(--gray);"> (capped from BUY)</span>    &nbsp; Holding period: <strong>5-7 years</strong>
+  </p>
+</div>
+
+<div class="grid" style="margin-top: 15px;">
+  <div class="card">
+    <h3 style="color: var(--green); margin-top: 0;">Bull Case</h3>
+    <div class="reasoning-text"><p>Category penetration is early and the incumbent&#39;s pricing power has held through two input-cost cycles.</p></div>
+  </div>
+  <div class="card" style="border-left: 3px solid var(--red);">
+    <h3 style="color: var(--red); margin-top: 0;">Bear Case</h3>
+    <div class="reasoning-text"><p>The multiple assumes the current growth rate persists for a decade; a single flat year would re-rate it hard.</p></div>
+  </div>
+</div>
+
+<div class="risk-box" style="margin-top: 15px;">
+  <h3 style="margin-top: 0; color: var(--red);">Kill the Thesis</h3>
+  <ul><li style="margin: 6px 0;">RoCE falls below 15% for two consecutive years.</li><li style="margin: 6px 0;">Promoter holding drops below 50%.</li><li style="margin: 6px 0;">Receivable days exceed 90 for three consecutive quarters.</li></ul>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3>Key Monitorables</h3>
+  <ul><li style="margin: 4px 0;">Quarterly OPM against the 24% base.</li><li style="margin: 4px 0;">Capacity commissioning at the new plant.</li></ul>
+</div>
+
+
+<div class="card" style="margin-top: 15px;">
+  <h3>Detailed Reasoning</h3>
+  <div class="reasoning-text">
+    <p>The composite rests on a strong quality reading and a weak price one, which is the usual shape for this business at this point in its cycle.</p>
+  </div>
+</div>
+
+<h3 style="margin-top: 30px; font-size: 1.3em; border-bottom: 2px solid var(--border); padding-bottom: 8px;">Qualitative Assessment</h3>
+<div class="grid" style="margin-top: 15px;">
+  <div class="card">
+    <h3 style="margin-top: 0;">Management</h3>
+    <table class="metric-table">
+      <tr><td>Integrity</td><td>8/10</td></tr>
+      <tr><td>Competence</td><td>7/10</td></tr>
+      <tr><td>Growth Mindset</td><td>8/10</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3 style="margin-top: 0;">Competitive Moat</h3>
+    <p>Type: <strong>Brand + distribution</strong> | Strength: <strong>7/10</strong></p>
+    <div class="reasoning-text" style="margin-top: 8px;"></div>
+  </div>
+</div>
+<div class="risk-box" style="margin-top: 15px;">
+  <h3 style="margin-top: 0; color: var(--red);">Red Flags</h3>
+  <ul><li style="margin: 4px 0;">Related-party sales rose to 4% of revenue without explanation.</li><li style="margin: 4px 0;">Capex guidance was revised twice in the same financial year.</li></ul>
+</div>
+
+
+<div style="margin-top: 15px; color: var(--text-muted); font-size: 0.8em;">
+  LLM: 34820 tokens <span title="Prompt tokens served from or written to the provider's cache. The transport's token count excludes them, so they are stated beside it rather than folded into it.">(+29,110 cached)</span> | actual $0.2841 via claude_cli | 41.2s | <span title="These calls failed before anyone could count their tokens, so the total above is short by whatever they moved. Any cost beside it is only what the transport managed to report on the way down.">1 failed call (tokens unknown)</span></div>
+
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SECTION 9: Appendix                                   -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="appendix"></div>
+<h2>Appendix</h2>
+
+<div class="card snapshot-container">
+  <h3 style="margin-top: 0;">10-Year Financial Snapshot</h3>
+  <table class="snapshot-table" style="width: 100%; border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="text-align: left;">Metric</th>
+        <th>'2016</th>
+        <th>'2017</th>
+        <th>'2018</th>
+        <th>'2019</th>
+        <th>'2020</th>
+        <th>'2021</th>
+        <th>'2022</th>
+        <th>'2023</th>
+        <th>'2024</th>
+        <th>'2025</th>
+        <th style="min-width: 40px;">3yr</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Revenue (₹Cr)</td>
+        <td>
+1,000        </td>
+        <td>
+1,200        </td>
+        <td>
+1,440        </td>
+        <td>
+1,728        </td>
+        <td>
+2,074        </td>
+        <td>
+2,488        </td>
+        <td>
+2,986        </td>
+        <td>
+3,583        </td>
+        <td>
+4,300        </td>
+        <td>
+5,160        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--green);">&#9650;</span>
+        </td>
+      </tr>
+      <tr>
+        <td>PAT (₹Cr)</td>
+        <td>
+150        </td>
+        <td>
+188        </td>
+        <td>
+234        </td>
+        <td>
+293        </td>
+        <td>
+366        </td>
+        <td>
+458        </td>
+        <td>
+572        </td>
+        <td>
+715        </td>
+        <td>
+894        </td>
+        <td>
+1,118        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--green);">&#9650;</span>
+        </td>
+      </tr>
+      <tr>
+        <td>EPS (₹)</td>
+        <td>
+15.00        </td>
+        <td>
+18.75        </td>
+        <td>
+23.44        </td>
+        <td>
+29.30        </td>
+        <td>
+36.62        </td>
+        <td>
+45.78        </td>
+        <td>
+57.22        </td>
+        <td>
+71.53        </td>
+        <td>
+89.41        </td>
+        <td>
+111.76        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--green);">&#9650;</span>
+        </td>
+      </tr>
+      <tr>
+        <td>OPM %</td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td class="val-good">
+25%        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--gray);">&#9644;</span>
+        </td>
+      </tr>
+      <tr>
+        <td>RoCE %</td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td class="val-good">
+22%        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--gray);">&#9644;</span>
+        </td>
+      </tr>
+      <tr>
+        <td>D/E</td>
+        <td class="val-good">
+0.08x        </td>
+        <td class="val-good">
+0.07x        </td>
+        <td class="val-good">
+0.06x        </td>
+        <td class="val-good">
+0.05x        </td>
+        <td class="val-good">
+0.04x        </td>
+        <td class="val-good">
+0.03x        </td>
+        <td class="val-good">
+0.03x        </td>
+        <td class="val-good">
+0.02x        </td>
+        <td class="val-good">
+0.02x        </td>
+        <td class="val-good">
+0.02x        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--green);">&#9650;</span>
+        </td>
+      </tr>
+      <tr>
+        <td>CFO (₹Cr)</td>
+        <td class="val-good">
+200        </td>
+        <td class="val-good">
+240        </td>
+        <td class="val-good">
+288        </td>
+        <td class="val-good">
+346        </td>
+        <td class="val-good">
+415        </td>
+        <td class="val-good">
+498        </td>
+        <td class="val-good">
+597        </td>
+        <td class="val-good">
+717        </td>
+        <td class="val-good">
+860        </td>
+        <td class="val-good">
+1,032        </td>
+        <td style="text-align: center; font-size: 1.1em;">
+<span style="color: var(--green);">&#9650;</span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="margin-top: 8px; color: var(--text-muted); font-size: 0.75em;">
+    3yr column: <span style="color: var(--green);">&#9650;</span> improving &gt;5% | <span style="color: var(--red);">&#9660;</span> declining &gt;5% | <span style="color: var(--gray);">&#9644;</span> stable. D/E: lower is better.
+  </p>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">All Signals</h3>
+
+  <div class="signal-group">
+    <div class="signal-group-label" style="color: var(--green);">Strengths</div>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Consistently High RoCE</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> High Operating Margin</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Virtually Debt-Free</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Minimal Equity Dilution</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Consistent Free Cash Flow Generator</span>
+    <span class="flag flag-good"><span class="flag-icon">&#10003;</span> Re-rating Headroom — Favourable</span>
+  </div>
+
+  <div class="signal-group">
+    <div class="signal-group-label" style="color: var(--red);">Concerns</div>
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> PE Above 75th Percentile — Expensive</span>
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> DCF: Overvalued</span>
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> Market Overpricing Growth (Reverse DCF)</span>
+    <span class="flag flag-bad"><span class="flag-icon">&#10007;</span> Quarterly Growth Decelerating</span>
+  </div>
+
+  <div class="signal-group">
+    <div class="signal-group-label">Context</div>
+    <span class="flag"><span class="flag-icon">&#8226;</span> Mid Cap</span>
+    <span class="flag"><span class="flag-icon">&#8226;</span> Low Institutional Ownership</span>
+    <span class="flag"><span class="flag-icon">&#8226;</span> Moderate Growth Quality</span>
+    <span class="flag"><span class="flag-icon">&#8226;</span> Moderate Moat (Market Cap Proxy)</span>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0; color: var(--red);">Warnings &amp; Errors</h3>
+  <p style="color: var(--red);">shareholding: BSE returned no data for Sep 2025</p>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  Generated by Boundless100x SQGLP Research System | <generated>
+</div>
+
+</div>
+
+<script>
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  try { localStorage.setItem('sqglp-theme', next); } catch(e) {}
+}
+(function() {
+  try {
+    const saved = localStorage.getItem('sqglp-theme');
+    if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  } catch(e) {}
+})();
+</script>
+</body>
+</html>
