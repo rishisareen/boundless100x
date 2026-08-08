@@ -110,19 +110,39 @@ class ComputeEngine:
         weight = (config.get("scoring") or {}).get("weight", 0) or 0
         return weight > 0
 
-    def _metric_definitions(self, scored: bool) -> dict:
-        """Metric definitions on one side of the weight split, minus provenance.
+    # Keys a metric may carry that provably cannot move a score, and so must
+    # not reach either regime hash. Two different reasons, both ending here:
+    #
+    #   `_`-prefixed — **provenance, not semantics**. `_source_file` changes
+    #   when a metric moves between files without altering what it computes,
+    #   and fragmenting history on a file rename would be a false positive.
+    #
+    #   `presentation` — **score-inert display data**. R11 puts each metric's
+    #   unit, direction of goodness and interpretation bands beside its scoring
+    #   config, in this same payload. Nothing about how a number is rendered
+    #   can change the number, so hashing it would record a regime change that
+    #   never happened — and score history is append-only, so the resulting
+    #   fragmentation could never be repaired.
+    #
+    # Adding to this set is a claim that the key cannot affect a computed
+    # value. Verify that before you make it: the cost of being wrong is a
+    # regime change no row is stamped with.
+    HASH_EXEMPT_KEYS = frozenset({"presentation"})
 
-        Keys prefixed with `_` are provenance, not semantics — `_source_file`
-        changes when a metric moves between files without altering what it
-        computes, and fragmenting history on a file rename would be a false
-        positive.
+    @classmethod
+    def _is_hashed_key(cls, key: str) -> bool:
+        return not key.startswith("_") and key not in cls.HASH_EXEMPT_KEYS
+
+    def _metric_definitions(self, scored: bool) -> dict:
+        """Metric definitions on one side of the weight split, minus the exempt keys.
+
+        See `HASH_EXEMPT_KEYS` for what is excluded and why.
         """
         return {
             metric_id: {
                 key: value
                 for key, value in config.items()
-                if not key.startswith("_")
+                if self._is_hashed_key(key)
             }
             for metric_id, config in self.metrics.items()
             if self._scored(config) is scored

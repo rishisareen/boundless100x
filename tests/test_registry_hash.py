@@ -167,6 +167,93 @@ class TestProvenanceIsNotSemantics:
         assert engine_at(registry_dir).registry_hash == before
 
 
+# The two regimes the shipped registry currently declares. Pinned so a
+# presentation-layer change cannot move them without a test saying so.
+#
+# These are NOT arbitrary constants to re-baseline when a test goes red. A
+# change here is a change of scoring regime: every score-history row written
+# before it becomes uncomparable to every row after, permanently, because the
+# log is append-only. Update them only alongside a deliberate weight, gate,
+# threshold, macro or metric-definition change — never to make a red test green.
+SHIPPED_REGISTRY_HASH = "8e3c4115e9cf"
+SHIPPED_FORWARD_SIGNAL_HASH = "f693039de714"
+
+
+def add_key(registry_dir, filename: str, metric_id: str, key: str, value):
+    """Add one top-level key to one metric's definition."""
+    target = registry_dir / "elements" / filename
+    config = yaml.safe_load(target.read_text())
+    config["metrics"][metric_id][key] = value
+    target.write_text(yaml.safe_dump(config))
+
+
+PRESENTATION_BLOCK = {
+    "unit": "percent",
+    "direction": "higher_is_better",
+    "bands": [[20.0, "strong"], [12.0, "adequate"]],
+    "low_label": "weak",
+}
+
+
+class TestPresentationIsNotSemantics:
+    """A metric's *presentation* declaration must not move either regime.
+
+    R11 puts the unit, direction of goodness and interpretation bands beside
+    the scoring config, in the same YAML the hash payload is built from. R17
+    forbids that from moving a hash. Nothing about how a number is displayed
+    can change the number, so a presentation key that fragmented history would
+    be recording a regime change that never happened — and the fragmentation
+    is unrecoverable, since score history is append-only.
+    """
+
+    def test_the_shipped_registry_hashes_are_what_they_were(self):
+        """The filter widening is a no-op until the first declaration exists.
+
+        This is what makes the change provably safe at the moment it lands:
+        excluding a key no metric carries yet cannot alter the payload.
+        """
+        engine = ComputeEngine()
+        assert engine.registry_hash == SHIPPED_REGISTRY_HASH
+        assert engine.forward_signal_hash == SHIPPED_FORWARD_SIGNAL_HASH
+
+    def test_declaring_presentation_on_a_scored_metric_leaves_the_scoring_hash(
+        self, registry_dir
+    ):
+        before = engine_at(registry_dir).registry_hash
+        add_key(
+            registry_dir, "quality_business.yaml", "roce_5yr_avg",
+            "presentation", PRESENTATION_BLOCK,
+        )
+
+        assert engine_at(registry_dir).registry_hash == before
+
+    def test_declaring_presentation_on_a_zero_weight_metric_leaves_the_forward_hash(
+        self, registry_dir
+    ):
+        """The split reads in both directions, so the exclusion must too."""
+        before = engine_at(registry_dir).forward_signal_hash
+        add_key(
+            registry_dir, "forward_growth.yaml", "promises_kept_ratio",
+            "presentation", PRESENTATION_BLOCK,
+        )
+
+        assert engine_at(registry_dir).forward_signal_hash == before
+
+    def test_an_ordinary_key_still_moves_the_scoring_hash(self, registry_dir):
+        """The filter excludes one named key, not everything unrecognised.
+
+        Without this, a filter that quietly stopped hashing anything would pass
+        every test above while destroying the regime stamp entirely.
+        """
+        before = engine_at(registry_dir).registry_hash
+        add_key(
+            registry_dir, "quality_business.yaml", "roce_5yr_avg",
+            "some_new_semantic_key", {"weight_multiplier": 2.0},
+        )
+
+        assert engine_at(registry_dir).registry_hash != before
+
+
 def drop_in(registry_dir, weight: float, element: str = "forward_growth",
             metric_id: str = "made_up_signal", **scoring):
     """Write a custom metric at a given weight and return the engine."""
