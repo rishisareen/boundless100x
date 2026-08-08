@@ -93,7 +93,10 @@ class Boundless100xService:
             history_waiver_mcap=self.engine.master.get("history_waiver_mcap"),
         )
 
-        # LLM orchestrator (lazy init — only when API key is available)
+        # LLM orchestrator — constructed only when the configured provider's
+        # precondition holds: an API key for `anthropic`, a `claude` on PATH for
+        # `claude_cli`. Both raise ValueError, so an unusable provider degrades
+        # to compute-only the same way a missing key always has.
         self._llm = None
         if self.config.get("llm", {}).get("enabled", True):
             try:

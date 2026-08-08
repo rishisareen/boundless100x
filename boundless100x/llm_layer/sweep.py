@@ -250,7 +250,10 @@ def sweep(
         },
         "results": [],
         "not_reached": [],
-        "actual": {"usd": 0.0, "input_tokens": 0, "output_tokens": 0},
+        "actual": {
+            "usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+            "provider": None, "cost_basis": "estimated",
+        },
     }
 
     if dry_run:
@@ -299,6 +302,13 @@ def sweep(
         "output_tokens": (
             after["total_output_tokens"] - spent_before["total_output_tokens"]
         ),
+        # Which pool spent it, and whether `usd` is metered or priced from the
+        # table. The ceiling meters on the same number under both providers, so
+        # what it *means* has to travel with it: on the claude_cli path it is a
+        # real bill including a fixed per-call harness overhead, which makes a
+        # ceiling calibrated against API pricing trip far sooner.
+        "provider": after.get("provider"),
+        "cost_basis": after.get("cost_basis", "estimated"),
     }
     report["discard_summary"] = group_discards(
         [d for r in report["results"] for d in r.get("discarded", [])]

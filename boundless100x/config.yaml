@@ -42,7 +42,33 @@ corpus_snapshot:
 
 # ── LLM Configuration ──
 llm:
+  # Which transport carries every call — Pass 1, Pass 2 and the Stage 1.5
+  # extraction alike. Two legal values, and the choice is a billing route
+  # rather than a behaviour: both submit the identical prompt and both parse
+  # the same way, so nothing downstream can tell which one ran.
+  #
+  #   anthropic   The Anthropic API, paid from API credits (the default).
+  #   claude_cli  Headless Claude Code (`claude -p`), billed against the Max
+  #               subscription's monthly headless-credit pool. Needs Claude
+  #               Code installed and logged in on this machine.
+  #
+  # Overridable per run: `--llm-provider` on `analyze` and `sweep`.
   provider: "anthropic"
+  # claude_cli only. Must be on PATH; a missing binary degrades to
+  # compute-only exactly the way a missing API key does.
+  #
+  # PINNED MINIMUM: Claude Code 2.1.225. The flag set the transport uses is
+  # version-specific in BOTH directions — `--bare` must stay absent (it breaks
+  # subscription auth on this version) and `--mcp-config` needs the
+  # `{"mcpServers":{}}` shape rather than `{}`. Re-verify the invocation in
+  # `llm_layer/transport.py` before assuming a newer CLI behaves the same.
+  claude_binary: "claude"
+  # claude_cli only — per-call subprocess timeout. A ceiling for a slow Opus
+  # completion against a 16000-token budget with thinking on, not a
+  # description of the typical call. Every call also pays a process spawn and
+  # CLI startup before the model speaks, so a full extraction sweep's wall
+  # clock grows by minutes on this path.
+  cli_timeout_seconds: 600
   pass1_model: "claude-sonnet-5"
   pass2_model: "claude-sonnet-5"
   deep_model: "claude-opus-5"   # What `--deep` swaps every call to

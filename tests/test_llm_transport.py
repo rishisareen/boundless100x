@@ -45,6 +45,10 @@ from boundless100x.llm_layer.transport import (
     TransportResponse,
     build_transport,
 )
+# The sweep's own stub and corpus, reused rather than rebuilt: the ceiling
+# behaviour under actual costs is a property of the same code path those
+# fixtures already exercise under estimated ones.
+from tests.test_extraction_sweep import RecordingLLM, corpus, service  # noqa: F401
 
 CLI_CONFIG = {"llm": {"provider": "claude_cli"}}
 
@@ -605,6 +609,110 @@ class TestUsageSummary:
         assert "estimated_cost_usd" in orchestrator.usage_summary()
 
 
+# ── The CLI flag, and the sweep it meters ──────────────────────────────────
+
+
+class _ConstructedWith(Exception):
+    """Raised out of the fake service once it has recorded its config."""
+
+
+@pytest.fixture
+def constructed_config(monkeypatch):
+    """Capture the config `analyze`/`sweep` hand to the service, then stop.
+
+    The commands go on to fetch, score and render, none of which this is about
+    — recording the injected dict and raising is the whole assertion, and the
+    typer runner catches the exception for us.
+    """
+    import boundless100x.service as service_module
+
+    seen = {}
+
+    class FakeService:
+        def __init__(self, config_path=None, config=None):
+            seen["config"] = config
+            raise _ConstructedWith()
+
+    monkeypatch.setattr(service_module, "Boundless100xService", FakeService)
+    return seen
+
+
+def invoke(*args):
+    from typer.testing import CliRunner
+
+    from boundless100x.cli import app
+
+    return CliRunner().invoke(app, list(args))
+
+
+class TestProviderFlag:
+    def test_the_flag_reaches_the_constructed_service(self, constructed_config):
+        invoke("analyze", "ASTRAL", "--llm-provider", "claude_cli")
+
+        assert constructed_config["config"]["llm"]["provider"] == "claude_cli"
+
+    def test_without_the_flag_the_config_decides(self, constructed_config):
+        invoke("analyze", "ASTRAL")
+
+        assert constructed_config["config"]["llm"]["provider"] == "anthropic"
+
+    def test_the_sweep_carries_it_too(self, constructed_config):
+        invoke("sweep", "--tickers", "ASTRAL", "--llm-provider", "claude_cli")
+
+        assert constructed_config["config"]["llm"]["provider"] == "claude_cli"
+
+    def test_an_illegal_value_is_refused_before_anything_runs(
+        self, constructed_config
+    ):
+        result = invoke("analyze", "ASTRAL", "--llm-provider", "openai")
+
+        assert result.exit_code != 0
+        assert "config" not in constructed_config
+
+    def test_the_banner_names_the_billing_path(self, constructed_config):
+        """A run's billing path belongs in its first line, not its usage block."""
+        chosen = invoke("analyze", "ASTRAL", "--llm-provider", "claude_cli")
+        default = invoke("analyze", "ASTRAL")
+
+        assert "claude_cli" in chosen.output
+        assert "claude_cli" not in default.output
+
+
+class ActualCostLLM(RecordingLLM):
+    """A CLI-path orchestrator stub: every call reports a real metered cost."""
+
+    PER_CALL_USD = 0.05
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._spent = 0.0
+
+    def run_forward_growth_extraction(self, ticker, company_name, submission):
+        self._spent += self.PER_CALL_USD
+        return super().run_forward_growth_extraction(ticker, company_name, submission)
+
+    def usage_summary(self):
+        summary = super().usage_summary()
+        summary["estimated_cost_usd"] = round(self._spent, 6)
+        summary["cost_basis"] = "actual"
+        summary["provider"] = "claude_cli"
+        return summary
+
+
+def _extraction_response() -> dict:
+    """One grounded guidance entry against the shared MD&A fixture."""
+    from boundless100x import forward_growth_schema as schema
+    from tests.conftest import make_ar_sections
+
+    sentence = "We expect revenue of Rs 1,500 crore in FY2026."
+    assert sentence in make_ar_sections()["2025"]["mdna"]["text"]
+    return {"years": {"2025": {"guidance": [{
+        "metric": "revenue", "target_value": 1500, "target_period": "FY2026",
+        "subject": schema.SUBJECT_COMPANY, "unit": schema.UNIT_INR_CR,
+        "source_sentence": sentence, "section": "mdna",
+    }]}}}
+
+
 # ── What must not change ───────────────────────────────────────────────────
 
 
@@ -631,6 +739,28 @@ class TestNothingDownstreamCanTell:
         with_provider = ComputeEngine(macro={"inflation": 0.05})
 
         assert baseline.registry_hash == with_provider.registry_hash
+
+    def test_the_ceiling_still_binds_when_the_costs_are_actual(
+        self, service, corpus
+    ):
+        """`estimated_cost_usd` holds actuals on the CLI path — and still meters.
+
+        The key keeps its name precisely so this keeps working; what changes is
+        what the number *means*, which is why the report now carries the basis
+        and the provider beside it.
+        """
+        from boundless100x.llm_layer import sweep as sweep_module
+
+        service._llm = ActualCostLLM(response=_extraction_response())
+
+        report = sweep_module.sweep(
+            service, all_tickers=True, cost_ceiling_usd=0.04
+        )
+
+        assert [r["ticker"] for r in report["results"]] == ["ASTRAL"]
+        assert report["not_reached"] == ["VBL"]
+        assert report["actual"]["cost_basis"] == "actual"
+        assert report["actual"]["provider"] == "claude_cli"
 
     def test_the_sidecar_version_block_has_no_provider(self):
         """A grounded reading stays a grounded reading; transport is not identity.

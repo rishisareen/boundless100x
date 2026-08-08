@@ -11,6 +11,9 @@ load_dotenv()
 from rich.table import Table
 
 from boundless100x.cli_common import console, setup_logging
+# The two legal provider literals, single-sourced from the transport that
+# implements them so a flag value and a config value are never two vocabularies.
+from boundless100x.llm_layer.transport import LLMProvider
 
 app = typer.Typer(
     name="boundless100x",
@@ -40,12 +43,40 @@ from boundless100x.cli_lifecycle import (  # noqa: E402
 app.add_typer(watchlist_app, name="watchlist")
 
 
+def _config_with_provider(llm_provider: LLMProvider | None) -> dict:
+    """This run's config, with `--llm-provider` applied when it was given.
+
+    Threading the flag as a composition-root config override rather than a new
+    service argument is deliberate: the provider is *already* a config key, and
+    a second way of saying the same thing is a second thing to keep in
+    agreement. `Boundless100xService` already accepts an injected dict.
+    """
+    from boundless100x.service import load_config
+
+    config = load_config()
+    if llm_provider is not None:
+        config.setdefault("llm", {})["provider"] = llm_provider.value
+    return config
+
+
+def _provider_banner(config: dict) -> str:
+    """Name the transport in a command's header when it is not the API default."""
+    provider = (config.get("llm") or {}).get("provider", LLMProvider.ANTHROPIC.value)
+    if provider != LLMProvider.CLAUDE_CLI.value:
+        return ""
+    return " [bold cyan](claude_cli — subscription-billed)[/bold cyan]"
+
+
 @app.command()
 def analyze(
     ticker: str = typer.Argument(help="NSE symbol (e.g., ASTRAL)"),
     bse_code: str = typer.Option(None, help="BSE scrip code"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Skip LLM analysis"),
     deep: bool = typer.Option(False, "--deep", help="Use Opus for Pass 1 & 2 (~1.7x LLM cost, deeper analysis)"),
+    llm_provider: LLMProvider = typer.Option(
+        None, "--llm-provider",
+        help="Which transport carries the LLM calls (default: config's llm.provider)",
+    ),
     formats: str = typer.Option("html,md,json", help="Output formats (comma-separated)"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
@@ -55,10 +86,15 @@ def analyze(
     from boundless100x.service import Boundless100xService
     from boundless100x.output.report_generator import ReportGenerator
 
+    config = _config_with_provider(llm_provider)
     mode = " [bold magenta](DEEP — Opus)[/bold magenta]" if deep else ""
+    # A run's billing path in its first line of output: the CLI path spends the
+    # subscription's headless pool rather than API credits, and that is not a
+    # difference anyone should have to infer from the usage block afterwards.
+    mode += _provider_banner(config)
     console.print(f"\n[bold blue]Boundless100x SQGLP Analysis: {ticker}[/bold blue]{mode}\n")
 
-    svc = Boundless100xService()
+    svc = Boundless100xService(config=config)
     result = svc.analyze(
         ticker=ticker,
         bse_code=bse_code,
@@ -390,6 +426,11 @@ def sweep(
         None, help="Stop once this much (USD) has been spent"
     ),
     out: str = typer.Option(None, help="Write the full report as JSON here"),
+    llm_provider: LLMProvider = typer.Option(
+        None, "--llm-provider",
+        help="Which transport carries the extraction calls "
+             "(default: config's llm.provider)",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ):
     """Extract forward growth across chosen tickers, with the cost known first."""
@@ -398,10 +439,14 @@ def sweep(
     from boundless100x.llm_layer import sweep as sweep_module
     from boundless100x.service import Boundless100xService
 
-    svc = Boundless100xService()
+    config = _config_with_provider(llm_provider)
+    svc = Boundless100xService(config=config)
     requested = [t.strip() for t in tickers.split(",")] if tickers else None
 
-    console.print("\n[bold blue]Forward-growth extraction sweep[/bold blue]\n")
+    console.print(
+        f"\n[bold blue]Forward-growth extraction sweep[/bold blue]"
+        f"{_provider_banner(config)}\n"
+    )
     try:
         report = sweep_module.sweep(
             svc, tickers=requested, all_tickers=all_tickers, dry_run=dry_run,
@@ -473,8 +518,19 @@ def sweep(
         actual = report["actual"]
         console.print(
             f"\n[bold]Actual:[/bold] ${actual['usd']:.4f} "
-            f"({actual['input_tokens']:,} in + {actual['output_tokens']:,} out)"
+            f"[dim]({actual.get('cost_basis', 'estimated')}, "
+            f"{actual.get('provider') or 'unknown provider'})[/dim] — "
+            f"{actual['input_tokens']:,} in + {actual['output_tokens']:,} out"
         )
+        if actual.get("provider") == LLMProvider.CLAUDE_CLI.value:
+            # Most of what a CLI call bills has nothing to do with the ticker,
+            # so the per-ticker column above is not a per-ticker fact — and a
+            # `--ceiling` calibrated against API pricing trips far sooner here.
+            console.print(
+                "[dim]claude_cli bills real dollars including a fixed per-call "
+                "harness overhead, so the per-ticker figures are not comparable "
+                "to the API path and any --ceiling binds sooner.[/dim]"
+            )
 
     _write_report(out, report)
 
