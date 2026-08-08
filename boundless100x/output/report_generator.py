@@ -25,6 +25,12 @@ from boundless100x.lifecycle.friction import config_from as friction_config_from
 # report section renders. Read from `lifecycle/states.py`, which is where the
 # lifecycle's vocabulary lives, rather than from the store that persists it.
 from boundless100x.lifecycle.states import RERATING_LANE
+# The fallback basis for a usage block with no `cost_basis` key — reports
+# written before the field existed are estimates by history, not by a stated
+# reading. `cli.py`, `service.py`, `sweep.py` and `orchestrator.py` all default
+# to this same constant; a literal `'estimated'` here would be a second
+# spelling with nothing keeping it in step with a rename or a third basis value.
+from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED
 
 # What the report *calls* things, and the figures it draws, each in its own
 # module. Re-exported here because this is where every one of these names was
@@ -292,6 +298,7 @@ class ReportGenerator:
             element_config=ELEMENT_CONFIG,
             forward_signals=forward_signals or {},
             lane_status=lane_status or {},
+            cost_basis_estimated=COST_BASIS_ESTIMATED,
             errors=result.errors,
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )

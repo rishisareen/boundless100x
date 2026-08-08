@@ -38,6 +38,8 @@ from types import SimpleNamespace
 import pytest
 
 from boundless100x.llm_layer.transport import (
+    COST_BASIS_ACTUAL,
+    COST_BASIS_ESTIMATED,
     SCRUBBED_ENV_KEYS,
     AnthropicAPITransport,
     ClaudeCLITransport,
@@ -700,12 +702,12 @@ class TestSurfacesStateTheBasis:
                 "total_tokens": 30_000,
                 "estimated_cost_usd": 0.0662,
                 "total_seconds": 12.0,
-                "cost_basis": "actual",
+                "cost_basis": COST_BASIS_ACTUAL,
                 "provider": "claude_cli",
             },
         )
 
-        assert "actual $0.0662" in html
+        assert f"{COST_BASIS_ACTUAL} $0.0662" in html
         assert "claude_cli" in html
 
     def test_an_estimate_still_reads_as_one(self, tmp_path):
@@ -715,12 +717,12 @@ class TestSurfacesStateTheBasis:
                 "total_tokens": 30_000,
                 "estimated_cost_usd": 0.0662,
                 "total_seconds": 12.0,
-                "cost_basis": "estimated",
+                "cost_basis": COST_BASIS_ESTIMATED,
                 "provider": "anthropic",
             },
         )
 
-        assert "estimated $0.0662" in html
+        assert f"{COST_BASIS_ESTIMATED} $0.0662" in html
 
     def test_a_usage_block_from_before_the_seam_still_renders(self, tmp_path):
         """Reports already on disk carry no basis; they are estimates by history."""
@@ -729,7 +731,7 @@ class TestSurfacesStateTheBasis:
             {"total_tokens": 30_000, "estimated_cost_usd": 0.0662, "total_seconds": 12.0},
         )
 
-        assert "estimated $0.0662" in html
+        assert f"{COST_BASIS_ESTIMATED} $0.0662" in html
 
 
 class ActualCostLLM(RecordingLLM):
@@ -770,29 +772,116 @@ def _extraction_response() -> dict:
 # ── What must not change ───────────────────────────────────────────────────
 
 
+def _hash_inputs() -> list[dict]:
+    """Every payload the two regime hashes are actually computed over.
+
+    Captured from the run rather than re-listed here. A list of inputs copied
+    out of `engine.py` into this file would go stale the moment a fifth one is
+    added, and the check reading it would keep passing over an input it had
+    never seen — which is the same failure mode as the tautology this replaced.
+
+    Both hashes funnel through `ComputeEngine._digest`, so a subclass that
+    records what reaches it sees the real payloads, whatever they grow into.
+    Subclassing rather than patching keeps the parent class untouched: nothing
+    here can leak into another test through a botched restore.
+    """
+    from boundless100x.compute_engine.engine import ComputeEngine
+
+    class Capturing(ComputeEngine):
+        def __init__(self, **kwargs):
+            self.captured = []
+            super().__init__(**kwargs)
+
+        def _digest(self, payload):
+            # Shadows the parent's staticmethod on this subclass only, and
+            # still returns the real digest — the engine is otherwise normal.
+            self.captured.append(payload)
+            return ComputeEngine._digest(payload)
+
+    engine = Capturing(macro={"inflation": 0.05})
+
+    assert len(engine.captured) == 2, (
+        "expected one payload per regime hash; `_digest` is no longer the "
+        "single funnel, so this check is blind to whatever now bypasses it"
+    )
+    return engine.captured
+
+
+def _every_key(node) -> set[str]:
+    """Every dict key anywhere in a nested payload, at any depth."""
+    if isinstance(node, dict):
+        return set(node) | {k for v in node.values() for k in _every_key(v)}
+    if isinstance(node, (list, tuple)):
+        return {k for item in node for k in _every_key(item)}
+    return set()
+
+
 class TestNothingDownstreamCanTell:
     def test_neither_regime_hash_moves(self):
         """`llm.provider` is a transport, not a scoring or signal regime.
 
         If it moved `registry_hash`, choosing a billing route would reset every
         ticker's momentum baseline unrecoverably — history is append-only.
+
+        The provider is varied through `Boundless100xService` because that is
+        the only constructor that can see it. `ComputeEngine.__init__` takes
+        `registry_dir` and `macro` and structurally cannot receive an `llm` key
+        at all, so two engines built directly here would be byte-identical
+        arguments compared against themselves — determinism dressed up as
+        exclusion, green no matter what the wiring did. The wiring is the whole
+        risk surface: `service.py`'s single
+        `ComputeEngine(macro=self.config.get("macro", {}))` is what decides
+        that the `llm` block never reaches a hash input. Widen it to hand over
+        the full config and these assertions go red, which is the point.
+
+        The service constructs without credentials on either path — an absent
+        API key and an absent `claude` binary both raise `ValueError`, which
+        `__init__` catches and degrades to compute-only — and neither fetchers
+        nor the engine touch the network at construction.
         """
-        from boundless100x.compute_engine.engine import ComputeEngine
+        from boundless100x.service import Boundless100xService, load_config
 
-        api = ComputeEngine()
-        cli = ComputeEngine()
+        api = Boundless100xService(
+            config={**load_config(), "llm": {"provider": "anthropic"}}
+        )
+        cli = Boundless100xService(
+            config={**load_config(), "llm": {"provider": "claude_cli"}}
+        )
 
-        assert api.registry_hash == cli.registry_hash
-        assert api.forward_signal_hash == cli.forward_signal_hash
+        assert api.engine.registry_hash == cli.engine.registry_hash
+        assert api.engine.forward_signal_hash == cli.engine.forward_signal_hash
 
-    def test_config_llm_block_reaches_neither_hash(self):
-        """Stronger than the pair above: the hash inputs never read `llm` at all."""
-        from boundless100x.compute_engine.engine import ComputeEngine
+    def test_no_hash_input_carries_the_llm_block(self):
+        """Stronger than the pair above, and it outlives today's constructor.
 
-        baseline = ComputeEngine(macro={"inflation": 0.05})
-        with_provider = ComputeEngine(macro={"inflation": 0.05})
+        The test above pins the wiring; this one pins the property the wiring
+        exists to preserve — that nothing either hash is computed over is keyed
+        on the LLM at all. It stays meaningful if `ComputeEngine` is ever given
+        the whole config, where a service-level comparison alone would be the
+        only thing standing between a provider flip and a dead momentum
+        baseline.
 
-        assert baseline.registry_hash == with_provider.registry_hash
+        `model` is in the key set and belongs there: it is the extraction model
+        id from `_extraction_regime()`, which `forward_signal_hash` carries so
+        a row can still say which extraction regime produced the entries a
+        forward signal was read from. It resolves from defaults rather than
+        from the run's `llm` block, and it is the same id on both transports.
+        That is precisely why `provider` is asserted absent beside `llm`:
+        `_extraction_regime()` is the one place a transport label could
+        plausibly be added by someone reasoning about extraction provenance,
+        and adding it there would fragment forward-signal history on a billing
+        choice.
+        """
+        keys = set()
+        for payload in _hash_inputs():
+            keys |= _every_key(payload)
+
+        assert "llm" not in keys
+        assert "provider" not in keys
+        # Floor: an empty or shallow walk would make both assertions above
+        # vacuously true. These two are the outermost and innermost things the
+        # registry hash reads, so their presence says the walk really ran.
+        assert {"macro", "element_weights"} <= keys
 
     def test_the_ceiling_still_binds_when_the_costs_are_actual(
         self, service, corpus
