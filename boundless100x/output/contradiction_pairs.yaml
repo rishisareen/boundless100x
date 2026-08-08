@@ -1,0 +1,155 @@
+# Declared contradiction pairs — the two readings in one report that can
+# disagree, and what a reader should do about it when they do.
+#
+# Read by `output/contradiction.py`. R6's second expansion trigger fires off
+# this file, and R7 puts the `reason` below in front of the reader verbatim —
+# so every reason here is written for an owner reading a report, not for
+# whoever maintains the metric. "These two contradict each other" tells a
+# reader nothing they could act on; the sentence that *reconciles* them is the
+# deliverable, and it is the only reason this file exists rather than a flag.
+#
+# ── A CURATED LIST, NOT A DETECTOR (KTD4) ─────────────────────────────────
+#
+# Three examples motivated this trigger and two of them turned out not to be
+# contradictions at all. `growth_quality_grade` beside its element score
+# measures the *composition* of growth against the *magnitude* of it — two
+# axes, so a sentiment-diff detector would have manufactured a false positive
+# on every company in the corpus. The P/E percentile sitting outside its
+# quoted range was a computation bug, and it was fixed in U5 rather than
+# declared as a disagreement. One survived.
+#
+# Coverage is therefore bounded to what somebody wrote down here, and that
+# bound is the honest price of not shipping a detector that is wrong more
+# often than right. **A short list is the expected state of this file.**
+# Padding it to make the trigger look worth having would defeat the reason the
+# trigger is declared rather than detected, so the section at the bottom
+# records what was weighed and declined — a later reader should be able to see
+# that the list is short because the candidates failed, not because nobody
+# looked.
+#
+# ── A pair is two READINGS, not two metric ids ────────────────────────────
+#
+# R6 says "a declared contradiction pair whose two **readings** disagree", and
+# the one surviving instance is a favourable valuation reading beside a failed
+# 100x eligibility gate. A gate is not a metric and has no metric id — it is
+# evaluated in `compute_engine/eligibility.py` and rendered from
+# `result.eligibility`. Restricting a side to metric ids would have left this
+# file empty and the trigger dead, so a side names a `kind` drawn from a
+# **closed** vocabulary of things the report already puts a reading in front of
+# the reader for:
+#
+#   kind: metric
+#     `id` is a registry metric id, and its condition is `band_in` — a set of
+#     the interpretation-band labels declared in that metric's own
+#     `presentation:` block. Two constraints, both checked at load:
+#       * non-zero weight. KTD5 keeps forward signals out of the pool:
+#         expansion is prominence, and letting a zero-weight signal buy
+#         prominence is precisely the coupling the forward-signals design
+#         exists to keep separate.
+#       * declared bands. A metric that declares none (`pe_ttm`, `ev_ebitda`,
+#         `growth_quality_grade` and six others) never produces a band, so a
+#         `band_in` condition on it could never match — a dead rule that looks
+#         exactly like a rule whose condition is never met.
+#
+#   kind: eligibility_gate
+#     `id` is a gate in `metrics/registry.yaml`'s `eligibility_gates`,
+#     resolved through `effective_gates` so the gate regime a pair is
+#     validated against is the regime that will actually be enforced. Its
+#     condition is `verdict_in`, over the three-valued `met` / `not_met` /
+#     `indeterminate`.
+#
+# Anything else is a startup error, exactly as an unknown metric id is. An
+# open string field here would let a typo'd kind sit in the file forever
+# without ever matching anything.
+#
+# **At least one side must be a metric.** R6's trigger is per metric — "the
+# metric belongs to a declared contradiction pair" — so a pair of two
+# non-metric readings would have no section to attach to and would be dead on
+# arrival.
+#
+# A pair fires only when *both* sides match their declared condition. A side
+# whose reading could not be produced makes the pair indeterminate, never a
+# quiet "they agree": the three sibling evaluators in this system all refuse
+# to call an unknown a pass, and the same rule holds here.
+
+pairs:
+
+  cheap_on_dcf_but_entry_price_gate_failed:
+    label: "The cash-flow model says cheap; the entry-price gate says no"
+    sides:
+      - kind: metric
+        id: dcf_margin_of_safety
+        # Only the top band. "at fair value" is not a favourable reading, so a
+        # gate refusing a fairly-priced share is a stricter standard rather
+        # than a disagreement with anything.
+        when:
+          band_in: ["comfortable margin"]
+      - kind: eligibility_gate
+        id: price
+        when:
+          verdict_in: ["not_met"]
+    reason: >-
+      The discounted cash flow puts these shares comfortably below what the
+      business is worth, while the 100x entry-price gate refuses the same
+      price. Both are judgements about what you would be paying today, so one
+      of them is wrong about this company and it matters which. The cash-flow
+      model rests on a discount rate and a terminal growth rate you chose,
+      applied to a free-cash-flow series that a single acquisition year can
+      distort; the gate rests only on profit growth the company has already
+      delivered, plus a veto for a price that assumes growth it never has.
+      Read the gate's own reason: if it failed on the PEG conditions, the
+      model's cheapness is coming from a growth assumption the record does not
+      support, and the assumption is what to check. If the reverse-DCF veto
+      fired, both models are reading the same cash flows and still disagreeing
+      — which points at the cash-flow series rather than at the price, and the
+      outlier flags on the free-cash-flow metrics are where to look.
+
+# ── Considered and deliberately NOT declared ──────────────────────────────
+#
+# A wrong pair makes a section longer and tells the reader to reconcile two
+# things that were never in conflict, which trains them to skim the trigger
+# that was supposed to earn their attention. So the bar is a disagreement
+# about the *same question*, not two readings that merely point opposite ways.
+# Five candidates were weighed and declined:
+#
+#   growth_quality_grade vs. the Growth element score — KTD4's named false
+#   positive, and the reason this file is curated at all. The grade measures
+#   where growth came from; the element score measures how fast it was. A
+#   company can grow quickly on operating leverage and debt and be correctly
+#   described by both readings at once. It is also inexpressible here twice
+#   over: the metric declares no interpretation bands, and an element score is
+#   not in the participant vocabulary — so a later attempt to declare it fails
+#   at load rather than shipping.
+#
+#   pe_vs_historical's percentile vs. the P/E range rendered beside it — a
+#   real inconsistency on the page (5.3x quoted at the 70th percentile of a
+#   range starting at 5.4x) and not a contradiction: the range was computed
+#   off a different series than the percentile. A computation bug, fixed in
+#   U5. Declaring a bug as a disagreement would have made the report explain
+#   it to the reader forever instead of fixing it once.
+#
+#   dcf_margin_of_safety vs. reverse_dcf_growth — these genuinely can
+#   disagree, and when they do it is interesting: the first can only read
+#   "comfortable margin" while the second reads "demanding" if the growth
+#   assumed underneath the valuation is faster still than the growth the price
+#   already demands. But `reverse_dcf_overpriced` is one of the two routes by
+#   which the entry-price gate fails, so the pair above already covers this
+#   case — declaring both would fire two reasons at one reader for one
+#   underlying fact, inside one section. R9 wants a repeated finding restated
+#   across sections, not doubled within one.
+#
+#   roce_5yr_avg vs. roiic — a high average return on capital beside weak
+#   returns on the *incremental* capital looks like a contradiction and is the
+#   same trap as growth_quality_grade: a stock reading against a flow reading.
+#   Both are true simultaneously for any good business whose new investments
+#   have started earning less than its old ones, which is a finding the
+#   Quality — Business section should state plainly rather than present as a
+#   puzzle. The reinvestment gate already reads `roiic` directly.
+#
+#   rerating_headroom vs. pe_vs_historical — "favourable" headroom beside
+#   "dear against its own record" reads like a contradiction and is barred by
+#   KTD5 regardless of whether it is one. `rerating_headroom` carries zero
+#   weight; making it able to expand a section would give a signal that
+#   deliberately cannot move a score the power to move the report's shape
+#   instead, which is the coupling the whole forward-signals design exists to
+#   prevent.
