@@ -31,6 +31,7 @@ from boundless100x.llm_layer.transport import (
     COST_BASIS_ACTUAL,
     COST_BASIS_ESTIMATED,
     COST_BASIS_MIXED,
+    TOKENS_BASIS_UNKNOWN,
     TransportError,
     build_transport,
 )
@@ -106,6 +107,21 @@ def forward_growth_char_budget(config: dict) -> int:
     return config.get("llm", {}).get(
         "forward_growth_char_budget", forward_growth.DEFAULT_CHAR_BUDGET
     )
+
+
+def _sum_reported(entries: list[dict], key: str) -> int | None:
+    """Total one usage field across entries, or `None` if nobody reported it.
+
+    Absence and zero are different readings and must stay different here, which
+    a plain `sum()` over `.get(key, 0)` cannot do. No entry carrying
+    `cache_read_input_tokens` means the transport had nothing to say about
+    caching at all (the API path); a reported 0 means a call really did write
+    its whole prefix fresh — the expensive case. Rendered from a collapsed 0
+    the two are indistinguishable. The same helper covers the token counts,
+    where a failed call's `None` must not total as though it had moved nothing.
+    """
+    reported = [e[key] for e in entries if e.get(key) is not None]
+    return sum(reported) if reported else None
 
 
 class LLMOrchestrator:
@@ -399,11 +415,54 @@ class LLMOrchestrator:
             return self._parse_json_response(response.text)
 
         except TransportError as e:
+            # A failed call is not a free call. The CLI writes Claude Code's
+            # harness prefix before the model reads a word of ours, so a call
+            # that fails after that has already billed the pool — and logging
+            # usage only on success meant that spend vanished from
+            # `usage_summary()` entirely: invisible to the sweep's `--ceiling`,
+            # and reported as $0.0000 for the ticker that paid it.
+            self._log_failed_call(pass_name, model, e, time.time() - start_time)
             logger.error(f"Transport error in {pass_name}: {e}")
             return {"error": str(e), "pass": pass_name}
         except Exception as e:
+            # Deliberately not logged as a failed call: everything reaching here
+            # either never got as far as the transport, or failed in parsing
+            # *after* the successful entry above was already appended, and a
+            # second entry for the same call would double-count it.
             logger.error(f"Error in {pass_name}: {e}")
             return {"error": str(e), "pass": pass_name}
+
+    def _log_failed_call(
+        self, pass_name: str, model: str, error: TransportError, elapsed: float
+    ) -> None:
+        """Record a call that failed, with whatever the transport knew it cost.
+
+        The token counts are `None`, not 0. The call may have moved tens of
+        thousands of tokens before it failed, and a zero would total into
+        `usage_summary()` as though it had moved none — the same lie the
+        estimate-rather-than-zero rule forbids one layer down in the transport.
+        `tokens_basis: "unknown"` says so in the vocabulary the successful
+        entries already use, and `_summarize_usage` surfaces the entry as a
+        `failed_calls` count so the totals beside it read as short rather than
+        complete.
+
+        `cost_usd`, by contrast, is a real number whenever the CLI reported one
+        on the way down — which is the entire point of recording the entry.
+        """
+        self._usage_log.append(
+            {
+                "pass": pass_name,
+                "model": model,
+                "provider": self.transport.name,
+                "failed": True,
+                "error": str(error),
+                "input_tokens": None,
+                "output_tokens": None,
+                "tokens_basis": TOKENS_BASIS_UNKNOWN,
+                "cost_usd": error.cost_usd,
+                "elapsed_seconds": round(elapsed, 1),
+            }
+        )
 
     def _parse_json_response(self, text: str) -> dict:
         """Extract JSON from LLM response, handling markdown code blocks and truncation."""
@@ -511,27 +570,47 @@ class LLMOrchestrator:
         something different per provider — on the CLI path it bounds real
         dollars including per-call harness overhead, so a ceiling calibrated
         against API pricing trips far sooner.
+
+        The cache totals are aggregated here for the same reason the per-entry
+        counts exist at all: the CLI envelope's `input_tokens` **excludes**
+        everything served from or written to cache, so a Pass 1 + Pass 2 run
+        that moved ~35K tokens summed to ~1.6K and every surface printed that
+        number alone. Beside an API-path report's honest 34,000 the CLI path
+        read as forty times more token-efficient at twice the price — the exact
+        misreading the per-call cache fields were added to prevent, defeated one
+        layer above where they were added. They stop being a defence at the
+        point they stop being rendered.
         """
-        total_input = sum(u["input_tokens"] for u in self._usage_log)
-        total_output = sum(u["output_tokens"] for u in self._usage_log)
+        # `or 0` because an all-failed log reports nothing rather than zero, and
+        # the totals are ints by contract. `failed_calls` below is what tells a
+        # reader that a 0 here means "unknown" rather than "none".
+        total_input = _sum_reported(self._usage_log, "input_tokens") or 0
+        total_output = _sum_reported(self._usage_log, "output_tokens") or 0
         total_time = sum(u["elapsed_seconds"] for u in self._usage_log)
 
-        actuals = [u for u in self._usage_log if u.get("cost_usd") is not None]
-        cost = sum(
-            u["cost_usd"]
-            if u.get("cost_usd") is not None
-            else estimate_cost(u["model"], u["input_tokens"], u["output_tokens"])
-            for u in self._usage_log
-        )
+        cost = 0.0
+        bases = set()
+        for u in self._usage_log:
+            actual = u.get("cost_usd")
+            if actual is not None:
+                cost += actual
+                bases.add(COST_BASIS_ACTUAL)
+            elif u.get("tokens_basis") != TOKENS_BASIS_UNKNOWN:
+                cost += estimate_cost(u["model"], u["input_tokens"], u["output_tokens"])
+                bases.add(COST_BASIS_ESTIMATED)
+            # else: a failed call the transport could not price. It adds nothing
+            # to the total and votes on nothing — calling it "estimated" would
+            # claim a $0 estimate nobody made, and calling it "actual" would
+            # claim the call was free. `failed_calls` is the honest statement.
 
-        if actuals and len(actuals) == len(self._usage_log):
+        if bases == {COST_BASIS_ACTUAL}:
             cost_basis = COST_BASIS_ACTUAL
-        elif actuals:
+        elif COST_BASIS_ACTUAL in bases:
             cost_basis = COST_BASIS_MIXED
         else:
             cost_basis = COST_BASIS_ESTIMATED
 
-        return {
+        summary = {
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_tokens": total_input + total_output,
@@ -541,3 +620,33 @@ class LLMOrchestrator:
             "provider": self.transport.name,
             "passes": self._usage_log,
         }
+
+        # Emitted only when some entry actually carried them. The API path has
+        # nothing to say about caching, and a `0` there would not read as "not
+        # applicable" — it would read as "every prompt was written fresh", which
+        # is the expensive case, not the absent one.
+        cache_read = _sum_reported(self._usage_log, "cache_read_input_tokens")
+        cache_creation = _sum_reported(self._usage_log, "cache_creation_input_tokens")
+        if cache_read is not None:
+            summary["total_cache_read_input_tokens"] = cache_read
+        if cache_creation is not None:
+            summary["total_cache_creation_input_tokens"] = cache_creation
+        if cache_read is not None or cache_creation is not None:
+            # The one figure the surfaces render beside `total_tokens`, derived
+            # once here rather than three times in three templates. The split
+            # stays beside it because the halves price differently — Claude Code
+            # writes cache at 2× standard input and reads it at 0.1×, which is
+            # most of why the CLI path costs what it does.
+            summary["total_cached_input_tokens"] = (cache_read or 0) + (
+                cache_creation or 0
+            )
+
+        failed = sum(1 for u in self._usage_log if u.get("failed"))
+        if failed:
+            # Present only when there is something to correct, and its presence
+            # is the correction: it says the token totals above are missing this
+            # many calls' worth, and that any cost beside them is only what the
+            # transport managed to report on the way down.
+            summary["failed_calls"] = failed
+
+        return summary

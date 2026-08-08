@@ -43,22 +43,112 @@ DEFAULT_CLAUDE_BINARY = "claude"
 # a description of the typical call.
 DEFAULT_CLI_TIMEOUT_SECONDS = 600
 
-# The load-bearing line of the whole provider feature. The project's `.env` sets
+# Rule-of-thumb characters per token for English prose, and the **one**
+# definition of it in the repo: `llm_layer/sweep.py` prices its dry run with this
+# same number, and a second copy living here drifted from it immediately — this
+# module's own fallback estimate was written at 4, the exact divisor the sweep's
+# constant had already been measured down from.
+#
+# Deliberately a round number and deliberately named: the estimate is an
+# estimate, and tuning it to three decimal places would only make it look like a
+# quote. 4 was the Sonnet 4.6 figure. The Claude 5 family tokenizes the same text
+# to roughly 30% more tokens, so 4 leaves every estimate about a third *under*
+# the bill — wrong in the direction that matters, since the sweep's `--ceiling`
+# meters on numbers derived from it. 3 rounds the other way, so an estimate built
+# on it reads slightly high.
+CHARS_PER_TOKEN = 3
+
+# ── The child environment ─────────────────────────────────────────────────────
+#
+# **This is the load-bearing control of the whole provider feature**, and its
+# *shape* is the control rather than its contents. The project's `.env` sets
 # `ANTHROPIC_API_KEY` and dotenv loads it into `os.environ`; the CLI gives an env
-# key precedence over subscription OAuth. An unscrubbed child would silently bill
-# API credits while the owner believed they had chosen the subscription — and
-# would look exactly like success either way.
-SCRUBBED_ENV_KEYS = frozenset(
-    {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}
+# key precedence over subscription OAuth, and a whole family of other variables
+# (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `AWS_BEARER_TOKEN_BEDROCK`,
+# `ANTHROPIC_BEDROCK_BASE_URL`, …) redirects a call to a third-party provider
+# that bills its own credentials — the CLI's own help is explicit that
+# "3P providers (Bedrock/Vertex/Foundry) use their own credentials". Any of them
+# leaking into the child bills the wrong pool while looking exactly like success.
+#
+# This was a three-name denylist and is now an allowlist, because a denylist is
+# the wrong shape for a control whose failure is silent and financial: it has to
+# be re-audited against every CLI release, and `config.yaml` pins a *minimum*
+# version, not a maximum. The asymmetry settles it — starve the child of
+# something it needs and the call fails loudly with the CLI's own message, one
+# name to add; miss a routing variable and the bill goes somewhere else quietly.
+#
+# Every name below is here for a stated reason. Add to it when a real invocation
+# proves it necessary, not pre-emptively.
+INHERITED_ENV_KEYS = frozenset(
+    {
+        # Finding and running the binary at all.
+        "PATH",
+        "SHELL",
+        "PWD",
+        "TMPDIR",
+        # Who the process is, and therefore where its credentials are: Claude
+        # Code reads the subscription token from the login keychain and its
+        # state from `~/.claude`, both located from HOME.
+        "HOME",
+        "USER",
+        "LOGNAME",
+        # …unless the owner has moved `~/.claude`. `--setting-sources ""`
+        # already neutralises settings files, so what this contributes is the
+        # credential store's location; drop it on a relocated install and a
+        # perfectly good login reads as logged out.
+        "CLAUDE_CONFIG_DIR",
+        # Corporate egress. A machine that reaches the network only through a
+        # proxy or a private CA bundle fails at the socket without these, and
+        # the resulting error names a refused connection rather than a cause.
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        # The CLI is a Node program and `--max-old-space-size` is a real thing
+        # owners set on it. It cannot redirect where a call goes or who pays.
+        "NODE_OPTIONS",
+        # How it renders what it prints back.
+        "TERM",
+        "LANG",
+        "TZ",
+    }
+)
+
+# Locale, which arrives as an open-ended family (`LC_ALL`, `LC_CTYPE`, …) that
+# cannot be enumerated. Nothing under it can route a call.
+INHERITED_ENV_PREFIXES = ("LC_",)
+
+# Never inherited, whatever the allowlist says. Strictly redundant today — the
+# allowlist above names none of these — and kept precisely for the day someone
+# widens that list: a prefix rule covers a routing variable that does not exist
+# yet without a code change, which is the property the old denylist could not
+# have. `AWS_`/`GOOGLE_` are here because Bedrock and Vertex authenticate from
+# the ambient cloud credentials rather than from an `ANTHROPIC_*` name.
+BILLING_ROUTING_PREFIXES = (
+    "ANTHROPIC_",
+    "CLAUDE_CODE_USE_",
+    "AWS_",
+    "GOOGLE_",
 )
 
 # The two basis vocabularies, named for the same reason `friction.BASIS_*` are:
 # both are compared against and defaulted to across four modules, and a typo in
 # any one of them ("estimate" for "estimated") breaks a comparison silently
 # rather than loudly. They are separate sets that happen to share a word —
-# tokens are reported-or-estimated, cost is metered-or-priced-or-both.
+# tokens are reported-or-estimated-or-unknown, cost is metered-or-priced-or-both.
 TOKENS_BASIS_REPORTED = "reported"
 TOKENS_BASIS_ESTIMATED = "estimated"
+# A call that failed before anyone could count it. Distinct from "estimated",
+# which still carries a number: this one says there is no number, which is why
+# the usage entry it tags leaves the token counts `None` rather than 0.
+TOKENS_BASIS_UNKNOWN = "unknown"
 
 COST_BASIS_ACTUAL = "actual"
 COST_BASIS_MIXED = "mixed"
@@ -82,7 +172,27 @@ class LLMProvider(str, Enum):
 
 
 class TransportError(RuntimeError):
-    """Any failure to obtain text from the model, whichever transport ran."""
+    """Any failure to obtain text from the model, whichever transport ran.
+
+    **A failed call is not a free call.** The CLI writes Claude Code's own
+    harness prefix before the model reads a word of ours — a measured $0.033 to
+    $0.065 — so a call that fails *after* that has already billed the pool. The
+    envelope says so in `total_cost_usd`, and that number survives here rather
+    than dying with the exception: without it the spend vanishes from
+    `usage_summary()` entirely, which means the sweep's `--ceiling` never meters
+    it (a run of failing-but-billed calls walks straight through the ceiling
+    across the dozens of serial calls a full sweep makes) and `_extract_one`
+    reports the ticker at $0.0000 when it was not free.
+
+    `None` means "not known to have been billed" — never "known to be free".
+    The API path always leaves it `None`: that transport reports no cost at all,
+    successful or otherwise, and cost there is reconstructed from
+    `MODEL_PRICING`.
+    """
+
+    def __init__(self, message: str, cost_usd: float | None = None):
+        super().__init__(message)
+        self.cost_usd = cost_usd
 
 
 @dataclass
@@ -239,18 +349,51 @@ class ClaudeCLITransport:
         if completed.returncode != 0:
             raise TransportError(
                 f"{self.binary} exited {completed.returncode}: "
-                f"{(completed.stderr or '').strip()[:_STDERR_EXCERPT]}"
+                f"{(completed.stderr or '').strip()[:_STDERR_EXCERPT]}",
+                # A non-zero exit is not evidence that nothing was spent, and
+                # the CLI often prints a well-formed envelope on stdout before
+                # failing. Decoding it here is the only chance to keep a cost it
+                # already reported; the alternative is a call that billed real
+                # money and reports nothing at all.
+                cost_usd=self._reported_cost(completed.stdout),
             )
 
         return self._read_envelope(completed.stdout, model, prompt)
 
     def _child_env(self, max_tokens: int) -> dict:
-        env = {k: v for k, v in os.environ.items() if k not in SCRUBBED_ENV_KEYS}
+        """The child's whole environment, built up from the allowlist.
+
+        Built *up* rather than filtered down: the constructive form is what
+        makes a routing variable nobody has heard of yet unable to reach the
+        child. See `INHERITED_ENV_KEYS` for why the shape matters more than the
+        contents, and `BILLING_ROUTING_PREFIXES` for the backstop under it.
+        """
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if (key in INHERITED_ENV_KEYS or key.startswith(INHERITED_ENV_PREFIXES))
+            and not key.startswith(BILLING_ROUTING_PREFIXES)
+        }
         # The CLI has no `--max-tokens` flag; this env var is the only route the
         # orchestrator's configured ceiling has to reach it.
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         return env
+
+    def _reported_cost(self, stdout: str) -> float | None:
+        """`total_cost_usd` off a stdout that may not be an envelope at all.
+
+        Deliberately silent about failure: this runs on paths that are *already*
+        raising, and the error being raised is the accurate statement of what
+        went wrong. All this adds is the spend, when the CLI managed to say.
+        """
+        try:
+            envelope = json.loads(stdout or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return _as_float(envelope.get("total_cost_usd"))
 
     def _read_envelope(self, stdout: str, model: str, prompt: str) -> TransportResponse:
         try:
@@ -264,15 +407,24 @@ class ClaudeCLITransport:
                 f"could not decode the {self.binary} JSON envelope: not an object"
             )
 
+        # Both failure branches below carry the envelope's own cost. An
+        # `is_error` envelope is a call that reached the harness, wrote its
+        # prefix, and *then* failed — the most expensive kind of failure there
+        # is on this path, and the one whose spend used to be discarded.
+        billed = _as_float(envelope.get("total_cost_usd"))
+
         if envelope.get("is_error"):
             detail = envelope.get("result") or envelope.get("terminal_reason") or ""
-            raise TransportError(f"{self.binary} reported an error: {detail}")
+            raise TransportError(
+                f"{self.binary} reported an error: {detail}", cost_usd=billed
+            )
 
         text = envelope.get("result")
         if not isinstance(text, str):
             raise TransportError(
                 f"{self.binary} envelope carried no result text "
-                f"(terminal_reason={envelope.get('terminal_reason')!r})"
+                f"(terminal_reason={envelope.get('terminal_reason')!r})",
+                cost_usd=billed,
             )
 
         self._warn_on_unexpected_model(envelope, model)
@@ -294,11 +446,16 @@ class ClaudeCLITransport:
                 ),
             )
 
-        # Half a reading is not a reading, and a zero would read as free.
+        # Half a reading is not a reading, and a zero would read as free. This
+        # is also the branch where the estimate is the *only* number anyone
+        # has — it feeds the displayed totals and, when `total_cost_usd` is
+        # unreadable too, `estimate_cost()` and therefore the sweep's ceiling —
+        # so it divides by the measured `CHARS_PER_TOKEN` the sweep prices with
+        # rather than by a second, more optimistic constant of its own.
         return TransportResponse(
             text=text,
-            input_tokens=len(prompt) // 4,
-            output_tokens=len(text) // 4,
+            input_tokens=len(prompt) // CHARS_PER_TOKEN,
+            output_tokens=len(text) // CHARS_PER_TOKEN,
             cost_usd=_as_float(envelope.get("total_cost_usd")),
             tokens_basis=TOKENS_BASIS_ESTIMATED,
         )

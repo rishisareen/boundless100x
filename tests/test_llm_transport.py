@@ -10,22 +10,34 @@ be able to tell which one ran except by reading the usage metadata. That is the
 whole reason the feature is additive rather than a second behaviour every
 consumer has to reason about, and most of this file exists to pin it.
 
-Three things here are not cosmetic:
+Four things here are not cosmetic:
 
-**The env scrub is the load-bearing line of the feature.** The project's `.env`
-sets `ANTHROPIC_API_KEY` and dotenv loads it into `os.environ`; the CLI gives an
-env key precedence over subscription OAuth. An unscrubbed subprocess would
-silently bill API credits while the owner believed they had chosen the
-subscription — a failure that costs money and looks exactly like success.
+**The child environment is the load-bearing control of the feature.** The
+project's `.env` sets `ANTHROPIC_API_KEY` and dotenv loads it into `os.environ`;
+the CLI gives an env key precedence over subscription OAuth, and a whole family
+of other variables reroutes a call to a third-party provider billing its own
+credentials. Any of them reaching the child bills the wrong pool — a failure
+that costs money and looks exactly like success. It is an allowlist for that
+reason, and the tests below assert the *property* (nothing that could reroute
+the bill gets through, including names that do not exist yet) rather than the
+contents of a list, which would pass no matter which variable is discovered
+next.
 
 **Absent tokens are estimated, never zeroed.** A zero token count reads as a
 free call; the layer's rule is that absence must not read as a reading, so a
 missing `usage` block estimates and says `tokens_basis: "estimated"`.
 
-**Cache fields must travel.** The CLI envelope's `input_tokens` *excludes* cache
-reads — a call that moved ~37K tokens reported `input_tokens: 2` — so a usage
-block without the cache counts beside it shows a phantom efficiency the API path
-can never match.
+**Cache fields must travel — all the way to a surface.** The CLI envelope's
+`input_tokens` *excludes* cache reads — a call that moved ~37K tokens reported
+`input_tokens: 2` — so a usage block without the cache counts beside it shows a
+phantom efficiency the API path can never match. Carrying them per-call and then
+summing only `input_tokens` defeats the defence one layer above where it was
+built, so the totals and the rendered lines are pinned too.
+
+**A failed call is not a free call.** The CLI bills its harness prefix before
+the model reads a word of ours; a failure after that has already spent. The
+cost travels on the exception and into the usage log, or the sweep's `--ceiling`
+meters a number that omits it.
 
 No test here touches the network or needs a `claude` binary: the SDK client and
 `subprocess.run` are both faked.
@@ -38,9 +50,11 @@ from types import SimpleNamespace
 import pytest
 
 from boundless100x.llm_layer.transport import (
+    BILLING_ROUTING_PREFIXES,
+    CHARS_PER_TOKEN,
     COST_BASIS_ACTUAL,
     COST_BASIS_ESTIMATED,
-    SCRUBBED_ENV_KEYS,
+    TOKENS_BASIS_UNKNOWN,
     AnthropicAPITransport,
     ClaudeCLITransport,
     LLMProvider,
@@ -161,15 +175,29 @@ class TestClaudeCLIEnvelope:
         assert response.cache_creation_input_tokens == 5349
 
     def test_missing_usage_estimates_rather_than_zeroes(self, cli_run):
-        """A zero means free. An estimate means unknown-but-roughly-this."""
+        """A zero means free. An estimate means unknown-but-roughly-this.
+
+        The divisor is the sweep's measured `CHARS_PER_TOKEN`, not a second
+        constant: this branch fires exactly when the estimate is the only number
+        anyone has, and when `total_cost_usd` is unreadable too it feeds
+        `estimate_cost()` and therefore the `--ceiling`. It was written at 4 —
+        the Sonnet 4.6 figure the sweep had already been measured down from,
+        which leaves an estimate about a third under the Claude 5 bill.
+        """
         cli_run(stdout=json.dumps(envelope("answer text", usage={})))
 
         response = cli_transport().complete("claude-sonnet-5", "x" * 400, 16000)
 
         assert response.tokens_basis == "estimated"
-        assert response.input_tokens == 100
-        assert response.output_tokens == len("answer text") // 4
+        assert response.input_tokens == 400 // CHARS_PER_TOKEN == 133
+        assert response.output_tokens == len("answer text") // CHARS_PER_TOKEN
         assert response.cache_read_input_tokens is None
+
+    def test_the_divisor_is_the_one_the_sweep_prices_with(self):
+        """One definition, or the two drift in the direction that under-prices."""
+        from boundless100x.llm_layer import sweep as sweep_module
+
+        assert sweep_module.CHARS_PER_TOKEN is CHARS_PER_TOKEN
 
     def test_partial_usage_is_estimated_too(self, cli_run):
         """Half a reading is not a reading — both counts or neither."""
@@ -217,26 +245,135 @@ class TestClaudeCLIEnvelope:
 
 
 class TestChildEnvironment:
-    def test_every_anthropic_key_is_stripped(self, cli_run, monkeypatch):
-        """The load-bearing line: an env key outranks subscription OAuth.
+    # Every variable the pinned CLI reads that can change where a call goes or
+    # who pays for it. Three of these were the whole of the original denylist;
+    # the rest were found by reading the 2.1.225 binary, whose own `--bare` help
+    # is explicit that "3P providers (Bedrock/Vertex/Foundry) use their own
+    # credentials". None is set on this machine, so the gap this list closes was
+    # latent rather than live — which is exactly how it survived review.
+    #
+    # The list is *evidence*, not the specification: the allowlist in
+    # `_child_env` is what actually protects the child, and asserting
+    # set-equality against a list of literals (as this test used to) passes no
+    # matter which routing variable is discovered next.
+    ROUTING_VARIABLES = (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_CONFIG_DIR",
+        "ANTHROPIC_AWS_API_KEY",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "ANTHROPIC_VERTEX_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_GATEWAY",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_PROFILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    )
 
-        Unscrubbed, choosing `claude_cli` on this machine would bill the API
-        key sitting in `.env` and report success either way.
-        """
+    def _env_after_a_call(self, cli_run, monkeypatch, **environment) -> dict:
         run = cli_run(stdout=json.dumps(envelope()))
-        for key in SCRUBBED_ENV_KEYS:
-            monkeypatch.setenv(key, "leaked")
-        monkeypatch.setenv("PATH", "/usr/bin")
+        for key, value in environment.items():
+            monkeypatch.setenv(key, value)
 
         cli_transport().complete("claude-sonnet-5", "prompt", 16000)
 
-        env = run.kwargs["env"]
-        assert SCRUBBED_ENV_KEYS == frozenset(
-            {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}
+        return run.kwargs["env"]
+
+    def test_nothing_that_could_reroute_the_bill_reaches_the_child(
+        self, cli_run, monkeypatch
+    ):
+        """The property, not a list: an env key outranks subscription OAuth.
+
+        Choosing `claude_cli` and then billing API credits — or a Bedrock or
+        Vertex account — is a failure that costs money and reports success. Any
+        one of these surviving is that failure.
+        """
+        env = self._env_after_a_call(
+            cli_run, monkeypatch, **{k: "leaked" for k in self.ROUTING_VARIABLES}
         )
-        for key in SCRUBBED_ENV_KEYS:
-            assert key not in env
-        assert env["PATH"] == "/usr/bin", "the rest of the environment survives"
+
+        assert not [k for k in self.ROUTING_VARIABLES if k in env]
+
+    def test_a_routing_variable_nobody_has_heard_of_yet_is_covered(
+        self, cli_run, monkeypatch
+    ):
+        """The property an allowlist has and a denylist structurally cannot.
+
+        `config.yaml` pins a *minimum* CLI version, not a maximum, so the next
+        release can add a name this repo has never seen. Under the old denylist
+        that name reached the child; under an allowlist it cannot, and this is
+        the test that would go red if the shape were ever inverted back.
+        """
+        env = self._env_after_a_call(
+            cli_run,
+            monkeypatch,
+            ANTHROPIC_FUTURE_ROUTER="leaked",
+            CLAUDE_CODE_USE_SOMETHING_UNRELEASED="leaked",
+            SOME_VENDOR_INFERENCE_ENDPOINT="leaked",
+        )
+
+        assert "ANTHROPIC_FUTURE_ROUTER" not in env
+        assert "CLAUDE_CODE_USE_SOMETHING_UNRELEASED" not in env
+        assert "SOME_VENDOR_INFERENCE_ENDPOINT" not in env
+
+    def test_the_prefix_rule_holds_even_if_the_allowlist_is_widened(self):
+        """The backstop, checked directly because nothing else can reach it.
+
+        `BILLING_ROUTING_PREFIXES` is redundant today — the allowlist names none
+        of these families — and exists for the day someone adds a
+        `CLAUDE_CODE_*` name to that list and catches a `_USE_` variable with
+        it. A redundant guard nobody checks is a guard that quietly stops
+        working.
+        """
+        for key in self.ROUTING_VARIABLES:
+            assert key.startswith(BILLING_ROUTING_PREFIXES), key
+
+    def test_the_ordinary_environment_still_survives(self, cli_run, monkeypatch):
+        """The allowlist's real risk is starving the child, so pin what it keeps.
+
+        PATH and HOME are the two that decide whether the CLI runs at all and
+        whether it finds the login it is supposed to bill; the proxy and CA
+        variables are what a machine behind corporate egress needs to reach the
+        network; `LC_*` arrives as an open family and is covered by prefix.
+        """
+        env = self._env_after_a_call(
+            cli_run,
+            monkeypatch,
+            PATH="/usr/bin",
+            HOME="/Users/owner",
+            HTTPS_PROXY="http://proxy.internal:8080",
+            NODE_EXTRA_CA_CERTS="/etc/ssl/corp.pem",
+            LC_ALL="en_IN.UTF-8",
+        )
+
+        assert env["PATH"] == "/usr/bin"
+        assert env["HOME"] == "/Users/owner"
+        assert env["HTTPS_PROXY"] == "http://proxy.internal:8080"
+        assert env["NODE_EXTRA_CA_CERTS"] == "/etc/ssl/corp.pem"
+        assert env["LC_ALL"] == "en_IN.UTF-8"
+
+    def test_an_unrecognised_variable_does_not_reach_the_child(
+        self, cli_run, monkeypatch
+    ):
+        """The cost of the allowlist, stated rather than discovered later.
+
+        Anything not named is dropped, including things that are entirely
+        harmless. The trade is deliberate: a starved child fails loudly with the
+        CLI's own message and one name to add, while a leaked routing variable
+        bills the wrong pool in silence.
+        """
+        env = self._env_after_a_call(
+            cli_run, monkeypatch, EDITOR="vim", MY_PROJECT_DEBUG="1"
+        )
+
+        assert "EDITOR" not in env
+        assert "MY_PROJECT_DEBUG" not in env
 
     def test_max_tokens_reaches_the_cli_by_env_var(self, cli_run):
         """The CLI has no `--max-tokens`; this env var is the only route."""
@@ -253,6 +390,45 @@ class TestChildEnvironment:
         cli_transport().complete("claude-sonnet-5", "prompt", 16000)
 
         assert run.kwargs["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+
+
+@pytest.mark.network
+def test_the_allowlist_still_reaches_the_subscription():
+    """The one check a faked subprocess cannot make, and it costs nothing.
+
+    Every other test in this file asserts what goes *into* the child env. None
+    of them can say whether that env is still enough for the real binary to find
+    its credentials — and an allowlist's failure mode is exactly that: it starves
+    the child, `claude` reports "Not logged in", and every faked test stays
+    green. `auth status` answers it without a model call, so this is free to run.
+
+    Deselected by default (`pytest.ini`) because it needs the binary installed
+    and logged in. Run it with `-m network` after changing `INHERITED_ENV_KEYS`
+    or bumping the pinned CLI version — those are the two things that can break
+    the property it pins.
+
+    `apiProvider: firstParty` is the assertion that matters most: it is the CLI
+    saying the call would go to Anthropic on the subscription rather than to a
+    third-party provider billing its own credentials, which is the whole reason
+    the routing variables are excluded.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("claude"):
+        pytest.skip("claude CLI not on PATH")
+
+    transport = ClaudeCLITransport({"llm": {"provider": "claude_cli"}})
+    completed = subprocess.run(
+        [transport.binary, "auth", "status"],
+        capture_output=True, text=True, timeout=60,
+        env=transport._child_env(16000),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    status = json.loads(completed.stdout)
+    assert status["loggedIn"] is True
+    assert status["apiProvider"] == "firstParty"
 
 
 class TestClaudeCLIFailures:
@@ -272,11 +448,64 @@ class TestClaudeCLIFailures:
         with pytest.raises(TransportError, match="Not logged in"):
             cli_transport().complete("claude-sonnet-5", "prompt", 16000)
 
+    def test_an_error_envelope_carries_the_cost_it_already_billed(self, cli_run):
+        """The most expensive kind of failure on this path, not a free one.
+
+        The harness prefix is written before the model reads a word of ours, so
+        an `is_error` envelope has usually already spent $0.033–0.065. That
+        number was read off the same envelope and thrown away with the
+        exception, which took the spend out of `usage_summary()` entirely: the
+        sweep's `--ceiling` could not see it, and a run of failing-but-billed
+        calls walks straight through the ceiling across the dozens of serial
+        calls a full sweep makes.
+        """
+        cli_run(
+            stdout=json.dumps(
+                envelope("Not logged in", is_error=True, total_cost_usd=0.0331)
+            )
+        )
+
+        with pytest.raises(TransportError) as excinfo:
+            cli_transport().complete("claude-sonnet-5", "prompt", 16000)
+
+        assert excinfo.value.cost_usd == pytest.approx(0.0331)
+
     def test_non_zero_exit_carries_stderr(self, cli_run):
         cli_run(returncode=1, stderr="credit balance is too low")
 
         with pytest.raises(TransportError, match="credit balance is too low"):
             cli_transport().complete("claude-sonnet-5", "prompt", 16000)
+
+    def test_a_non_zero_exit_keeps_a_cost_the_envelope_still_reported(self, cli_run):
+        """A non-zero exit is not evidence that nothing was spent.
+
+        The CLI can print a well-formed envelope and then exit non-zero, so the
+        decode is attempted before the error is raised — otherwise the one place
+        that number exists is discarded on the way past.
+        """
+        cli_run(
+            returncode=1,
+            stderr="terminated after reporting",
+            stdout=json.dumps(envelope(is_error=True, total_cost_usd=0.05)),
+        )
+
+        with pytest.raises(TransportError) as excinfo:
+            cli_transport().complete("claude-sonnet-5", "prompt", 16000)
+
+        assert excinfo.value.cost_usd == pytest.approx(0.05)
+
+    def test_an_unreadable_failure_reports_no_cost_rather_than_zero(self, cli_run):
+        """`None` means "not known to have been billed", never "known free".
+
+        A 0.0 here would total into the summary as a call that cost nothing,
+        which is a claim nobody is in a position to make.
+        """
+        cli_run(returncode=1, stderr="killed", stdout="not an envelope")
+
+        with pytest.raises(TransportError) as excinfo:
+            cli_transport().complete("claude-sonnet-5", "prompt", 16000)
+
+        assert excinfo.value.cost_usd is None
 
     def test_timeout(self, cli_run):
         cli_run(raises=subprocess.TimeoutExpired(cmd="claude", timeout=600))
@@ -293,8 +522,22 @@ class TestClaudeCLIFailures:
     def test_missing_result_field(self, cli_run):
         cli_run(stdout=json.dumps(envelope(result=None)))
 
-        with pytest.raises(TransportError, match="no result"):
+        with pytest.raises(TransportError) as excinfo:
             cli_transport().complete("claude-sonnet-5", "prompt", 16000)
+
+        assert "no result" in str(excinfo.value)
+        # Same reasoning as the `is_error` branch: an envelope that reached us
+        # at all is a call that reached the harness and paid for its prefix.
+        assert excinfo.value.cost_usd == pytest.approx(0.0331)
+
+    def test_a_timeout_claims_no_cost_it_cannot_see(self, cli_run):
+        """Nothing was printed, so nothing is known — and unknown is not zero."""
+        cli_run(raises=subprocess.TimeoutExpired(cmd="claude", timeout=600))
+
+        with pytest.raises(TransportError) as excinfo:
+            cli_transport().complete("claude-sonnet-5", "prompt", 16000)
+
+        assert excinfo.value.cost_usd is None
 
     def test_binary_that_will_not_run(self, cli_run):
         cli_run(raises=OSError("Exec format error"))
@@ -606,6 +849,197 @@ class TestUsageSummary:
         assert "estimated_cost_usd" in orchestrator.usage_summary()
 
 
+class BilledFailureTransport:
+    """A CLI call that failed *after* the harness prefix was already billed."""
+
+    name = "claude_cli"
+
+    def __init__(self, cost_usd: float | None = 0.0331):
+        self.cost_usd = cost_usd
+
+    def complete(self, model, prompt, max_tokens):
+        raise TransportError(
+            "claude reported an error: Not logged in", cost_usd=self.cost_usd
+        )
+
+
+class TestAFailedCallIsNotAFreeCall:
+    """The spend a failure already made has to reach `usage_summary()`.
+
+    Usage was logged only after `transport.complete()` returned, so a call that
+    billed and then failed vanished from the accounting entirely — invisible to
+    the sweep's `--ceiling` across the dozens of serial calls a full sweep
+    makes, and reported as $0.0000 for the ticker that paid it.
+    """
+
+    def test_the_billed_failure_reaches_the_usage_log(self):
+        orchestrator = orchestrator_over(BilledFailureTransport())
+
+        result = orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        assert result == {
+            "error": "claude reported an error: Not logged in",
+            "pass": "pass1",
+        }
+        entry = orchestrator._usage_log[0]
+        assert entry["failed"] is True
+        assert entry["cost_usd"] == pytest.approx(0.0331)
+        assert entry["provider"] == "claude_cli"
+
+    def test_the_entry_says_the_token_counts_are_unknown_not_zero(self):
+        """Zero reported tokens would be the lie this layer explicitly forbids.
+
+        The call may have moved tens of thousands of tokens before it failed.
+        `None` plus `tokens_basis: "unknown"` is the honest reading, in the same
+        vocabulary the successful entries use.
+        """
+        orchestrator = orchestrator_over(BilledFailureTransport())
+
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        entry = orchestrator._usage_log[0]
+        assert entry["input_tokens"] is None
+        assert entry["output_tokens"] is None
+        assert entry["tokens_basis"] == TOKENS_BASIS_UNKNOWN
+
+    def test_the_summary_meters_the_spend_and_flags_the_short_totals(self):
+        """The half the `--ceiling` reads, and the caveat a reader needs."""
+        orchestrator = orchestrator_over(BilledFailureTransport())
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        summary = orchestrator.usage_summary()
+
+        assert summary["estimated_cost_usd"] == pytest.approx(0.0331)
+        assert summary["cost_basis"] == COST_BASIS_ACTUAL
+        assert summary["failed_calls"] == 1
+        # 0 here means "nothing known", which `failed_calls` is what says.
+        assert summary["total_tokens"] == 0
+
+    def test_a_successful_run_carries_no_failed_calls_key(self):
+        """Present only when there is something to correct."""
+        orchestrator = orchestrator_over(RecordingTransport("claude_cli", CLI_RESPONSE))
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        assert "failed_calls" not in orchestrator.usage_summary()
+
+    def test_an_unpriceable_failure_invents_neither_a_cost_nor_a_basis(self):
+        """A timeout knows nothing, and nothing must not be priced at zero.
+
+        It adds nothing to the total and does not vote on `cost_basis`: calling
+        it "estimated" would claim a $0 estimate nobody made, and flipping an
+        otherwise-metered run to "mixed" would misdescribe the number beside it.
+        `failed_calls` is the honest statement, and it is still made.
+        """
+        orchestrator = orchestrator_over(RecordingTransport("claude_cli", CLI_RESPONSE))
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+        orchestrator.transport = BilledFailureTransport(cost_usd=None)
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass2")
+
+        summary = orchestrator.usage_summary()
+
+        assert summary["estimated_cost_usd"] == pytest.approx(0.0331)
+        assert summary["cost_basis"] == COST_BASIS_ACTUAL
+        assert summary["failed_calls"] == 1
+
+    def test_a_log_of_nothing_but_failures_still_summarizes(self):
+        """Regression guard: pricing a `None` token count is a TypeError."""
+        orchestrator = orchestrator_over(BilledFailureTransport(cost_usd=None))
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        summary = orchestrator.usage_summary()
+
+        assert summary["estimated_cost_usd"] == 0.0
+        assert summary["cost_basis"] == COST_BASIS_ESTIMATED
+        assert summary["total_input_tokens"] == 0
+
+    def test_a_failure_after_the_call_succeeded_is_not_double_counted(self):
+        """Only `TransportError` logs a failure — the broad catch must not.
+
+        Everything else reaching that handler either never got as far as the
+        transport or failed in parsing, *after* the successful entry was already
+        appended. A second entry there would count one call twice.
+        """
+        class ParseBreaker(RecordingTransport):
+            def complete(self, model, prompt, max_tokens):
+                super().complete(model, prompt, max_tokens)
+                return TransportResponse(text=None, input_tokens=1, output_tokens=1)
+
+        orchestrator = orchestrator_over(ParseBreaker("claude_cli", CLI_RESPONSE))
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        assert len(orchestrator._usage_log) == 1
+        assert "failed" not in orchestrator._usage_log[0]
+
+
+class TestCacheTotalsReachTheReader:
+    """Per-call cache counts that no aggregate sums are a defence in name only.
+
+    The envelope's `input_tokens` excludes everything the cache served, so a
+    Pass 1 + Pass 2 run that moved ~35K tokens summed to ~1.6K and every surface
+    printed that alone. Beside an API-path report's honest 34,000 the CLI path
+    read as forty times more token-efficient at twice the price — the exact
+    misreading the fields were added to prevent, defeated one layer above where
+    they were added.
+    """
+
+    def _cli_summary(self, calls: int = 2) -> dict:
+        orchestrator = orchestrator_over(RecordingTransport("claude_cli", CLI_RESPONSE))
+        for _ in range(calls):
+            orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+        return orchestrator.usage_summary()
+
+    def test_the_summary_totals_both_cache_counts(self):
+        summary = self._cli_summary()
+
+        assert summary["total_cache_read_input_tokens"] == 2 * 28083
+        assert summary["total_cache_creation_input_tokens"] == 2 * 5349
+
+    def test_the_derived_total_is_what_the_surfaces_render(self):
+        """Derived once here rather than three times in three templates.
+
+        The split stays beside it because the halves price differently — Claude
+        Code writes cache at 2× standard input and reads it at 0.1×.
+        """
+        summary = self._cli_summary()
+
+        assert summary["total_cached_input_tokens"] == 2 * (28083 + 5349)
+
+    def test_the_api_path_emits_no_cache_keys_at_all(self):
+        """Absence stays distinguishable from zero.
+
+        A `0` would not read as "not applicable" — it would read as "every
+        prompt was written fresh", which is the expensive case, not the absent
+        one.
+        """
+        orchestrator = orchestrator_over(RecordingTransport("anthropic", API_RESPONSE))
+        orchestrator._call_api("claude-sonnet-5", "prompt", "pass1")
+
+        summary = orchestrator.usage_summary()
+
+        assert "total_cache_read_input_tokens" not in summary
+        assert "total_cached_input_tokens" not in summary
+
+    def test_the_per_pass_breakdown_is_kept(self):
+        """Aggregating is additive: the per-call counts still travel."""
+        summary = self._cli_summary(calls=1)
+
+        assert summary["passes"][0]["cache_read_input_tokens"] == 28083
+
+    def test_the_console_line_states_the_cached_tokens(self, capsys):
+        """A bare cache-excluded number with no corrective beside it is the bug."""
+        from boundless100x.cli import _print_llm_summary
+        from tests.conftest import make_result
+
+        result = make_result()
+        result.llm_analysis = {"usage": self._cli_summary()}
+
+        _print_llm_summary(result)
+
+        printed = capsys.readouterr().out
+        assert "cached" in printed
+        assert f"{2 * (28083 + 5349):,}" in printed
+
+
 # ── The CLI flag, and the sweep it meters ──────────────────────────────────
 
 
@@ -733,18 +1167,76 @@ class TestSurfacesStateTheBasis:
 
         assert f"{COST_BASIS_ESTIMATED} $0.0662" in html
 
+    def test_the_report_shows_the_cached_tokens_beside_the_count(self, tmp_path):
+        """`1,604 tokens` alone is the phantom efficiency, in the report itself."""
+        html = self._render(
+            tmp_path,
+            {
+                "total_tokens": 1_604,
+                "total_cached_input_tokens": 33_432,
+                "estimated_cost_usd": 0.0662,
+                "total_seconds": 12.0,
+                "cost_basis": COST_BASIS_ACTUAL,
+                "provider": "claude_cli",
+            },
+        )
+
+        assert "1604 tokens" in html
+        assert "(+33,432 cached)" in html
+
+    def test_the_report_says_when_the_totals_are_short(self, tmp_path):
+        """A failed call's tokens are unknown, so the total beside it is partial."""
+        html = self._render(
+            tmp_path,
+            {
+                "total_tokens": 1_604,
+                "estimated_cost_usd": 0.0662,
+                "total_seconds": 12.0,
+                "cost_basis": COST_BASIS_ACTUAL,
+                "provider": "claude_cli",
+                "failed_calls": 2,
+            },
+        )
+
+        assert "2 failed calls (tokens unknown)" in html
+
+    def test_an_api_path_report_gains_no_cache_clause(self, tmp_path):
+        """Nothing to correct, so nothing is said — absence, not a zero."""
+        html = self._render(
+            tmp_path,
+            {
+                "total_tokens": 34_000,
+                "estimated_cost_usd": 0.0662,
+                "total_seconds": 12.0,
+                "cost_basis": COST_BASIS_ESTIMATED,
+                "provider": "anthropic",
+            },
+        )
+
+        assert "cached)" not in html
+        assert "failed call" not in html
+
 
 class ActualCostLLM(RecordingLLM):
     """A CLI-path orchestrator stub: every call reports a real metered cost."""
 
     PER_CALL_USD = 0.05
+    # Cache read + creation on one call, at the order of magnitude a real
+    # envelope reports — and the reason the stub bothers: the sweep footer reads
+    # its token figures off `usage_summary()` deltas, so a stub with no cache
+    # counts could not tell whether they reached it.
+    PER_CALL_CACHED_TOKENS = 33_432
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._spent = 0.0
+        self._cached = 0
 
     def run_forward_growth_extraction(self, ticker, company_name, submission):
+        # Incremented before the failure branch below, deliberately: the harness
+        # prefix is billed whether or not the call goes on to succeed.
         self._spent += self.PER_CALL_USD
+        self._cached += self.PER_CALL_CACHED_TOKENS
         return super().run_forward_growth_extraction(ticker, company_name, submission)
 
     def usage_summary(self):
@@ -752,6 +1244,7 @@ class ActualCostLLM(RecordingLLM):
         summary["estimated_cost_usd"] = round(self._spent, 6)
         summary["cost_basis"] = "actual"
         summary["provider"] = "claude_cli"
+        summary["total_cached_input_tokens"] = self._cached
         return summary
 
 
@@ -922,3 +1415,54 @@ class TestNothingDownstreamCanTell:
             "model",
             "source_digest",
         }
+
+
+class TestTheSweepReportsWhatWasReallySpent:
+    """The footer is the sweep's whole account of a run that cost real money.
+
+    Two things used to be missing from it: the cache counts, without which the
+    printed token figures are the envelope's cache-*excluded* ones and cannot be
+    reconciled with the dollar figure beside them; and the spend of any call
+    that billed and then failed, which never entered `usage_summary()` at all.
+    """
+
+    def test_the_cache_deltas_reach_the_footer_dict(self, service, corpus):
+        from boundless100x.llm_layer import sweep as sweep_module
+
+        service._llm = ActualCostLLM(response=_extraction_response())
+
+        report = sweep_module.sweep(service, all_tickers=True)
+
+        assert report["actual"]["cached_input_tokens"] == (
+            2 * ActualCostLLM.PER_CALL_CACHED_TOKENS
+        )
+
+    def test_the_api_path_footer_gains_no_cache_keys(self, service, corpus):
+        """Absent rather than zero: the API path does not cache-report."""
+        from boundless100x.llm_layer import sweep as sweep_module
+
+        report = sweep_module.sweep(service, all_tickers=True)
+
+        assert "cached_input_tokens" not in report["actual"]
+
+    def test_a_ticker_whose_extraction_failed_still_reports_what_it_billed(
+        self, service, corpus
+    ):
+        """$0.0000 beside a failure is a claim the sweep is in no position to make.
+
+        On the claude_cli path the harness prefix is paid before the model reads
+        a word of ours, so a ticker that failed can have spent as much as one
+        that succeeded.
+        """
+        from boundless100x.llm_layer import sweep as sweep_module
+
+        service._llm = ActualCostLLM(
+            response=_extraction_response(), fail_on=("ASTRAL",)
+        )
+
+        report = sweep_module.sweep(service, tickers=["ASTRAL"])
+
+        assert report["results"][0]["status"] == "failed"
+        assert report["results"][0]["cost_usd"] == pytest.approx(
+            ActualCostLLM.PER_CALL_USD
+        )

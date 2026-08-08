@@ -1025,8 +1025,14 @@
 
 {% set usage = llm_analysis.get('usage', {}) %}
 {% if usage %}
+{# The token count is the transport's own, and on the claude_cli path it
+   EXCLUDES everything the prompt cache served or absorbed — a two-pass run
+   that moved ~35K tokens reports ~1.6K. Rendered bare beside an API-path
+   report's honest 34,000 it reads as forty times the token efficiency at twice
+   the price, which is the misreading the cache counts exist to prevent. They
+   only prevent it here, where someone reads them. #}
 <div style="margin-top: 15px; color: var(--text-muted); font-size: 0.8em;">
-  LLM: {{ usage.get('total_tokens', 0) }} tokens | {{ usage.get('cost_basis', cost_basis_estimated) }} ${{ "%.4f"|format(usage.get('estimated_cost_usd', 0)) }}{% if usage.get('provider') %} via {{ usage.get('provider') }}{% endif %} | {{ usage.get('total_seconds', 0) }}s
+  LLM: {{ usage.get('total_tokens', 0) }} tokens{% if usage.get('total_cached_input_tokens') is not none %} <span title="Prompt tokens served from or written to the provider's cache. The transport's token count excludes them, so they are stated beside it rather than folded into it.">(+{{ '{:,}'.format(usage.get('total_cached_input_tokens')) }} cached)</span>{% endif %} | {{ usage.get('cost_basis', cost_basis_estimated) }} ${{ "%.4f"|format(usage.get('estimated_cost_usd', 0)) }}{% if usage.get('provider') %} via {{ usage.get('provider') }}{% endif %} | {{ usage.get('total_seconds', 0) }}s{% if usage.get('failed_calls') %} | <span title="These calls failed before anyone could count their tokens, so the total above is short by whatever they moved. Any cost beside it is only what the transport managed to report on the way down.">{{ usage.get('failed_calls') }} failed call{{ 's' if usage.get('failed_calls') > 1 else '' }} (tokens unknown)</span>{% endif %}
 </div>
 {% endif %}
 {% endif %}

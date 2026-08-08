@@ -37,21 +37,16 @@ from boundless100x.data_fetcher import refetch
 from boundless100x.data_fetcher.download_annual_reports import load_cached_sections
 from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.orchestrator import MODEL_PRICING, estimate_cost
-from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED
+from boundless100x.llm_layer.transport import CHARS_PER_TOKEN, COST_BASIS_ESTIMATED
 
 logger = logging.getLogger(__name__)
 
-# Rule-of-thumb characters per token for English prose. Deliberately a round
-# number and deliberately named: the estimate is an estimate, and pretending
-# otherwise by tuning this to three decimal places would only make it look
-# like a quote.
-#
-# Was 4, against the Sonnet 4.6 tokenizer. The Claude 5 family tokenizes the
-# same text to roughly 30% more tokens, which would have left every estimate
-# here about a third under the bill — the same failure the output-token
-# constant below records, and in the same direction that matters. 3 rounds
-# the other way, so the estimate now reads slightly high.
-CHARS_PER_TOKEN = 3
+# `CHARS_PER_TOKEN` lived here and now lives in `transport.py`, imported above.
+# It was measured here first — 4 was the Sonnet 4.6 figure, the Claude 5 family
+# tokenizes ~30% higher, so 4 under-priced every estimate by about a third — and
+# then the CLI transport's own fallback estimate was written at 4 anyway, which
+# is exactly what a second copy of a measured constant does. One definition, in
+# the module both readers can import from without a cycle.
 
 # What one extraction response tends to cost in output tokens. Measured, not
 # guessed: two pilot batches over the same three tickers returned 4,212 and
@@ -311,6 +306,23 @@ def sweep(
         "provider": after.get("provider"),
         "cost_basis": after.get("cost_basis", COST_BASIS_ESTIMATED),
     }
+    # The cache counts have to travel this far or they reach no surface at all.
+    # `input_tokens` above is the envelope's, which **excludes** everything
+    # served from or written to the cache — so a sweep that moved half a million
+    # cached tokens prints a four-figure input total beside a real dollar figure,
+    # and reads as impossibly efficient next to the API path's honest count.
+    # Absent rather than zero when the provider had nothing to say about caching:
+    # the API path does not cache-report, and a 0 there would claim every prompt
+    # was written fresh.
+    for key in (
+        "total_cache_read_input_tokens",
+        "total_cache_creation_input_tokens",
+        "total_cached_input_tokens",
+    ):
+        if key in after:
+            report["actual"][key[len("total_") :]] = after[key] - spent_before.get(
+                key, 0
+            )
     report["discard_summary"] = group_discards(
         [d for r in report["results"] for d in r.get("discarded", [])]
     )
@@ -328,7 +340,15 @@ def _extract_one(service, ticker: str) -> dict:
         # whole point of running it is to find out which ones those are.
         logger.error(f"{ticker}: extraction failed: {e}")
         return {"ticker": ticker, "status": "failed", "detail": str(e),
-                "kept": 0, "discarded": []}
+                "kept": 0, "discarded": [],
+                # A failure is not a refund. On the claude_cli path the harness
+                # prefix is billed before the model reads a word of ours, so a
+                # ticker that failed can still have spent — reported here for
+                # the same reason the successful branch reports it, and read off
+                # the same running total the `--ceiling` meters on.
+                "cost_usd": round(
+                    service._llm.usage_summary()["estimated_cost_usd"] - before, 4
+                )}
 
     years = context.get("forward_growth") or {}
     discarded = context.get("forward_growth_discarded")

@@ -514,11 +514,18 @@ def sweep(
                 f"{', '.join(report['not_reached'])}[/yellow]"
             )
         actual = report["actual"]
+        # `input_tokens` is the transport's own count, which on the claude_cli
+        # path excludes everything the cache served or absorbed — so without
+        # this the footer prints a few thousand tokens beside a real dollar
+        # figure and the arithmetic looks impossible.
+        cached = actual.get("cached_input_tokens")
+        cached_note = f" (+{cached:,} cached)" if cached is not None else ""
         console.print(
             f"\n[bold]Actual:[/bold] ${actual['usd']:.4f} "
             f"[dim]({actual.get('cost_basis', COST_BASIS_ESTIMATED)}, "
             f"{actual.get('provider') or 'unknown provider'})[/dim] — "
             f"{actual['input_tokens']:,} in + {actual['output_tokens']:,} out"
+            f"{cached_note}"
         )
         if actual.get("provider") == LLMProvider.CLAUDE_CLI.value:
             # Most of what a CLI call bills has nothing to do with the ticker,
@@ -915,11 +922,26 @@ def _print_llm_summary(result):
         # describe a real bill as a guess.
         provider = usage.get("provider")
         via = f" via {provider}" if provider else ""
+        # The token count above is the transport's, and on the claude_cli path
+        # that number **excludes** everything served from or written to cache: a
+        # two-pass run that moved ~35K tokens reports ~1.6K. Printed bare beside
+        # an API-path report's honest 34,000, the CLI path reads as forty times
+        # more token-efficient at twice the price. The correction has to be
+        # rendered, not merely recorded.
+        cached = usage.get("total_cached_input_tokens")
+        cached_note = f" (+{cached:,} cached)" if cached is not None else ""
+        # The totals are short by this many calls' tokens — see `_log_failed_call`.
+        failed = usage.get("failed_calls")
+        failed_note = (
+            f" | {failed} failed call{'s' if failed > 1 else ''} (tokens unknown)"
+            if failed
+            else ""
+        )
         console.print(
-            f"\n[dim]LLM: {usage.get('total_tokens', 0)} tokens | "
+            f"\n[dim]LLM: {usage.get('total_tokens', 0)} tokens{cached_note} | "
             f"{usage.get('cost_basis', COST_BASIS_ESTIMATED)} "
             f"${usage.get('estimated_cost_usd', 0):.4f}{via} | "
-            f"{usage.get('total_seconds', 0)}s[/dim]"
+            f"{usage.get('total_seconds', 0)}s{failed_note}[/dim]"
         )
 
 
