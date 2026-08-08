@@ -63,15 +63,13 @@ llm:
   # A structured-extraction task, not a judgement one, so it carries its own
   # model rather than tracking Pass 1 and 2. `--deep` still moves it to Opus.
   #
-  # DELIBERATELY LEFT ON THE OLDER MODEL while Pass 1 and 2 moved to Claude 5.
-  # The model id is part of the sidecar's version block, so changing it
-  # invalidates every cached extraction in raw_data/ and the next sweep
-  # re-extracts the whole corpus at cost. That is the versioning working, not
-  # a bug — but it makes this a priced decision rather than a free one.
-  # Price it with `sweep --all --dry-run` before changing it, and note the
-  # Claude 5 tokenizer returns ~30% more tokens for the same text, so the
-  # estimate moves too.
-  forward_growth_model: "claude-sonnet-4-6"
+  # CHANGING THIS ID SPENDS MONEY. It is part of the sidecar's version block,
+  # so a new value invalidates every cached extraction under raw_data/ and the
+  # corpus is re-extracted — by the next `sweep`, or one ticker at a time and
+  # silently by the next `analyze` with the LLM enabled. That is the
+  # versioning working, not a bug: a reading is only as good as the model that
+  # produced it. Price it with `sweep --all --dry-run` first.
+  forward_growth_model: "claude-sonnet-5"
   forward_growth_char_budget: 12000 # Per gated section, per report year — the
                                     # extractor reads each section separately,
                                     # unlike Pass 1's combined single string.

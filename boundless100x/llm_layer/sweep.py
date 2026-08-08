@@ -44,7 +44,13 @@ logger = logging.getLogger(__name__)
 # number and deliberately named: the estimate is an estimate, and pretending
 # otherwise by tuning this to three decimal places would only make it look
 # like a quote.
-CHARS_PER_TOKEN = 4
+#
+# Was 4, against the Sonnet 4.6 tokenizer. The Claude 5 family tokenizes the
+# same text to roughly 30% more tokens, which would have left every estimate
+# here about a third under the bill — the same failure the output-token
+# constant below records, and in the same direction that matters. 3 rounds
+# the other way, so the estimate now reads slightly high.
+CHARS_PER_TOKEN = 3
 
 # What one extraction response tends to cost in output tokens. Measured, not
 # guessed: two pilot batches over the same three tickers returned 4,212 and

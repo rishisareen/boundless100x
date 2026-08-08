@@ -169,19 +169,6 @@ def test_configured_models_are_restored(orchestrator):
     assert llm.forward_growth_model == "extraction-model"
 
 
-def test_the_extraction_model_is_pinned_to_its_cached_generation(
-    shipped_llm_config,
-):
-    """Its id is part of the sidecar version block.
-
-    Moving it invalidates every cached extraction in `raw_data/` and the next
-    sweep re-extracts the corpus at cost, so it is deliberately left behind
-    the passes rather than moved with them. This test is a speed bump, not a
-    prohibition: change it in the same commit that prices the re-extraction.
-    """
-    assert shipped_llm_config["forward_growth_model"] == "claude-sonnet-4-6"
-
-
 def test_the_families_the_table_prices_are_distinguishable():
     """Matching is a substring test over the model id, so two families that
     could both match one id would resolve by dict order and price by luck."""

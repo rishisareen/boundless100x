@@ -1258,9 +1258,17 @@ class TestStageOnePointFive:
 
     def test_a_run_with_no_llm_configured_at_all_still_hydrates(self, monkeypatch, tmp_path):
         """No API key must not mean a paid-for extraction becomes unreadable."""
+        from boundless100x.llm_layer.orchestrator import forward_growth_model
+
         llm = RecordingLLM(response={"years": {"2025": {}}})
-        llm.forward_growth_model = "claude-sonnet-4-6"  # the configured default
         svc = service_for(monkeypatch, tmp_path, analysable(provenance="found"), llm)
+        # The keyless run below resolves the extraction model from config, so
+        # the sidecar written here has to be keyed the same way. Read it from
+        # the same helper rather than pinning an id: a literal here was really
+        # saying "the configured default", and said it in a way that a config
+        # change strands — this test failed on exactly that when the passes
+        # moved to Claude 5.
+        llm.forward_growth_model = forward_growth_model(svc.config)
         svc.analyze("ASTRAL", use_llm=True)
 
         keyless = service_for(monkeypatch, tmp_path, analysable(provenance="found"), None)
