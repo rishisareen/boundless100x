@@ -1233,6 +1233,21 @@ The three production stores (`watchlist.json`, `score_history.jsonl`,
 `simulate()` run against the real corpus at the end of every unit from U2
 onward — byte-identical every time, most recently after U7's exit.py fix.
 
+The verification calls this proof is built from — `Boundless100xService()
+.analyze("ASTRAL", ...)`, run directly (never through the simulator, which
+never calls `service.analyze` at all) to produce the before/after
+composite/coverage/verdict reading above — are themselves real, organic
+scored runs, so each one appended its own row to the git-tracked, append-
+only `score_history.jsonl`, exactly as the file's own contract requires
+("A run whose scoring failed appends nothing... nothing ever rewrites a
+line"). Three ASTRAL rows and one EDELWEISS row from this phase's own verification
+work are committed separately as their own `chore(history):` commit,
+matching the project's existing convention for this file (e.g. `6960a76`)
+rather than folding data into a feature commit — same-day duplicates
+against the existing rows, resolved at read time by `load_history` per
+the file's own documented dedup rule, not evidence of anything scored
+twice in error.
+
 ### Leak test
 
 U1's `tests/test_point_in_time.py` asserts, per frame/column, that no
