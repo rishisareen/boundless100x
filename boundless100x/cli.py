@@ -45,7 +45,7 @@ def analyze(
     ticker: str = typer.Argument(help="NSE symbol (e.g., ASTRAL)"),
     bse_code: str = typer.Option(None, help="BSE scrip code"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Skip LLM analysis"),
-    deep: bool = typer.Option(False, "--deep", help="Use Opus for Pass 1 & 2 (~5x LLM cost, deeper analysis)"),
+    deep: bool = typer.Option(False, "--deep", help="Use Opus for Pass 1 & 2 (~1.7x LLM cost, deeper analysis)"),
     formats: str = typer.Option("html,md,json", help="Output formats (comma-separated)"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):

@@ -35,17 +35,29 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
-DEEP_MODEL = "claude-opus-4-6"
+DEFAULT_MODEL = "claude-sonnet-5"
+DEEP_MODEL = "claude-opus-5"
+
+# Thinking is on by default on the Claude 5 family and is billed against the
+# same ceiling as the response text, so a budget sized for the JSON alone
+# truncates mid-object. The cap costs nothing unless it is reached.
+DEFAULT_MAX_TOKENS = 16000
 
 # USD per million tokens, (input, output), matched on the family name in the
 # model id. Kept here as the one price table in the repo: the extraction sweep
 # prices a run *before* spending on it, and an estimate computed from a second
 # copy of these numbers would drift out of agreement with the bill.
+#
+# Every model any config may name must appear here. `estimate_cost` returns
+# 0.0 for an unrecognised id, and the sweep's ceiling meters on that same
+# number — so a missing family prints a ceiling and enforces nothing.
+# Sonnet is listed at list price while a lower introductory rate runs; an
+# estimate above the bill is the safe direction for a spend ceiling.
 MODEL_PRICING = {
-    "opus": (15.0, 75.0),
+    "fable": (10.0, 50.0),
+    "opus": (5.0, 25.0),
     "sonnet": (3.0, 15.0),
-    "haiku": (0.80, 4.0),
+    "haiku": (1.0, 5.0),
 }
 
 
@@ -103,11 +115,14 @@ class LLMOrchestrator:
         self.enabled = llm_config.get("enabled", True)
         self.pass1_model = llm_config.get("pass1_model", DEFAULT_MODEL)
         self.pass2_model = llm_config.get("pass2_model", DEFAULT_MODEL)
+        # What `--deep` swaps to. Config-driven for the same reason the other
+        # models are: moving a generation should not need a code change.
+        self.deep_model = llm_config.get("deep_model", DEEP_MODEL)
         # The extraction call is deliberately its own model setting: it is a
         # structured-extraction task rather than a judgement one, so it need
         # not track whatever Pass 1 and 2 are set to.
         self.forward_growth_model = forward_growth_model(config)
-        self.max_tokens = llm_config.get("max_tokens", 2000)
+        self.max_tokens = llm_config.get("max_tokens", DEFAULT_MAX_TOKENS)
         self.skip_pass1_if_no_ar = llm_config.get("skip_pass1_if_no_ar", True)
         # Per submitted section, per report year. Sits alongside
         # pass1_ar_char_budget rather than sharing it: Pass 1 reads a combined
@@ -131,15 +146,17 @@ class LLMOrchestrator:
         self._usage_log: list[dict] = []
 
     def use_deep_models(self) -> None:
-        """Override every call to use Opus for deeper analysis."""
-        self.pass1_model = DEEP_MODEL
-        self.pass2_model = DEEP_MODEL
-        self.forward_growth_model = DEEP_MODEL
-        self.max_tokens = 4000  # Opus benefits from more output room
-        logger.info(
-            f"Deep mode: all passes → {DEEP_MODEL}, "
-            f"max_tokens → {self.max_tokens}"
-        )
+        """Override every call to use Opus for deeper analysis.
+
+        `max_tokens` is deliberately left alone. It used to be set to 4000
+        here, which was *below* the configured 4096 — deep mode bought a
+        better model and then gave it less room to answer in. The configured
+        ceiling already accommodates the deeper model's thinking.
+        """
+        self.pass1_model = self.deep_model
+        self.pass2_model = self.deep_model
+        self.forward_growth_model = self.deep_model
+        logger.info(f"Deep mode: all passes → {self.deep_model}")
 
     def use_configured_models(self) -> None:
         """Restore the configured models, undoing any deep-mode override.
@@ -154,7 +171,7 @@ class LLMOrchestrator:
         self.pass1_model = llm_config.get("pass1_model", DEFAULT_MODEL)
         self.pass2_model = llm_config.get("pass2_model", DEFAULT_MODEL)
         self.forward_growth_model = forward_growth_model(self._config)
-        self.max_tokens = llm_config.get("max_tokens", 2000)
+        self.max_tokens = llm_config.get("max_tokens", DEFAULT_MAX_TOKENS)
 
     # ── Forward-growth extraction (Stage 1.5) ──
 

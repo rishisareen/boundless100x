@@ -43,9 +43,16 @@ corpus_snapshot:
 # ── LLM Configuration ──
 llm:
   provider: "anthropic"
-  pass1_model: "claude-sonnet-4-6"
-  pass2_model: "claude-sonnet-4-6"
-  max_tokens: 4096
+  pass1_model: "claude-sonnet-5"
+  pass2_model: "claude-sonnet-5"
+  deep_model: "claude-opus-5"   # What `--deep` swaps every call to
+  max_tokens: 16000             # Thinking is on by default on the Claude 5
+                                # family and bills against this same ceiling,
+                                # so a budget sized for the JSON alone
+                                # truncates the object mid-write. A high cap
+                                # costs nothing unless it is reached — but it
+                                # IS the worst case `sweep --dry-run` prices,
+                                # so `estimated_cost_usd_max` rises with it.
   enabled: true
   skip_pass1_if_no_ar: true
   pass1_ar_char_budget: 3000  # Annual-report chars Pass 1 may read. This is
@@ -55,6 +62,15 @@ llm:
   # ── Forward-growth extraction (Stage 1.5) ──
   # A structured-extraction task, not a judgement one, so it carries its own
   # model rather than tracking Pass 1 and 2. `--deep` still moves it to Opus.
+  #
+  # DELIBERATELY LEFT ON THE OLDER MODEL while Pass 1 and 2 moved to Claude 5.
+  # The model id is part of the sidecar's version block, so changing it
+  # invalidates every cached extraction in raw_data/ and the next sweep
+  # re-extracts the whole corpus at cost. That is the versioning working, not
+  # a bug — but it makes this a priced decision rather than a free one.
+  # Price it with `sweep --all --dry-run` before changing it, and note the
+  # Claude 5 tokenizer returns ~30% more tokens for the same text, so the
+  # estimate moves too.
   forward_growth_model: "claude-sonnet-4-6"
   forward_growth_char_budget: 12000 # Per gated section, per report year — the
                                     # extractor reads each section separately,
