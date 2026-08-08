@@ -117,11 +117,23 @@ ARG_MAX concerns on multi-tens-of-KB extraction prompts):
 
 ```
 claude -p \
-  --bare \
   --model <model-id, passed through verbatim> \
   --output-format json \
-  --max-turns 1
+  --setting-sources "" \
+  --strict-mcp-config --mcp-config '{"mcpServers":{}}'
 ```
+
+**`--bare` is NOT used, and this is a measured correction rather than a
+preference.** It was the plan's original first flag — the thing that made the
+call "a scripted completion, not an agent session". On CLI **2.1.225** it
+breaks subscription auth outright: the envelope comes back
+`is_error: true`, `terminal_reason: "api_error"`,
+`result: "Not logged in · Please run /login"`, with `duration_api_ms: 0`, on a
+machine whose keychain holds a valid Max OAuth token and where the identical
+command without `--bare` succeeds. Isolated by running the flag alone against
+an otherwise-working invocation. The three flags above are the closest
+reachable substitute for its intent — no settings files, no MCP servers — and
+they authenticate. `--max-turns` does not exist in this version at all.
 
 with `input=prompt` and a **scrubbed environment**:
 
@@ -135,12 +147,16 @@ with `input=prompt` and a **scrubbed environment**:
   `--max-tokens` flag; this env var is how the orchestrator's existing
   `max_tokens` setting reaches the CLI path. (The truncation-repair logic in
   `_parse_json_response` already handles a hard cut, same as the API path.)
-- `--bare` keeps hooks, skills, MCP servers, and CLAUDE.md out of the call —
-  a scripted completion, not an agent session. `--max-turns 1` forecloses
-  tool-use loops.
-- `timeout=` from new config `llm.cli_timeout_seconds` (default **600**;
-  Opus passes with 4k output tokens are slow, and the API SDK's own default
-  timeout is in the same range).
+- **Do NOT pass `--system-prompt`.** It looks like the way to shrink the
+  prefix and does the opposite: overriding it invalidates the server-side
+  prompt cache, and the same trivial call went from $0.065 to **$0.171**
+  (`cache_creation` 28,412, `cache_read` 0). Leave the harness prompt alone
+  and let it cache.
+- `timeout=` from new config `llm.cli_timeout_seconds` (default **600**).
+  Sized when `max_tokens` was 4096; it is now 16000 with thinking on by
+  default on the Claude 5 family, so a slow Opus 5 completion has materially
+  more room to run than when this number was chosen. Re-check it against a
+  real extraction call before trusting it.
 
 Result parsing — the envelope from `--output-format json`:
 
@@ -169,23 +185,55 @@ config `llm.claude_binary` (default `"claude"`). Missing →
 "or set llm.provider: anthropic")`. Login state is NOT preflighted (there is
 no free check); the first call surfaces it as a normal per-pass error.
 
-**Step 0 of implementation: install and log in Claude Code.** As of
-2026-08-08 this machine has no `claude` binary on PATH or in any common
-install location (`~/.claude` exists, so it was once present; the binary is
-gone). The precondition path degrades gracefully without it, but none of the
-verifications below can run until it is installed and authenticated with the
-Max subscription.
+**Every call carries a fixed ~$0.065 of harness overhead, and it does not
+amortize.** This is the finding that most changes the feature's shape, and it
+was not visible from the docs. Without `--bare`, `claude -p` loads Claude
+Code's own system prompt and full tool suite on every invocation. A prompt of
+literally two tokens, answered with one word, measured:
 
-**Implementation-time verifications** (flags confirmed against docs
-2026-08-08, but verify against the installed CLI before relying on them):
-`--bare` (recent enough that once installed, the minimum CLI version that
-supports it should be **pinned in this plan and in `config.yaml`'s comment**,
-not left as "verify flags"), `--max-turns` in print mode, envelope `usage`
-field presence and its cache-token fields, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
-and **model-id pass-through** — `--model` must accept the full Anthropic ids
-the config carries (`claude-sonnet-4-6`, `claude-opus-4-6`) verbatim, not
-just aliases, since `--deep`'s semantics depend on it. Any that differ:
-adapt the transport, not the seam.
+| Invocation | cost | cache_create | cache_read |
+|---|---|---|---|
+| default | $0.0807 | 11,940 | 28,083 |
+| settings off + MCP empty | $0.0651 | 9,337 | 28,083 |
+| same, immediately repeated | $0.0651 | 9,342 | 28,083 |
+| `--system-prompt` override | $0.1711 | 28,412 | 0 |
+
+The third row is the important one: a second identical call moments later
+pays the same, so this is a per-call floor, not a warm-up. For scale, the
+whole extraction sweep prices at ~$0.79 on the API path, and the CLI path
+would add ~$0.065 × 15 ≈ $1 of pure harness on top. **That does not sink the
+feature** — it is metered against a subscription pool ~100× larger than this
+workload — but it has two consequences the code must respect:
+
+1. **The sweep's `--ceiling` meters on `estimated_cost_usd`, which on this
+   path carries actual cost including the overhead.** A ceiling calibrated
+   against API pricing trips far sooner here. The ceiling is not wrong; the
+   number it meters means something different per provider, and the report
+   must say which.
+2. **Per-ticker cost stops being a per-ticker fact.** Most of what a CLI call
+   bills has nothing to do with the ticker, so cost-per-ticker is not
+   comparable across providers.
+
+**Step 0 is done.** `claude` 2.1.225 at `~/.local/bin/claude`, authenticated
+against a Max 5x subscription. **2.1.225 is the pinned minimum** — record it
+in `config.yaml` beside `claude_binary`, because the flag set above is
+version-specific in both directions (`--bare` must be absent, `--mcp-config`
+requires the `{"mcpServers":{}}` shape rather than `{}`).
+
+**Verifications — all now run against 2.1.225, results recorded:**
+
+| Checked | Result |
+|---|---|
+| `--bare` | **Breaks subscription auth.** Removed from the design (above) |
+| `--max-turns` | **Does not exist** in this version |
+| `--output-format json` envelope | Confirmed: `is_error`, `result`, `terminal_reason`, `total_cost_usd`, `usage.*` all present as assumed |
+| `usage` cache fields | Confirmed present, and the phantom-efficiency risk is real — a call that moved ~37K tokens reported `input_tokens: 2`. Carrying the cache fields is mandatory, not cosmetic |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Accepted; does not disturb auth |
+| Model-id pass-through | Confirmed with the full id `claude-sonnet-5`; `modelUsage` in the envelope names the model that actually ran, so the transport can assert it rather than trust it |
+
+Note the envelope's `modelUsage` also showed a `claude-haiku-4-5` entry
+alongside the requested model — the harness runs its own auxiliary calls. One
+more reason per-call cost on this path is not a clean per-request figure.
 
 ### Orchestrator changes (`llm_layer/orchestrator.py`)
 
@@ -225,8 +273,9 @@ llm:
   cli_timeout_seconds: 600     # claude_cli only; per-call subprocess timeout
 ```
 
-All other keys (`pass1_model`, `pass2_model`, `forward_growth_model`,
-`max_tokens`, budgets) apply identically to both providers.
+All other keys (`pass1_model`, `pass2_model`, `deep_model`,
+`forward_growth_model`, `max_tokens`, budgets) apply identically to both
+providers.
 
 ### CLI surface (`cli.py`)
 
