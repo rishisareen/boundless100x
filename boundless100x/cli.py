@@ -13,7 +13,7 @@ from rich.table import Table
 from boundless100x.cli_common import console, setup_logging
 # The two legal provider literals, single-sourced from the transport that
 # implements them so a flag value and a config value are never two vocabularies.
-from boundless100x.llm_layer.transport import LLMProvider
+from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED, LLMProvider
 
 app = typer.Typer(
     name="boundless100x",
@@ -51,9 +51,7 @@ def _config_with_provider(llm_provider: LLMProvider | None) -> dict:
     a second way of saying the same thing is a second thing to keep in
     agreement. `Boundless100xService` already accepts an injected dict.
     """
-    from boundless100x.service import load_config
-
-    config = load_config()
+    config = _load_config()
     if llm_provider is not None:
         config.setdefault("llm", {})["provider"] = llm_provider.value
     return config
@@ -518,7 +516,7 @@ def sweep(
         actual = report["actual"]
         console.print(
             f"\n[bold]Actual:[/bold] ${actual['usd']:.4f} "
-            f"[dim]({actual.get('cost_basis', 'estimated')}, "
+            f"[dim]({actual.get('cost_basis', COST_BASIS_ESTIMATED)}, "
             f"{actual.get('provider') or 'unknown provider'})[/dim] — "
             f"{actual['input_tokens']:,} in + {actual['output_tokens']:,} out"
         )
@@ -919,7 +917,7 @@ def _print_llm_summary(result):
         via = f" via {provider}" if provider else ""
         console.print(
             f"\n[dim]LLM: {usage.get('total_tokens', 0)} tokens | "
-            f"{usage.get('cost_basis', 'estimated')} "
+            f"{usage.get('cost_basis', COST_BASIS_ESTIMATED)} "
             f"${usage.get('estimated_cost_usd', 0):.4f}{via} | "
             f"{usage.get('total_seconds', 0)}s[/dim]"
         )

@@ -22,6 +22,7 @@ from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_de
 from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.checklist import build_sector_context
 from boundless100x.llm_layer.orchestrator import LLMOrchestrator
+from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED
 from boundless100x import score_history, trajectory
 
 logger = logging.getLogger(__name__)
@@ -248,7 +249,7 @@ class Boundless100xService:
                 usage = result.llm_analysis.get("usage", {})
                 logger.info(
                     f"LLM analysis complete: {usage.get('total_tokens', 0)} tokens, "
-                    f"{usage.get('cost_basis', 'estimated')} "
+                    f"{usage.get('cost_basis', COST_BASIS_ESTIMATED)} "
                     f"${usage.get('estimated_cost_usd', 0):.4f} "
                     f"({usage.get('provider', 'anthropic')})"
                 )

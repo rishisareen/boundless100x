@@ -37,6 +37,7 @@ from boundless100x.data_fetcher import refetch
 from boundless100x.data_fetcher.download_annual_reports import load_cached_sections
 from boundless100x.llm_layer import forward_growth
 from boundless100x.llm_layer.orchestrator import MODEL_PRICING, estimate_cost
+from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,7 @@ def sweep(
         "not_reached": [],
         "actual": {
             "usd": 0.0, "input_tokens": 0, "output_tokens": 0,
-            "provider": None, "cost_basis": "estimated",
+            "provider": None, "cost_basis": COST_BASIS_ESTIMATED,
         },
     }
 
@@ -308,7 +309,7 @@ def sweep(
         # real bill including a fixed per-call harness overhead, which makes a
         # ceiling calibrated against API pricing trip far sooner.
         "provider": after.get("provider"),
-        "cost_basis": after.get("cost_basis", "estimated"),
+        "cost_basis": after.get("cost_basis", COST_BASIS_ESTIMATED),
     }
     report["discard_summary"] = group_discards(
         [d for r in report["results"] for d in r.get("discarded", [])]

@@ -52,6 +52,18 @@ SCRUBBED_ENV_KEYS = frozenset(
     {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}
 )
 
+# The two basis vocabularies, named for the same reason `friction.BASIS_*` are:
+# both are compared against and defaulted to across four modules, and a typo in
+# any one of them ("estimate" for "estimated") breaks a comparison silently
+# rather than loudly. They are separate sets that happen to share a word —
+# tokens are reported-or-estimated, cost is metered-or-priced-or-both.
+TOKENS_BASIS_REPORTED = "reported"
+TOKENS_BASIS_ESTIMATED = "estimated"
+
+COST_BASIS_ACTUAL = "actual"
+COST_BASIS_MIXED = "mixed"
+COST_BASIS_ESTIMATED = "estimated"
+
 # How much of a subprocess's stderr travels in an error message. Auth failures
 # and exhausted credit pools surface here in the CLI's own words, which is the
 # most accurate statement available; a stack trace's worth of it is not.
@@ -96,7 +108,7 @@ class TransportResponse:
     input_tokens: int
     output_tokens: int
     cost_usd: float | None = None
-    tokens_basis: str = "reported"
+    tokens_basis: str = TOKENS_BASIS_REPORTED
     cache_read_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
 
@@ -140,7 +152,7 @@ class AnthropicAPITransport:
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             cost_usd=None,
-            tokens_basis="reported",
+            tokens_basis=TOKENS_BASIS_REPORTED,
         )
 
 
@@ -275,7 +287,7 @@ class ClaudeCLITransport:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost_usd=_as_float(envelope.get("total_cost_usd")),
-                tokens_basis="reported",
+                tokens_basis=TOKENS_BASIS_REPORTED,
                 cache_read_input_tokens=_as_int(usage.get("cache_read_input_tokens")),
                 cache_creation_input_tokens=_as_int(
                     usage.get("cache_creation_input_tokens")
@@ -288,7 +300,7 @@ class ClaudeCLITransport:
             input_tokens=len(prompt) // 4,
             output_tokens=len(text) // 4,
             cost_usd=_as_float(envelope.get("total_cost_usd")),
-            tokens_basis="estimated",
+            tokens_basis=TOKENS_BASIS_ESTIMATED,
         )
 
     def _warn_on_unexpected_model(self, envelope: dict, model: str) -> None:

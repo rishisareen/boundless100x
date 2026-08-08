@@ -27,7 +27,13 @@ from boundless100x.llm_layer.checklist import (
     build_quality_metrics_context,
     build_scores_summary,
 )
-from boundless100x.llm_layer.transport import TransportError, build_transport
+from boundless100x.llm_layer.transport import (
+    COST_BASIS_ACTUAL,
+    COST_BASIS_ESTIMATED,
+    COST_BASIS_MIXED,
+    TransportError,
+    build_transport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -519,11 +525,11 @@ class LLMOrchestrator:
         )
 
         if actuals and len(actuals) == len(self._usage_log):
-            cost_basis = "actual"
+            cost_basis = COST_BASIS_ACTUAL
         elif actuals:
-            cost_basis = "mixed"
+            cost_basis = COST_BASIS_MIXED
         else:
-            cost_basis = "estimated"
+            cost_basis = COST_BASIS_ESTIMATED
 
         return {
             "total_input_tokens": total_input,

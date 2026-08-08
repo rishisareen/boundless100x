@@ -33,6 +33,7 @@ No test here touches the network or needs a `claude` binary: the SDK client and
 
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -332,19 +333,13 @@ class FakeClient:
 
 
 def sdk_response(text='{"ok": true}', input_tokens=1200, output_tokens=800):
-    class _Block:
-        pass
-
-    class _Usage:
-        pass
-
-    block, usage, response = _Block(), _Usage(), type("_Response", (), {})()
-    block.text = text
-    usage.input_tokens = input_tokens
-    usage.output_tokens = output_tokens
-    response.content = [block]
-    response.usage = usage
-    return response
+    """The three attributes the API transport reads off an SDK response."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(text=text)],
+        usage=SimpleNamespace(
+            input_tokens=input_tokens, output_tokens=output_tokens
+        ),
+    )
 
 
 @pytest.fixture
@@ -386,7 +381,7 @@ class TestAnthropicAPITransport:
         assert response.tokens_basis == "reported"
         assert response.cost_usd is None
 
-    def test_api_error_becomes_a_transport_error(self, api_transport, monkeypatch):
+    def test_api_error_becomes_a_transport_error(self, api_transport):
         import anthropic
 
         error = anthropic.APIError(
