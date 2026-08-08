@@ -11,11 +11,8 @@ only as data. See `llm_layer/forward_growth.py` for why that seam matters.
 import json
 import logging
 from datetime import date
-import os
 import time
 from pathlib import Path
-
-import anthropic
 
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.lifecycle.checkpoints import vocabulary_prompt_block
@@ -30,6 +27,7 @@ from boundless100x.llm_layer.checklist import (
     build_quality_metrics_context,
     build_scores_summary,
 )
+from boundless100x.llm_layer.transport import TransportError, build_transport
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +103,12 @@ def forward_growth_char_budget(config: dict) -> int:
 
 
 class LLMOrchestrator:
-    """LLM analysis pipeline using Claude API."""
+    """The LLM analysis pipeline, over whichever transport `llm.provider` names.
+
+    Which provider ran is visible only in the usage metadata. Everything else
+    here — prompts, parsing, budgets, the deep-mode toggle — is written once and
+    behaves identically on both. See `llm_layer/transport.py` for why.
+    """
 
     def __init__(self, config: dict):
         # Kept so a deep-mode override can be undone from the same source the
@@ -135,13 +138,13 @@ class LLMOrchestrator:
         # to get more MD&A into the prompt would have no effect.
         self.pass1_ar_char_budget = llm_config.get("pass1_ar_char_budget", 3000)
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY environment variable not set. "
-                "Set it or disable LLM with llm.enabled: false in config.yaml"
-            )
-        self.client = anthropic.Anthropic(api_key=api_key)
+        # How a call leaves this machine — the API, or headless Claude Code.
+        # Model selection stays here rather than moving into the transport, so
+        # `--deep` keeps meaning "swap to Opus" identically on both providers.
+        # Raises ValueError on a missing precondition (no API key, no `claude`
+        # on PATH) or an unknown provider, which is the exception the service
+        # already catches to continue compute-only.
+        self.transport = build_transport(config)
 
         self._usage_log: list[dict] = []
 
@@ -338,30 +341,47 @@ class LLMOrchestrator:
 
         return self._call_api(self.pass2_model, prompt, "pass2")
 
-    # ── API Call ──
+    # ── Model Call ──
 
     def _call_api(self, model: str, prompt: str, pass_name: str) -> dict:
-        """Call Claude API and parse JSON response."""
+        """Ask the configured transport, log usage, parse the JSON response.
+
+        Kept under its original name and signature: the transport is a
+        *transport*, and every caller here already knows what this does. What
+        changed is only where the bytes go.
+        """
         start_time = time.time()
 
         try:
-            response = self.client.messages.create(
-                model=model,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            response = self.transport.complete(model, prompt, self.max_tokens)
 
             elapsed = time.time() - start_time
-            output_text = response.content[0].text
 
-            # Log usage
             usage = {
                 "pass": pass_name,
                 "model": model,
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
+                # Which pool paid. Without this, a usage block from the CLI path
+                # and one from the API path are indistinguishable while meaning
+                # different things — see `tokens_basis` and the cache counts.
+                "provider": self.transport.name,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "tokens_basis": response.tokens_basis,
+                # Actual metered cost when the transport knows one; None leaves
+                # `_summarize_usage` to price it from MODEL_PRICING.
+                "cost_usd": response.cost_usd,
                 "elapsed_seconds": round(elapsed, 1),
             }
+            # CLI path only, and absent rather than zero on the API path, which
+            # has nothing to say about them. The envelope's `input_tokens`
+            # excludes cache reads, so these are what stop a 37K-token call
+            # reporting `2` and reading as a phantom efficiency.
+            if response.cache_read_input_tokens is not None:
+                usage["cache_read_input_tokens"] = response.cache_read_input_tokens
+            if response.cache_creation_input_tokens is not None:
+                usage["cache_creation_input_tokens"] = (
+                    response.cache_creation_input_tokens
+                )
             self._usage_log.append(usage)
 
             logger.info(
@@ -370,10 +390,10 @@ class LLMOrchestrator:
             )
 
             # Parse JSON from response
-            return self._parse_json_response(output_text)
+            return self._parse_json_response(response.text)
 
-        except anthropic.APIError as e:
-            logger.error(f"API error in {pass_name}: {e}")
+        except TransportError as e:
+            logger.error(f"Transport error in {pass_name}: {e}")
             return {"error": str(e), "pass": pass_name}
         except Exception as e:
             logger.error(f"Error in {pass_name}: {e}")
@@ -471,15 +491,39 @@ class LLMOrchestrator:
             return f.read()
 
     def _summarize_usage(self) -> dict:
-        """Summarize total token usage and estimated cost."""
+        """Total tokens and cost, saying plainly which kind of cost it is.
+
+        An entry that carries an actual metered cost is used as-is; one that
+        does not is priced from `MODEL_PRICING`. `cost_basis` states which
+        happened — the same estimate-versus-recorded honesty `friction.basis`
+        uses, and necessary here because `estimated_cost_usd` now sometimes
+        holds actuals.
+
+        The key **keeps its name** despite that: the extraction sweep's
+        `--ceiling` meters on it, and renaming it would break the one contract
+        that stops a sweep running unbounded. Note the ceiling therefore means
+        something different per provider — on the CLI path it bounds real
+        dollars including per-call harness overhead, so a ceiling calibrated
+        against API pricing trips far sooner.
+        """
         total_input = sum(u["input_tokens"] for u in self._usage_log)
         total_output = sum(u["output_tokens"] for u in self._usage_log)
         total_time = sum(u["elapsed_seconds"] for u in self._usage_log)
 
+        actuals = [u for u in self._usage_log if u.get("cost_usd") is not None]
         cost = sum(
-            estimate_cost(u["model"], u["input_tokens"], u["output_tokens"])
+            u["cost_usd"]
+            if u.get("cost_usd") is not None
+            else estimate_cost(u["model"], u["input_tokens"], u["output_tokens"])
             for u in self._usage_log
         )
+
+        if actuals and len(actuals) == len(self._usage_log):
+            cost_basis = "actual"
+        elif actuals:
+            cost_basis = "mixed"
+        else:
+            cost_basis = "estimated"
 
         return {
             "total_input_tokens": total_input,
@@ -487,5 +531,7 @@ class LLMOrchestrator:
             "total_tokens": total_input + total_output,
             "total_seconds": round(total_time, 1),
             "estimated_cost_usd": round(cost, 4),
+            "cost_basis": cost_basis,
+            "provider": self.transport.name,
             "passes": self._usage_log,
         }
