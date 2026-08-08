@@ -1223,35 +1223,50 @@ class ReportGenerator:
 
 
     def _build_pe_band_summary(self, result) -> dict:
-        """Build PE band summary for markdown."""
+        """The historical P/E band, read from the metric that computed it.
+
+        The range and the percentile printed beside it must come from one
+        distribution or a reader cannot reconcile them. This method used to
+        build its own, dividing today's price by each past year's EPS — the
+        exact anti-pattern `compute_pe_percentile`'s docstring warns against,
+        and which that metric was already fixed to avoid.
+
+        The two disagreed for an ordinary reason. `current_pe` is struck on
+        trailing-twelve-month earnings, while the recomputed range divided
+        `Current Price` by past *annual* EPS; whenever TTM earnings had
+        outgrown the last annual figure, the cheapest ratio that range could
+        produce was already dearer than the multiple it sat next to. PFC
+        rendered a current 5.3x at the 70th percentile of a range starting at
+        5.4x — arithmetically impossible, and printed without comment.
+
+        So take the band from `pe_vs_historical`'s own metadata, which holds
+        the min, max and median of the series the percentile was measured in.
+        Presentation only: the scored value is untouched.
+        """
         pe_hist = result.metrics.get("pe_vs_historical")
         pe_ttm = result.metrics.get("pe_ttm")
 
         if not pe_hist or not pe_hist.ok or not pe_ttm or not pe_ttm.ok:
             return {}
 
-        # Compute simple PE range from financials
-        financials = result.data.get("financials")
-        meta = result.data.get("metadata", {})
-        current_price = meta.get("Current Price")
-        if financials is None or current_price is None:
+        band = pe_hist.metadata or {}
+        pe_min, pe_max = band.get("pe_min"), band.get("pe_max")
+        if pe_min is None or pe_max is None:
+            # The metric produced a percentile without recording the band it
+            # came from. Render nothing rather than a range from elsewhere —
+            # a half-built band is what this method used to be.
             return {}
-
-        mask = financials["year"].astype(str).str.startswith("Mar", na=False)
-        df = financials[mask].copy()
-        df["eps_num"] = pd.to_numeric(df["eps"], errors="coerce")
-        valid_eps = df[df["eps_num"] > 0]["eps_num"]
-
-        if valid_eps.empty:
-            return {}
-
-        implied_pes = [current_price / e for e in valid_eps]
 
         return {
             "percentile": pe_hist.value,
-            "current_pe": pe_ttm.value,
-            "pe_min": float(min(implied_pes)),
-            "pe_max": float(max(implied_pes)),
+            # The metric's own reading of today's multiple, not `pe_ttm`'s:
+            # the percentile was struck against this number, so quoting any
+            # other one reintroduces the mismatch in a subtler form.
+            "current_pe": float(band.get("current_pe", pe_ttm.value)),
+            "pe_min": float(pe_min),
+            "pe_max": float(pe_max),
+            "pe_median": band.get("pe_median"),
+            "years_used": band.get("years_used"),
         }
 
     # ── Helpers ──

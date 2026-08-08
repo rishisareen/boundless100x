@@ -214,7 +214,7 @@ Generated: <generated>
 
 ### Historical Valuation Range
 
-Current PE of **30.0x** is at the **82th percentile** of its historical range (2.7x – 20.0x).
+Current PE of **30.0x** is at the **82th percentile** of its historical range (14.2x – 38.2x).
 
 ---
 

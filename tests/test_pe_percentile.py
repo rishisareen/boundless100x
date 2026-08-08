@@ -10,6 +10,7 @@ near a high scored as maximally cheap regardless of what it actually traded at.
 import pandas as pd
 import pytest
 
+from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.valuation import compute_pe_percentile
 from tests.conftest import make_metadata, year_labels
 
@@ -157,3 +158,111 @@ class TestPriceBasisIsVisible:
 
         assert result.metadata["price_basis"] == "raw_close"
         assert "pe_band_legacy_price_basis" not in result.flags
+
+
+class TestTheRenderedBandMatchesTheRenderedPercentile:
+    """The range a reader sees must be the range the percentile was taken in.
+
+    The metric was fixed to divide each past year-end close by that year's EPS.
+    `_build_pe_band_summary` was not: it kept deriving the range as
+    `current_price / historical_eps`, the exact anti-pattern
+    `compute_pe_percentile`'s own docstring warns against. So the report quoted
+    a percentile from one distribution beside the minimum and maximum of a
+    different one, and the two could not be reconciled by any reader — PFC's
+    real output placed a current 5.3x at the 70th percentile of a range whose
+    floor was 5.4x, which is arithmetically impossible.
+
+    Presentation-layer only. The scored value never moved; only the two numbers
+    printed next to it were wrong.
+    """
+
+    @staticmethod
+    def summary_for(eps, year_end_prices, current_pe, current_price=None):
+        """Render the band the way the Markdown report does."""
+        from boundless100x.output.report_generator import ReportGenerator
+        from tests.conftest import make_result
+
+        data = build(eps, year_end_prices, current_pe, current_price)
+        pe_hist = compute_pe_percentile(data, {"years": 10})
+        assert pe_hist.ok, pe_hist.error
+
+        result = make_result(
+            metrics={
+                "pe_vs_historical": pe_hist,
+                "pe_ttm": MetricResult(value=float(current_pe)),
+            },
+        )
+        result.data["financials"] = data["financials"]
+        result.data["price"] = data["price"]
+        result.data["metadata"] = data["metadata"]
+
+        return ReportGenerator()._build_pe_band_summary(result), pe_hist
+
+    def test_the_percentile_falls_inside_the_range_it_is_quoted_beside(self):
+        """PFC's case, and the reason the two numbers could disagree at all.
+
+        `current_pe` comes from Screener's `Stock P/E`, which is struck on
+        *trailing-twelve-month* earnings. The old range divided `Current Price`
+        by each past *annual* EPS. When TTM earnings have outgrown the last
+        annual figure — an ordinary state for a company still growing — the
+        cheapest ratio the old range could produce was already dearer than the
+        multiple it was printed beside, so the band's floor sat above the
+        current multiple no matter what the shares actually did.
+        """
+        eps = [10.0 * 1.25 ** i for i in range(10)]
+        # A real spread of historical multiples, 4x to 8x, so the current
+        # multiple has somewhere honest to sit inside the true band.
+        multiples = [8.0, 4.0, 7.0, 5.0, 7.5, 4.5, 6.0, 8.0, 5.5, 7.0]
+        prices = [e * m for e, m in zip(eps, multiples)]
+
+        current_pe = 6.5
+        ttm_eps = eps[-1] * 1.2                       # TTM ahead of last annual
+
+        summary, _ = self.summary_for(
+            eps, prices, current_pe=current_pe, current_price=ttm_eps * current_pe,
+        )
+
+        assert summary["pe_min"] <= summary["current_pe"] <= summary["pe_max"], (
+            f"current {summary['current_pe']}x sits outside the rendered band "
+            f"{summary['pe_min']}x-{summary['pe_max']}x"
+        )
+
+    def test_the_rendered_range_is_the_series_the_percentile_was_taken_in(self):
+        eps = [10.0 * 1.15 ** i for i in range(10)]
+        prices = [e * 18 for e in eps]
+
+        summary, pe_hist = self.summary_for(eps, prices, current_pe=18.0)
+
+        assert summary["pe_min"] == pytest.approx(min(pe_hist.raw_series), abs=0.01)
+        assert summary["pe_max"] == pytest.approx(max(pe_hist.raw_series), abs=0.01)
+
+    def test_a_company_at_its_historical_minimum_renders_at_the_bottom(self):
+        """The 0th-percentile case: cheaper than every year it has traded."""
+        eps = [10.0] * 10
+        prices = [e * 20 for e in eps]
+
+        summary, _ = self.summary_for(eps, prices, current_pe=5.0)
+
+        assert summary["percentile"] == 0.0
+        assert summary["current_pe"] <= summary["pe_min"]
+
+    def test_the_scored_value_does_not_move(self):
+        """R17: this is presentation. The percentile itself is untouched."""
+        eps = [10.0 * 1.25 ** i for i in range(10)]
+        prices = [e * 20 for e in eps[:-1]] + [eps[-1] * 5]
+
+        summary, pe_hist = self.summary_for(eps, prices, current_pe=5.0)
+
+        assert summary["percentile"] == pe_hist.value
+
+    def test_a_metric_without_the_band_metadata_renders_nothing(self):
+        """Degradation stays a blank section, not a half-built band."""
+        from boundless100x.output.report_generator import ReportGenerator
+        from tests.conftest import make_result
+
+        result = make_result(metrics={
+            "pe_vs_historical": MetricResult(value=50.0),   # no metadata, no series
+            "pe_ttm": MetricResult(value=18.0),
+        })
+
+        assert ReportGenerator()._build_pe_band_summary(result) == {}

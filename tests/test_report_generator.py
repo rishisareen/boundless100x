@@ -241,8 +241,22 @@ def rich_metrics() -> dict[str, MetricResult]:
         "cap_proxy": MetricResult(value=6.0, flags=["moderate_moat_cap"]),
         # ── Price ──
         "pe_ttm": MetricResult(value=30.0),
+        # Carries the band metadata `compute_pe_percentile` always returns.
+        # Without it the fixture rendered a valuation range the real metric
+        # could never produce, and the golden froze that fiction — the
+        # percentile below sits inside this band, which is the whole point.
         "pe_vs_historical": MetricResult(
-            value=82.0, flags=["pe_above_historical_75th"]
+            value=82.0,
+            flags=["pe_above_historical_75th"],
+            raw_series=[14.2, 18.6, 22.4, 26.1, 27.8, 29.3, 31.5, 33.0, 35.4, 38.2],
+            metadata={
+                "years_used": 10,
+                "pe_min": 14.2,
+                "pe_max": 38.2,
+                "pe_median": 28.55,
+                "current_pe": 30.0,
+                "price_basis": "raw_close",
+            },
         ),
         "dcf_margin_of_safety": MetricResult(
             value=-12.5,
