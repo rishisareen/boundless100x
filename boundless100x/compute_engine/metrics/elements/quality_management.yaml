@@ -2,6 +2,8 @@
 # "3 key aspects: Integrity, Competence, Growth mindset"
 element: quality_management
 
+# On the `presentation:` blocks, see the note at the head of size.yaml.
+
 metrics:
   promoter_holding_trend:
     name: "Promoter Holding Trend (5yr)"
@@ -11,6 +13,20 @@ metrics:
     params: { quarters: 20 }
     scoring: { mode: "trend_direction", direction: "stable_or_rising_is_better", weight: 0.20 }
     display: { format: "{:.1f}%", section: "management_assessment", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How much of the company the founding family still owns, latest
+        quarter. The score reads the five-year change rather than the level:
+        promoters selling down is the signal, not the number itself.
+      bands: []
+      bands_absent_reason: >-
+        The value shown is the latest level but the score is on the five-year
+        change in it, and the two do not band the same way. The level's own
+        reading is `owner_operator_signal`, which grades exactly this number
+        — restating its boundaries here would be a second statement of them,
+        free to drift.
 
   promoter_pledge:
     name: "Promoter Pledge %"
@@ -19,6 +35,15 @@ metrics:
     inputs: ["shareholding"]
     scoring: { thresholds: [50, 30, 20, 10, 5, 0], direction: "lower_is_better", weight: 0.20 }
     display: { format: "{:.1f}%", section: "management_assessment", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "lower_is_better"
+      meaning: >-
+        How much of the promoters' own stake is mortgaged to lenders.
+        Pledged shares get sold in a falling market, by someone who is not
+        the promoter; the implementation calls anything above 10% a red flag.
+      bands: [[20, "heavily pledged"], [5, "partly pledged"]]
+      low_label: "negligible"
 
   owner_operator_signal:
     name: "Owner-Operator Signal"
@@ -31,6 +56,18 @@ metrics:
       categories: { "founder_led_high_holding": 10, "founder_led_moderate": 7, "professional_mgmt": 5, "low_promoter": 3 }
       weight: 0.15
     display: { format: "{}", section: "management_assessment", peer_compare: true }
+    presentation:
+      unit: "category"
+      direction: "not_directional"
+      meaning: >-
+        Whether the people running the company own enough of it to think
+        like owners. Founder-led with a large stake is the shape this model
+        looks for.
+      bands: []
+      bands_absent_reason: >-
+        The value is already a named grade, so a numeric band walk has
+        nothing to add. The ranking between the grades is the scoring
+        config's `categories` table above, stated there and nowhere else.
 
   equity_dilution:
     name: "Shares Outstanding Growth (10yr)"
@@ -40,6 +77,16 @@ metrics:
     params: { years: 10 }
     scoring: { thresholds: [50, 30, 20, 10, 5, 0], direction: "lower_is_better", weight: 0.15 }
     display: { format: "{:.1f}%", section: "management_assessment", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "lower_is_better"
+      meaning: >-
+        How much the share count grew over ten years once bonuses and splits
+        are stripped out. Every genuinely new share divides the same company
+        more ways.
+      # The lower boundary is also the implementation's `minimal_dilution` flag.
+      bands: [[20, "heavy dilution"], [5, "some dilution"]]
+      low_label: "minimal"
 
   dividend_consistency:
     name: "Dividend Payout Consistency"
@@ -49,6 +96,15 @@ metrics:
     params: { years: 10 }
     scoring: { thresholds: [2, 4, 5, 6, 8, 9], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{}/10 years", section: "management_assessment" }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        In how many of the last ten years the company paid a dividend at
+        all. An unbroken record is evidence the reported profit was real
+        cash.
+      bands: [[8, "reliable"], [5, "intermittent"]]
+      low_label: "rare"
 
   effective_tax_rate_variance:
     name: "Tax Rate Consistency (StdDev)"
@@ -58,3 +114,15 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [15, 10, 8, 5, 3, 1], direction: "lower_is_better", weight: 0.15 }
     display: { format: "σ = {:.1f}pp", section: "management_assessment" }
+    presentation:
+      # A standard deviation of percentages is measured in percentage points,
+      # not percent — the distinction the `percentage_points` entry in
+      # validator.PRESENTATION_UNITS exists to keep.
+      unit: "percentage_points"
+      direction: "lower_is_better"
+      meaning: >-
+        How much the company's effective tax rate swings from year to year.
+        A rate that jumps around often means the profit underneath it does
+        too.
+      bands: [[8, "erratic"], [3, "some variation"]]
+      low_label: "steady"

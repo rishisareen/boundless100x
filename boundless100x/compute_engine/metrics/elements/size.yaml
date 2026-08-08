@@ -1,5 +1,19 @@
 element: size
 
+# ── On the `presentation:` blocks below (R11, R12, R3) ──
+#
+# Every metric in this registry carries one. It states the unit the value is
+# in, the direction of goodness, one plain line on what the metric measures,
+# and the bands that turn the number into a reading. The vocabulary for `unit`
+# and `direction` is closed and enforced at startup — see
+# `metrics/validator.py`, which also states the band-walk semantics once.
+#
+# Where a metric is scored on thresholds, its band boundaries are taken from
+# those thresholds rather than invented: the boundaries at the 5/6 and 3/6
+# score marks, so the reading a reader sees and the score the model gives can
+# never point opposite ways. Nothing here can move a score — `presentation` is
+# excluded from both regime hashes by name (`engine.HASH_EXEMPT_KEYS`).
+
 metrics:
   market_cap:
     name: "Market Cap (₹ Cr)"
@@ -11,6 +25,15 @@ metrics:
       direction: "lower_is_better"
       weight: 0.25
     display: { format: "₹{:,.0f} Cr", section: "size_analysis", peer_compare: true }
+    presentation:
+      unit: "inr_crore"
+      direction: "lower_is_better"
+      meaning: >-
+        What the whole company costs today. Small is the point here — a
+        hundred-bagger needs room to grow into, and a large cap has already
+        used most of its room up.
+      bands: [[50000, "limited headroom"], [5000, "moderate headroom"]]
+      low_label: "wide headroom"
 
   institutional_holding:
     name: "FII + DII Holding (%)"
@@ -22,6 +45,17 @@ metrics:
       optimal_range: [1, 10]
       weight: 0.25
     display: { format: "{:.1f}%", section: "size_analysis", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "range_optimal"
+      meaning: >-
+        How much of the company professional funds already own. A little is
+        validation that somebody serious has looked; a lot means the
+        re-rating has happened without you.
+      # The two ends of the scored optimal_range, so the reading and the
+      # score agree about where the sweet spot is.
+      bands: [[10, "crowded"], [1, "in the target range"]]
+      low_label: "barely owned"
 
   # ── Phase 3 fast-lane input — registered at weight 0.0 ──
   # The lane gates in lifecycle/lane_gates.yaml read this; SQGLP scoring must
@@ -41,6 +75,18 @@ metrics:
       rising_min_rises: 2
     scoring: { weight: 0.0 }
     display: { format: "{:.0f} rises", section: "size_analysis" }
+    presentation:
+      unit: "count"
+      direction: "higher_is_better"
+      meaning: >-
+        How many quarters in a row the funds have been adding. Two or more
+        says somebody is buying before the accounts have explained why.
+      # One band, because the system names exactly one boundary here: the
+      # `rising_min_rises` param above, which is also §9.2's lane gate. A
+      # second, higher band would be a number nothing else in the system
+      # holds — invented precision on a signal that carries no score.
+      bands: [[2, "accumulating"]]
+      low_label: "no streak"
 
   analyst_coverage:
     name: "Analyst Coverage Count"
@@ -52,6 +98,14 @@ metrics:
       direction: "lower_is_better"
       weight: 0.25
     display: { format: "{:.0f} analysts", section: "size_analysis" }
+    presentation:
+      unit: "count"
+      direction: "lower_is_better"
+      meaning: >-
+        How many analysts publish on the company. Fewer is better here — a
+        stock that twenty desks already model is a stock already priced.
+      bands: [[10, "crowded"], [3, "lightly covered"]]
+      low_label: "undiscovered"
 
   daily_turnover_ratio:
     name: "Daily Turnover Ratio (%)"
@@ -63,3 +117,12 @@ metrics:
       optimal_range: [0.02, 0.1]
       weight: 0.25
     display: { format: "{:.3f}%", section: "size_analysis" }
+    presentation:
+      unit: "percent"
+      direction: "range_optimal"
+      meaning: >-
+        How much of the company changes hands on an average day. Too little
+        and a position cannot be built or exited; too much and you are
+        trading against a crowd.
+      bands: [[0.1, "heavily traded"], [0.02, "in the target range"]]
+      low_label: "illiquid"

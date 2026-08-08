@@ -1,6 +1,14 @@
 # Reference: QGLP Checklist Q20-Q24; "Trailing PEG" methodology (Dec 2025)
 element: price
 
+# On the `presentation:` blocks, see the note at the head of size.yaml.
+#
+# Two metrics here — `pe_ttm` and `ev_ebitda` — declare **no** bands and say
+# why. Both are scored `sector_relative_percentile`: the model's own position
+# is that the same multiple is cheap for one industry and dear for another, so
+# an absolute band would contradict the scoring on most companies. A declared
+# unknown with its reason is a better row than a confident wrong reading.
+
 metrics:
   pe_ttm:
     name: "P/E (TTM)"
@@ -9,6 +17,20 @@ metrics:
     inputs: ["financials", "metadata"]
     scoring: { mode: "sector_relative_percentile", direction: "lower_is_better", weight: 0.12 }
     display: { format: "{:.1f}x", section: "valuation_analysis", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        What the market pays for each rupee of the last year's profit. Cheap
+        and dear only mean anything next to the sector and the company's own
+        history.
+      bands: []
+      bands_absent_reason: >-
+        Scored against sector peers rather than an absolute line, because the
+        same multiple is cheap for a consumer franchise and dear for a
+        commodity processor — an absolute band would be wrong about one of
+        them every time. Read it beside `pe_vs_historical`, which does band
+        the company against itself.
 
   peg_ratio:
     # Trailing PEG on a 5yr EPS CAGR window — no forward estimate feeds this.
@@ -20,6 +42,14 @@ metrics:
     inputs: ["financials", "metadata"]
     scoring: { thresholds: [3.0, 2.5, 2.0, 1.5, 1.0, 0.7], direction: "lower_is_better", weight: 0.15 }
     display: { format: "{:.2f}x", section: "valuation_analysis", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        The P/E divided by the five-year earnings growth rate. Around one,
+        you are paying about a year of growth for a year of growth.
+      bands: [[2.0, "expensive"], [1.0, "fair"]]
+      low_label: "cheap"
 
   trailing_peg:
     name: "Trailing PEG (P/E ÷ 3yr PAT CAGR)"
@@ -29,6 +59,14 @@ metrics:
     params: { cagr_years: 3 }
     scoring: { thresholds: [4.0, 3.0, 2.0, 1.5, 1.0, 0.5], direction: "lower_is_better", weight: 0.18 }
     display: { format: "{:.2f}x", section: "valuation_analysis", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        The same test as PEG on a shorter, more recent window — the P/E
+        against three years of profit growth rather than five of earnings.
+      bands: [[2.0, "expensive"], [1.0, "fair"]]
+      low_label: "cheap"
 
   ev_ebitda:
     name: "EV/EBITDA"
@@ -37,6 +75,19 @@ metrics:
     inputs: ["financials", "balance_sheet", "metadata"]
     scoring: { mode: "sector_relative_percentile", direction: "lower_is_better", weight: 0.12 }
     display: { format: "{:.1f}x", section: "valuation_analysis", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        What the whole company costs including its debt, against its pre-tax
+        operating cash profit. The valuation multiple that does not care how
+        the business is financed.
+      bands: []
+      bands_absent_reason: >-
+        Scored against sector peers rather than an absolute line, for the
+        same reason as `pe_ttm`: an EV/EBITDA that is expensive for a cement
+        maker is unremarkable for a software firm, and one band cannot be
+        right about both.
 
   pe_vs_historical:
     name: "P/E Percentile (10yr traded range)"
@@ -47,6 +98,17 @@ metrics:
     params: { years: 10 }
     scoring: { thresholds: [90, 75, 60, 50, 35, 20], direction: "lower_is_better", weight: 0.13 }
     display: { format: "{:.0f}th percentile", section: "valuation_analysis" }
+    presentation:
+      # A percentile is a position in a distribution, not a proportion —
+      # the 60th percentile of a P/E band is not 60% of anything.
+      unit: "percentile"
+      direction: "lower_is_better"
+      meaning: >-
+        Where today's P/E sits inside the range this company has actually
+        traded at over ten years. It asks whether the stock is dear for
+        itself, not for the market.
+      bands: [[60, "dear against its own record"], [35, "mid-range"]]
+      low_label: "cheap against its own record"
 
   dcf_margin_of_safety:
     name: "DCF Margin of Safety"
@@ -57,6 +119,16 @@ metrics:
     params: { projection_years: 10 }
     scoring: { thresholds: [-30, -10, 0, 10, 20, 35], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{:.0f}%", section: "valuation_analysis" }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How far below the model's estimate of intrinsic value the shares
+        trade. It is only ever as good as the growth and discount rate
+        assumed underneath it.
+      # Zero is the fair-value line as well as a scoring threshold.
+      bands: [[20, "comfortable margin"], [0, "at fair value"]]
+      low_label: "above fair value"
 
   reverse_dcf_growth:
     name: "Reverse DCF Implied Growth"
@@ -65,6 +137,23 @@ metrics:
     inputs: ["financials", "cashflow", "metadata"]
     scoring: { mode: "comparison_to_actual", weight: 0.10 }
     display: { format: "{:.1f}% implied", section: "valuation_analysis" }
+    presentation:
+      unit: "percent"
+      # No `direction` under `scoring` to agree with — `comparison_to_actual`
+      # states none. Lower is unambiguously better for a given company: the
+      # less growth the price already assumes, the less has to go right.
+      direction: "lower_is_better"
+      meaning: >-
+        The growth rate today's price already assumes, forever. The question
+        it poses is whether the company has ever grown that fast; the flags
+        answer it against the company's own delivered CAGR.
+      # This mode declares no thresholds in YAML, so the boundaries come from
+      # the scorer's own `comparison_to_actual` table
+      # ([40, 30, 25, 20, 15, 10], lower_is_better) at the same 3/6 and 5/6
+      # score marks used everywhere else here. The reading therefore moves
+      # with the score rather than beside it.
+      bands: [[25, "demanding"], [15, "moderate"]]
+      low_label: "undemanding"
 
   earnings_yield_vs_gsec:
     name: "Earnings Yield Spread vs G-Sec"
@@ -73,6 +162,15 @@ metrics:
     inputs: ["financials", "metadata"]
     scoring: { thresholds: [-3, -1, 0, 1, 2, 4], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:+.1f}pp", section: "valuation_analysis" }
+    presentation:
+      unit: "percentage_points"
+      direction: "higher_is_better"
+      meaning: >-
+        The earnings the company produces per rupee of price, minus what a
+        ten-year government bond pays for no risk at all. It asks what the
+        risk is buying you.
+      bands: [[2, "paid to take the risk"], [0, "level with the bond"]]
+      low_label: "below the bond"
 
   # ── Phase 2 forward signal — registered at weight 0.0 (KTD1) ──
   # v05 §12 says headroom "lands in the price element"; §13 forbids changing
@@ -119,3 +217,17 @@ metrics:
       stretched_pct: -25
     scoring: { weight: 0.0 }
     display: { format: "{:+.0f}%", section: "forward_signals" }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How far above today's traded multiple the company's own RoCE, growth
+        and consistency would justify.
+      # Deliberately the same numbers as `favourable_pct`/`stretched_pct`
+      # above and as report_vocabulary.FORWARD_SIGNALS, which is what lets
+      # that table collapse onto this block later without changing a reading.
+      # The metric also emits its own `metadata["band"]`, computed from those
+      # params, and a consumer must keep preferring it: an owner who tunes
+      # the params must not have the tuned band overridden by a default.
+      bands: [[25.0, "favourable"], [-25.0, "fair"]]
+      low_label: "stretched"

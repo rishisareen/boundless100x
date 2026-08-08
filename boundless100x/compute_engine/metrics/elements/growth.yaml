@@ -1,6 +1,8 @@
 # Reference: "4 dimensions of earnings growth" (Motilal Oswal 2014 Study)
 element: growth
 
+# On the `presentation:` blocks, see the note at the head of size.yaml.
+
 metrics:
   revenue_cagr_5yr:
     name: "Revenue CAGR (5yr)"
@@ -10,6 +12,14 @@ metrics:
     params: { field: "revenue", years: 5 }
     scoring: { thresholds: [3, 8, 12, 18, 25, 35], direction: "higher_is_better", weight: 0.12 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast sales compounded over five years. It is the top of the
+        funnel — nothing below it grows for long without it.
+      bands: [[25, "rapid"], [12, "steady"]]
+      low_label: "slow"
 
   pat_cagr_5yr:
     name: "PAT CAGR (5yr)"
@@ -19,6 +29,15 @@ metrics:
     params: { field: "pat", years: 5 }
     scoring: { thresholds: [3, 8, 15, 20, 28, 40], direction: "higher_is_better", weight: 0.12 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast net profit compounded over five years. Faster than sales
+        means margins widened; slower means something ate the gain on the
+        way down.
+      bands: [[28, "rapid"], [15, "steady"]]
+      low_label: "slow"
 
   eps_cagr_5yr:
     name: "EPS CAGR (5yr)"
@@ -28,6 +47,15 @@ metrics:
     params: { field: "eps", years: 5 }
     scoring: { thresholds: [3, 8, 15, 20, 28, 40], direction: "higher_is_better", weight: 0.12 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast profit *per share* compounded over five years. This is the
+        one an existing owner actually received, after any new shares were
+        issued.
+      bands: [[28, "rapid"], [15, "steady"]]
+      low_label: "slow"
 
   pat_cagr_3yr:
     name: "PAT CAGR (3yr)"
@@ -37,6 +65,15 @@ metrics:
     params: { field: "pat", years: 3 }
     scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.08 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast net profit compounded over the last three years — the
+        recent slice of the five-year record, and where a slowdown appears
+        first.
+      bands: [[30, "rapid"], [15, "steady"]]
+      low_label: "slow"
 
   operating_leverage:
     name: "Operating Leverage (avg)"
@@ -46,6 +83,16 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [0.5, 0.8, 1.0, 1.3, 1.5, 2.0], direction: "higher_is_better", weight: 0.12 }
     display: { format: "{:.2f}x", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "higher_is_better"
+      meaning: >-
+        How much faster operating profit grows than sales. Above one, each
+        extra rupee of sales brings more than its share of profit with it.
+      # 1.0 is the natural pivot as well as a scoring threshold: below it,
+      # profit is growing slower than the sales that produced it.
+      bands: [[1.5, "strong"], [1.0, "positive"]]
+      low_label: "negative"
 
   financial_leverage_ratio:
     name: "Financial Leverage (avg)"
@@ -55,6 +102,15 @@ metrics:
     params: { years: 5 }
     scoring: { mode: "range_optimal", optimal_range: [0.8, 1.3], weight: 0.08 }
     display: { format: "{:.2f}x", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "range_optimal"
+      meaning: >-
+        How much faster earnings per share grow than operating profit. Near
+        one is healthy; well above it means borrowed money is doing the work
+        and will do the damage too.
+      bands: [[1.3, "amplified by debt"], [0.8, "tracking EBIT"]]
+      low_label: "lagging EBIT"
 
   growth_quality_grade:
     name: "Growth Quality Grade"
@@ -67,6 +123,18 @@ metrics:
       categories: { "high_quality": 10, "moderate": 6, "low_quality": 3, "risky": 1 }
       weight: 0.20
     display: { format: "{}", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "category"
+      direction: "not_directional"
+      meaning: >-
+        Whether growth came from selling more at better prices, from fixed
+        costs spreading over a bigger base, or from borrowing. Only the first
+        two survive a downturn.
+      bands: []
+      bands_absent_reason: >-
+        The value is already a named grade, so a numeric band walk has
+        nothing to add. The ranking between the grades is the scoring
+        config's `categories` table above.
 
   revenue_growth_consistency:
     name: "Revenue Growth Consistency"
@@ -76,6 +144,18 @@ metrics:
     params: { field: "revenue", years: 10 }
     scoring: { thresholds: [30, 25, 20, 15, 10, 5], direction: "lower_is_better", weight: 0.08 }
     display: { format: "σ = {:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      # The unit is percentage points, not percent: this is the spread of a
+      # growth *rate*, so the display format's trailing `%` above is loose.
+      # The format is left exactly as it is — `display` is inside both regime
+      # hashes, and correcting typography is not worth a scoring-regime break.
+      unit: "percentage_points"
+      direction: "lower_is_better"
+      meaning: >-
+        How widely the year-on-year sales growth rate swings about. A steady
+        grower is worth more than a faster one that keeps stopping.
+      bands: [[20, "erratic"], [10, "variable"]]
+      low_label: "steady"
 
   # ─── v4: Additional growth metrics for expanded report ───
 
@@ -87,6 +167,14 @@ metrics:
     params: { field: "revenue", years: 3 }
     scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast sales compounded over the last three years — the recent
+        record, to be read against the five-year one beside it.
+      bands: [[30, "rapid"], [15, "steady"]]
+      low_label: "slow"
 
   ebit_cagr_5yr:
     name: "EBIT CAGR (5yr)"
@@ -96,6 +184,14 @@ metrics:
     params: { field: "operating_profit", years: 5 }
     scoring: { thresholds: [3, 8, 15, 20, 28, 40], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast operating profit compounded over five years, before
+        interest and tax could flatter it or spoil it.
+      bands: [[28, "rapid"], [15, "steady"]]
+      low_label: "slow"
 
   ebit_cagr_3yr:
     name: "EBIT CAGR (3yr)"
@@ -105,6 +201,14 @@ metrics:
     params: { field: "operating_profit", years: 3 }
     scoring: { thresholds: [5, 10, 15, 20, 30, 50], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast operating profit compounded over the last three years,
+        before interest and tax.
+      bands: [[30, "rapid"], [15, "steady"]]
+      low_label: "slow"
 
   # ── Phase 3 fast-lane input — registered at weight 0.0 ──
   # §9.2's growth gate is "latest TTM growth >= historical CAGR", which nothing
@@ -126,6 +230,18 @@ metrics:
       cagr_years: 5
     scoring: { weight: 0.0 }
     display: { format: "{:+.1f}pp", section: "growth_decomposition" }
+    presentation:
+      unit: "percentage_points"
+      direction: "higher_is_better"
+      meaning: >-
+        How the last twelve months' growth compares with the five-year rate
+        the company has actually delivered. Positive means it is still doing
+        what its record says it does.
+      # One band, at zero, because zero is the only boundary the system
+      # names: §9.2's lane gate is a plain `gte 0` on this metric. Any second
+      # band would be a number nothing else holds.
+      bands: [[0, "keeping pace or better"]]
+      low_label: "falling behind its record"
 
   # Display-only (weight 0). Real volume is not in any source we fetch, so this
   # deflates revenue growth by a constant — which cannot separate pricing power
@@ -143,3 +259,17 @@ metrics:
       categories: { "strong_pricing_power": 10, "moderate_pricing": 7, "discounting": 3 }
       weight: 0
     display: { format: "{}", section: "growth_decomposition", peer_compare: false }
+    presentation:
+      unit: "category"
+      direction: "not_directional"
+      meaning: >-
+        Whether sales grew faster than inflation, and by how much. It cannot
+        tell selling more from charging more — no filing this system reads
+        reports unit volumes.
+      bands: []
+      bands_absent_reason: >-
+        The value is already a named grade, so a numeric band walk has
+        nothing to add. The boundaries behind the grades are the
+        `inflation_pct` and `strong_real_growth_pct` params inside
+        `compute_price_lever`, applied to real growth rather than to the
+        value shown.

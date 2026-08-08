@@ -47,6 +47,21 @@ metrics:
       min_report_years: 2    # One year of targets is a snapshot, not a record.
     scoring: { weight: 0.0 }
     display: { format: "{:.0f}%", section: "forward_signals" }
+    # `presentation` matters more here than anywhere, not less: zero weight
+    # means the scorer never gives these a score, so the number and its band
+    # are the whole reading (R8). Every value below is deliberately identical
+    # to this metric's entry in report_vocabulary.FORWARD_SIGNALS, which is
+    # what lets that table collapse onto this block later without a single
+    # rendered reading changing. See the note at the head of size.yaml for the
+    # conventions.
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        Share of management's own due targets that the accounts later met.
+        Promises not yet due are excluded from both sides.
+      bands: [[80.0, "credible"], [50.0, "mixed"]]
+      low_label: "unreliable"
 
   tam_runway:
     name: "TAM Runway (years at current growth)"
@@ -60,6 +75,14 @@ metrics:
                              # reverse DCF pins to its search bounds.
     scoring: { weight: 0.0 }
     display: { format: "{:.0f} yrs", section: "forward_signals" }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        Years at the current growth rate before revenue meets the
+        addressable market management describes.
+      bands: [[15.0, "long"], [7.0, "adequate"]]
+      low_label: "short"
 
   quarterly_momentum:
     name: "Quarterly Growth Momentum (change in YoY, pp)"
@@ -72,3 +95,14 @@ metrics:
       flag_threshold_pp: 2.0
     scoring: { weight: 0.0 }
     display: { format: "{:+.1f}pp", section: "forward_signals" }
+    presentation:
+      # A change *between* two growth rates, so percentage points — the
+      # distinction `percentage_points` exists to hold, and the reason this
+      # is not `percent`.
+      unit: "percentage_points"
+      direction: "higher_is_better"
+      meaning: >-
+        Change between consecutive year-over-year growth figures — whether
+        growth is speeding up, not how fast it is.
+      bands: [[2.0, "accelerating"], [-2.0, "steady"]]
+      low_label: "decelerating"

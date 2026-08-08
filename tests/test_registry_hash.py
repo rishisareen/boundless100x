@@ -110,6 +110,10 @@ class TestScoringRegimeChanges:
                                 "format": "{:.1f}%",
                                 "section": "quality_scorecard",
                             },
+                            # Required of every metric since R11 — see
+                            # PRESENTATION_BLOCK below, which is the same
+                            # shape and is what the exclusion tests add.
+                            "presentation": PRESENTATION_BLOCK,
                         }
                     },
                 }
@@ -190,6 +194,7 @@ def add_key(registry_dir, filename: str, metric_id: str, key: str, value):
 PRESENTATION_BLOCK = {
     "unit": "percent",
     "direction": "higher_is_better",
+    "meaning": "What the metric measures, and what good looks like.",
     "bands": [[20.0, "strong"], [12.0, "adequate"]],
     "low_label": "weak",
 }
@@ -277,6 +282,11 @@ def drop_in(registry_dir, weight: float, element: str = "forward_growth",
                         "inputs": ["ratios"],
                         "scoring": scoring,
                         "display": {"format": "{:.1f}%", "section": "forward_signals"},
+                        # Every metric must declare one (R11); the engine
+                        # refuses to construct otherwise. It is hash-exempt,
+                        # so its presence cannot affect what these tests
+                        # measure.
+                        "presentation": PRESENTATION_BLOCK,
                     }
                 },
             }

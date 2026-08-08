@@ -1,6 +1,8 @@
 # Reference: "Extending CAP (Competitive Advantage Period)" (Motilal Oswal 2014)
 element: longevity
 
+# On the `presentation:` blocks, see the note at the head of size.yaml.
+
 metrics:
   roce_consistency:
     name: "RoCE > 15% Count (10yr)"
@@ -10,6 +12,14 @@ metrics:
     params: { field: "roce", years: 10, threshold: 15 }
     scoring: { thresholds: [3, 5, 6, 7, 8, 9], direction: "higher_is_better", weight: 0.20 }
     display: { format: "{}/10 years", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        In how many of the last ten years the business cleared a 15% return
+        on capital. One good year is luck; eight of ten is a moat.
+      bands: [[8, "durable"], [6, "intermittent"]]
+      low_label: "rare"
 
   cap_proxy:
     name: "CAP Proxy (Consecutive yrs RoCE > CoE)"
@@ -19,6 +29,18 @@ metrics:
     params: { roce_threshold: 12 }
     scoring: { thresholds: [1, 3, 5, 7, 8, 10], direction: "higher_is_better", weight: 0.20 }
     display: { format: "{} consecutive years", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        The longest unbroken run of years the business earned more than its
+        cost of capital. A rough measure of how long the advantage actually
+        lasted.
+      # Both boundaries coincide with the implementation's own `wide_moat_cap`
+      # (>= 8) and `moderate_moat_cap` (>= 5) flags, so the flag and the
+      # reading always agree.
+      bands: [[8, "wide moat"], [5, "some moat"]]
+      low_label: "no moat evident"
 
   revenue_growth_streak:
     name: "Max Consecutive Growth Years (>10%)"
@@ -28,6 +50,14 @@ metrics:
     params: { field: "revenue", threshold_pct: 10 }
     scoring: { thresholds: [1, 2, 3, 4, 6, 8], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{} consecutive years", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        The longest unbroken run of years sales grew more than 10%. Streaks
+        say whether growth is a habit or an episode.
+      bands: [[6, "long"], [3, "moderate"]]
+      low_label: "short"
 
   gross_margin_stability:
     name: "Gross Margin Stability (10yr StdDev)"
@@ -37,6 +67,17 @@ metrics:
     params: { field: "opm_pct", years: 10 }
     scoring: { thresholds: [15, 10, 8, 5, 3, 1.5], direction: "lower_is_better", weight: 0.15 }
     display: { format: "σ = {:.1f}pp", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "percentage_points"
+      direction: "lower_is_better"
+      meaning: >-
+        How much the operating margin swings across ten years. A margin that
+        holds through a full cycle is the clearest evidence of pricing power
+        there is.
+      # Both boundaries coincide with the implementation's `volatile_margins`
+      # (> 8) and `highly_stable_margins` (< 3) flags.
+      bands: [[8, "volatile"], [3, "variable"]]
+      low_label: "stable"
 
   reinvestment_rate:
     name: "Reinvestment Rate (Capex/Depreciation)"
@@ -45,6 +86,16 @@ metrics:
     inputs: ["financials", "cashflow"]
     scoring: { thresholds: [0.5, 0.8, 1.0, 1.5, 2.0, 3.0], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{:.1f}x", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "higher_is_better"
+      meaning: >-
+        What the company spends on assets against what its existing assets
+        wear out by. Below one it is living off the base it already has.
+      # 1.0 is the maintenance line as well as a scoring threshold; 2.0 is
+      # also the implementation's `heavy_reinvestment` flag.
+      bands: [[2.0, "heavy"], [1.0, "beyond maintenance"]]
+      low_label: "below maintenance"
 
   fcf_consistency:
     name: "FCF Positive Count (10yr)"
@@ -54,6 +105,14 @@ metrics:
     params: { years: 10 }
     scoring: { thresholds: [3, 5, 6, 7, 8, 9], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{}/10 years", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        In how many of the last ten years the business generated more cash
+        than it spent. It is the difference between a compounder and a story.
+      bands: [[8, "reliable"], [6, "intermittent"]]
+      low_label: "rare"
 
   # Dec 2025 study: compounders clustered in a few sectors and were largely
   # absent from others. Scored modestly — it is context, not a verdict.
@@ -67,3 +126,15 @@ metrics:
       categories: { "strong_tailwind": 10, "moderate_tailwind": 7, "unknown": 5, "non_consideration": 2 }
       weight: 0.05
     display: { format: "{}", section: "longevity_assessment", peer_compare: false }
+    presentation:
+      unit: "category"
+      direction: "not_directional"
+      meaning: >-
+        Whether the company sits in one of the sectors the Dec 2025 study
+        found compounders cluster in. Context about the pond, not a verdict
+        on the fish.
+      bands: []
+      bands_absent_reason: >-
+        The value is already a named grade, so a numeric band walk has
+        nothing to add. The ranking between the grades is the scoring
+        config's `categories` table above.

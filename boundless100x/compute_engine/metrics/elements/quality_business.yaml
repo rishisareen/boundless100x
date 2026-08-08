@@ -1,6 +1,11 @@
 # Reference: QGLP Checklist Q3-Q6 (Motilal Oswal Dec 2025)
 element: quality_business
 
+# On the `presentation:` blocks, see the note at the head of size.yaml — the
+# unit and direction vocabularies are closed and enforced in
+# metrics/validator.py, and band boundaries are lifted from each metric's own
+# scoring thresholds rather than invented.
+
 metrics:
   roce_5yr_avg:
     name: "RoCE (5yr Avg)"
@@ -10,6 +15,15 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [5, 10, 15, 20, 25, 30], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        What the business earns on every rupee tied up in it, averaged over
+        five years. 15% is the bar this model sets for a quality compounder,
+        and the same bar `roce_consistency` counts years against.
+      bands: [[25, "exceptional"], [15, "solid"]]
+      low_label: "weak"
 
   roiic:
     name: "ROIIC (Return on Incremental Capital)"
@@ -19,6 +33,15 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [0, 8, 15, 20, 30, 40], direction: "higher_is_better", weight: 0.10 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        What the newest rupee of capital earned, rather than the whole base.
+        Headline RoCE can stay high on old assets long after fresh money
+        stops earning, and this is the number that fades first.
+      bands: [[30, "exceptional"], [15, "solid"]]
+      low_label: "weak"
 
   # Distinct from longevity's reinvestment_rate, which measures capex intensity
   # (|CFI| / depreciation). This one measures how much of NOPAT is redeployed.
@@ -30,6 +53,17 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [10, 25, 40, 60, 80, 100], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.0f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How much of its after-tax operating profit the company ploughs back
+        instead of paying out. High returns on capital only compound while
+        the money stays in the business.
+      # The upper boundary is also where the implementation raises
+      # `high_capital_redeployment`, so the flag and the band agree.
+      bands: [[80, "redeploying heavily"], [40, "redeploying steadily"]]
+      low_label: "returning cash out"
 
   roe_5yr_avg:
     name: "RoE (5yr Avg)"
@@ -39,6 +73,14 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [5, 10, 15, 18, 22, 28], direction: "higher_is_better", weight: 0.12 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        What the business earns on shareholders' money alone, averaged over
+        five years. Borrowing flatters it, which is why RoCE sits beside it.
+      bands: [[22, "exceptional"], [15, "solid"]]
+      low_label: "weak"
 
   operating_margin_5yr:
     name: "Operating Margin (5yr Avg)"
@@ -48,6 +90,15 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [5, 8, 12, 18, 25, 35], direction: "higher_is_better", weight: 0.10 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        What is left of each rupee of sales after running the business,
+        averaged over five years. Wide margins that hold usually mean the
+        company sets its own prices.
+      bands: [[25, "wide"], [12, "adequate"]]
+      low_label: "thin"
 
   dupont_margin:
     name: "DuPont: Net Profit Margin"
@@ -56,6 +107,15 @@ metrics:
     inputs: ["financials"]
     scoring: { thresholds: [3, 5, 8, 12, 18, 25], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        What is left of each rupee of sales after everything, in the latest
+        year. The first of the three levers that together make up return on
+        equity.
+      bands: [[18, "wide"], [8, "adequate"]]
+      low_label: "thin"
 
   dupont_turnover:
     name: "DuPont: Asset Turnover"
@@ -64,6 +124,14 @@ metrics:
     inputs: ["financials", "balance_sheet"]
     scoring: { thresholds: [0.3, 0.5, 0.8, 1.0, 1.5, 2.0], direction: "higher_is_better", weight: 0.05 }
     display: { format: "{:.2f}x", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "higher_is_better"
+      meaning: >-
+        How many rupees of sales each rupee of assets produces. The second
+        lever behind return on equity — how hard the asset base is worked.
+      bands: [[1.5, "asset-light"], [0.8, "moderate"]]
+      low_label: "asset-heavy"
 
   dupont_equity_multiplier:
     name: "DuPont: Equity Multiplier"
@@ -72,6 +140,15 @@ metrics:
     inputs: ["balance_sheet"]
     scoring: { thresholds: [5.0, 4.0, 3.0, 2.5, 2.0, 1.5], direction: "lower_is_better", weight: 0.03 }
     display: { format: "{:.2f}x", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        How many rupees of assets sit on each rupee of equity. The third
+        lever behind return on equity, and the only one that raises it by
+        taking risk rather than by being good at something.
+      bands: [[3.0, "heavily levered"], [2.0, "moderately levered"]]
+      low_label: "conservative"
 
   cash_conversion:
     name: "Cash Conversion (OCF/EBITDA)"
@@ -81,6 +158,15 @@ metrics:
     params: { years: 5 }
     scoring: { thresholds: [30, 45, 55, 65, 75, 85], direction: "higher_is_better", weight: 0.08 }
     display: { format: "{:.0f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How much of the reported operating profit actually arrived as cash,
+        averaged over five years. Profit that never reaches the bank is the
+        oldest warning sign there is.
+      bands: [[75, "strong"], [55, "adequate"]]
+      low_label: "weak"
 
   fcf_yield:
     name: "FCF Yield"
@@ -89,6 +175,15 @@ metrics:
     inputs: ["cashflow", "price", "metadata"]
     scoring: { thresholds: [-2, 0, 1, 2, 4, 6], direction: "higher_is_better", weight: 0.07 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        The spare cash the business threw off last year, as a share of what
+        the whole company costs to buy. It is what an owner could take out
+        without shrinking it.
+      bands: [[4, "generous"], [1, "positive"]]
+      low_label: "thin or negative"
 
   debt_equity:
     name: "Debt / Equity"
@@ -97,6 +192,17 @@ metrics:
     inputs: ["balance_sheet"]
     scoring: { thresholds: [2.0, 1.0, 0.5, 0.3, 0.1, 0.0], direction: "lower_is_better", weight: 0.08 }
     display: { format: "{:.2f}x", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        How much the company has borrowed against every rupee of its own
+        capital. Debt is what turns a bad year into a final one.
+      # `lower_is_better`, so the labels run worst-first while the thresholds
+      # still descend, and `low_label` is the good news. The lower boundary is
+      # also the implementation's `virtually_debt_free` flag.
+      bands: [[0.5, "leveraged"], [0.1, "modest debt"]]
+      low_label: "virtually debt-free"
 
   interest_coverage:
     name: "Interest Coverage"
@@ -105,6 +211,15 @@ metrics:
     inputs: ["financials"]
     scoring: { thresholds: [1, 2, 3, 5, 8, 15], direction: "higher_is_better", weight: 0.07 }
     display: { format: "{:.1f}x", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "higher_is_better"
+      meaning: >-
+        How many times over last year's operating profit covers the interest
+        bill. Below three, a soft year starts eating the lenders' money
+        rather than the owners'.
+      bands: [[8, "comfortable"], [3, "adequate"]]
+      low_label: "tight"
 
   working_capital_days_trend:
     name: "Working Capital Days Trend"
@@ -114,3 +229,21 @@ metrics:
     params: { years: 5 }
     scoring: { mode: "trend_direction", direction: "declining_is_better", weight: 0.05 }
     display: { format: "{:.0f} days", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "days"
+      direction: "lower_is_better"
+      meaning: >-
+        How long cash sits stuck in unsold stock and unpaid bills. Fewer days
+        is better, and the score reads the five-year direction of travel
+        rather than the level shown.
+      # No band, and the reason is not laziness — see below. `direction` is
+      # still `lower_is_better`, which is true of the level whatever the
+      # scorer reads; the scoring config's `declining_is_better` is a
+      # statement about the series, which is why the two do not have to match.
+      bands: []
+      bands_absent_reason: >-
+        Working capital days are an industry fact before they are a company
+        one: a software firm's thirty and a capital-goods firm's two hundred
+        are both healthy, so no absolute band reads true across the universe.
+        The score is on the five-year change, which the level shown cannot
+        express.

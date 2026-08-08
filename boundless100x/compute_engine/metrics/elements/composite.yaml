@@ -1,6 +1,8 @@
 # Cross-element derived metrics (from Dec 2025 Quality-Growth Matrix)
 element: composite
 
+# On the `presentation:` block, see the note at the head of size.yaml.
+
 metrics:
   quality_growth_quadrant:
     name: "Quality-Growth Matrix Position"
@@ -19,3 +21,16 @@ metrics:
         "wealth_destroyer": 1
       weight: 0.0
     display: { format: "{}", section: "executive_summary", peer_compare: true }
+    presentation:
+      unit: "category"
+      direction: "not_directional"
+      meaning: >-
+        Which corner of the quality-and-growth grid the company sits in.
+        High on both is the only corner the Dec 2025 study found wealth
+        creators in.
+      bands: []
+      bands_absent_reason: >-
+        The value is already a named grade, so a numeric band walk has
+        nothing to add. The two lines that place a company in a corner are
+        the `quality_threshold` and `growth_threshold` params above, applied
+        to RoCE and PAT CAGR rather than to the value shown.
