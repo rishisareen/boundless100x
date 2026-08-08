@@ -186,13 +186,18 @@ boundless100x/
 - **FCF outlier detection**: MAD-based (Median Absolute Deviation) to identify M&A-dominated years. Applied in valuation.py, longevity.py, profitability.py via `_helpers.py`.
 - **Bonus/split detection**: YoY equity capital spikes >50% flagged as structural events. Organic dilution computed separately in growth.py.
 - **LLM prompt templates**: rendered through a single `.format()` call, so a literal brace in the JSON schema block is escaped by **doubling** it (`{{` / `}}`). This entry previously said quadruple — it was wrong, and no prompt file in the repo has ever done it: quadrupling renders a literal `{{` into the prompt and corrupts the schema the model is shown. Match the sibling prompt files, not a remembered rule.
+- **The provider is a transport, not a contract** (`llm_layer/transport.py`). Every LLM call — Pass 1, Pass 2, the Stage 1.5 extraction — leaves through `build_transport(config)`, resolving `llm.provider` to either `anthropic` (the SDK against API credits, the default) or `claude_cli` (headless `claude -p`, billed to the Max subscription's headless pool). Both receive the **identical rendered prompt** and both return text through the same `_parse_json_response`, so nothing downstream — parsing, validation, grounding, the sidecar, the action guard — can tell which ran except by reading usage metadata. Everything else follows from that rule: the CLI's `--json-schema` is deliberately unused (it would be a second statement of each pass's output schema beside the prompt's, and they would drift invisibly), the sidecar's version block gains **no** `provider` field (its identity is source text + schema + prompt + model — a grounded reading stays a grounded reading, so a provider switch must not re-spend the corpus), and `llm.provider` sits in **neither regime hash**, all three pinned by tests. Model selection stays orchestrator-side, so `--deep` means "swap to Opus" identically on both. Every failure is one `TransportError`, caught where `anthropic.APIError` used to be, returning the same `{"error": ..., "pass": ...}` dict.
+  - **The env scrub is the load-bearing line.** `.env` sets `ANTHROPIC_API_KEY` and dotenv loads it into `os.environ`; the CLI gives an env key precedence over subscription OAuth, so the child env has `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL` stripped. Unscrubbed, choosing the subscription would silently bill API credits and look exactly like success.
+  - **The CLI invocation is measured, not derived from the docs, and is version-specific in both directions** (pinned minimum **2.1.225**, recorded in `config.yaml` beside `claude_binary`). `--bare` is absent *on purpose*: it was the obvious flag and on 2.1.225 it breaks subscription auth outright (`Not logged in`, `duration_api_ms: 0`) where the identical command without it succeeds. `--max-turns` does not exist. `--mcp-config` needs `{"mcpServers":{}}`, not `{}`. `--tools ""` plus `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` takes a two-token probe from $0.0651 to $0.0331; `--system-prompt` looks like the same kind of saving and costs **$0.1711** by invalidating the server-side prompt cache. `max_tokens` reaches the CLI only as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (there is no flag), and the prompt goes on **stdin** — extraction prompts run to tens of KB.
+  - **Cost on this path is not comparable to the API path's, and the usage block says so.** The envelope's `input_tokens` **excludes cache reads** — a call moving ~37K tokens reported `2` — so the cache counts travel beside it or the CLI path shows a phantom efficiency. Every fresh call pays a ~$0.033 harness-prefix floor that amortizes only inside a resumed session (`--resume`, measured at $0.0030 for a follow-up turn; session-per-company is v2 of the transport, not v1), and Claude Code writes every prompt token at 1-hour-TTL cache-write rates — 2× standard input — so the optimized path converges to ≈1.7–1.8× the API path per company. `estimated_cost_usd` **keeps its name** because the sweep's `--ceiling` meters on it, but on this path it holds actuals; `cost_basis: "actual" | "estimated" | "mixed"` states which, the same honesty pattern `friction.basis` uses. A ceiling calibrated against API pricing therefore trips far sooner here, and per-ticker cost stops being a per-ticker fact.
+  - Missing binary or missing key both raise `ValueError` at construction, so an unusable provider degrades to compute-only exactly the way a missing key always has. Login state is **not** preflighted — there is no free check — so it surfaces as a normal per-pass error carrying the CLI's own message.
 
 ## Tech Stack
 - Python 3.11+
 - Data: requests, beautifulsoup4, yfinance, pandas, numpy, scipy
 - PDF: PyMuPDF (fitz)
 - Viz: Plotly, Jinja2
-- LLM: anthropic SDK (Sonnet/Opus for Pass 1-2)
+- LLM: anthropic SDK, or headless Claude Code (`claude -p`) — selected by `llm.provider` (Sonnet/Opus for Pass 1-2)
 - CLI: typer
 - Config: PyYAML
 - Environment: python-dotenv (.env for ANTHROPIC_API_KEY)
@@ -230,6 +235,15 @@ boundless100x/
 python -m boundless100x analyze ASTRAL          # Full pipeline (fetch + compute + LLM + report)
 python -m boundless100x analyze ASTRAL --no-llm # Compute only (no LLM passes)
 python -m boundless100x analyze ASTRAL --deep   # Use Opus instead of Sonnet for LLM
+python -m boundless100x analyze ASTRAL --llm-provider claude_cli
+                                                # Route every LLM call through
+                                                # headless Claude Code instead
+                                                # of the API. Also on `sweep`.
+                                                # Default is config's
+                                                # llm.provider ("anthropic").
+                                                # The banner names the path, so
+                                                # a run's billing is visible in
+                                                # its first line of output.
 python -m boundless100x compute ASTRAL          # Metrics only (no fetch, no LLM)
 python -m boundless100x screen --preset compounders       # Screen universe against preset
 python -m boundless100x watchlist show          # View watchlist (lane, state,
@@ -315,6 +329,17 @@ python -m boundless100x sweep --all --dry-run   # Price it without calling the A
 python -m boundless100x sweep --tickers A,B     # Extract a named list
 python -m boundless100x sweep --all --ceiling 1 # Stop at a USD ceiling, naming
                                                 # what was not reached
+python -m boundless100x sweep --all --llm-provider claude_cli
+                                                # Subscription-billed instead.
+                                                # The ceiling meters on the same
+                                                # key but on real dollars here,
+                                                # including a fixed per-call
+                                                # harness overhead — it binds
+                                                # far sooner than the same
+                                                # number does on the API path.
+                                                # `--dry-run` always prices from
+                                                # MODEL_PRICING; a dry run
+                                                # estimates by construction.
 
 python -m pytest tests/                         # Unit tests (the live-network Screener
                                                 # test is deselected by pytest.ini;
@@ -325,6 +350,18 @@ python -m pytest tests/                         # Unit tests (the live-network S
 everything through `venv/bin/python`; the suite is green
 (`venv/bin/python -m pytest tests/`). Don't hardcode the test count here —
 it drifts every time a test is added and nobody remembers to update it.
+
+**LLM credentials, per provider.** `llm.provider: anthropic` (the default)
+needs `ANTHROPIC_API_KEY` in `.env` and spends API credits.
+`llm.provider: claude_cli` needs **Claude Code installed on PATH and logged
+in** (2.1.225 or later, `claude` at `~/.local/bin/claude` on this machine)
+and spends the Max subscription's monthly headless-credit pool instead — the
+API key is deliberately stripped from the subprocess environment, so having
+one set does not silently redirect the bill. Either precondition failing
+degrades the run to compute-only with a warning; the CLI path additionally
+surfaces a logged-out state as a per-pass error on the first call, because
+there is no free way to check login up front. No test in the suite needs
+either credential — the SDK client and `subprocess.run` are both faked.
 
 ## GitHub
 - **Repo**: https://github.com/rishisareen/boundless100x (private)
