@@ -108,6 +108,7 @@ from boundless100x.output.report_expansion import (
     SectionDecision,
 )
 from boundless100x.output.report_reading import (
+    NOT_APPLICABLE,
     READING_STATUSES,
     CoverageReading,
     Reading,
@@ -719,6 +720,21 @@ class Vocabulary:
         for metric_id, (_element, name) in METRIC_DISPLAY_NAMES.items():
             self.names.setdefault(metric_id, name)
 
+        # An id with no underscore is invisible to `_SNAKE_TOKEN`, and `roiic`
+        # is one — it reached the rendered dashboard as "Incremental returns
+        # indeterminate: roiic unavailable" while every id beside it resolved.
+        # The module docstring records single-word keys as covered by routing
+        # rather than detection, which is true of a *lifecycle* key like `core`
+        # that is also an English word. It is not true of a metric id: those
+        # are known strings, so they can be matched exactly rather than
+        # guessed at, and only ids this vocabulary already has a name for are
+        # substituted. Longest-first so a shorter id cannot bite a longer one.
+        known = sorted(set(self.names) | set(FLAG_LABELS), key=len, reverse=True)
+        self._known_token = (
+            re.compile(r"\b(?:%s)\b" % "|".join(re.escape(k) for k in known))
+            if known else None
+        )
+
     # ── Labels ────────────────────────────────────────────────────────────
 
     def metric_name(self, metric_id: str) -> str | None:
@@ -764,6 +780,8 @@ class Vocabulary:
         value = "" if text is None else str(text)
         value = _BACKTICKED.sub(lambda m: self._resolve(m.group(1)), value)
         value = _SNAKE_TOKEN.sub(lambda m: self._resolve(m.group(0)), value)
+        if self._known_token is not None:
+            value = self._known_token.sub(lambda m: self._resolve(m.group(0)), value)
         return _COMPARATOR_TOKEN.sub(lambda m: COMPARATOR_SYMBOLS[m.group(0)], value)
 
     def _resolve(self, token: str) -> str:
@@ -893,6 +911,29 @@ def _quantity_text(reading: Reading, vocabulary: Vocabulary) -> tuple[str, str |
     return text, None
 
 
+# What a row says when a section has already said it at length.
+#
+# A sector-inapplicable metric carries a paragraph explaining why the metric
+# measures nothing for this kind of company — and that paragraph is *also* the
+# section's finding, three inches above the table. Rendering both put the same
+# essay on screen twice, once per affected metric: PFC's Quality — Business
+# showed the lender explanation six times in one card.
+#
+# The row therefore states the fact and leaves the argument to the finding.
+# This is safe rather than lossy because sector mismatch is a trigger: a metric
+# that reads `not_applicable` has always expanded its section, so the full
+# reason is always on the page. No other status has that guarantee, which is
+# why no other status is shortened here.
+_ROW_SHORT_FORM: dict[str, str] = {
+    NOT_APPLICABLE: "does not measure anything for a company of this kind",
+}
+
+
+def _row_reason(reading: Reading, vocabulary: Vocabulary) -> str:
+    short = _ROW_SHORT_FORM.get(reading.status)
+    return short if short else vocabulary.narrate(reading.reason)
+
+
 def metric_row(
     metric_id: str,
     reading: Reading,
@@ -939,7 +980,7 @@ def metric_row(
     unknown = None
     if not line:
         try:
-            reason = vocabulary.narrate(reading.reason)
+            reason = _row_reason(reading, vocabulary)
             unknown = Unknown(subject=f"No reading for {name}", reason=reason)
         except ComponentContentError as exc:
             logger.warning(

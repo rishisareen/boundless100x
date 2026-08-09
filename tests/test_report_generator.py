@@ -1506,6 +1506,22 @@ class TestNoIdentifierReachesTheRenderedPage:
 
         assert not found, f"raw identifiers on the page: {sorted(found)}"
 
+    def test_the_dashboard_shows_no_registered_identifier(self, tmp_path):
+        """The shape-blind half. `roiic` has no underscore, so the snake_case
+        rule above could never see it, and it reached the page while every id
+        beside it resolved. A registry id is a known string — match it exactly
+        rather than by shape."""
+        import re
+
+        from boundless100x.compute_engine.engine import ComputeEngine
+        from boundless100x.output.report_vocabulary import FLAG_LABELS
+
+        text = self.visible_text(render_legacy(tmp_path)[0])
+        known = (set(ComputeEngine().metrics) | set(FLAG_LABELS)) - self.ALLOWED
+        found = {k for k in known if re.search(rf"\b{re.escape(k)}\b", text)}
+
+        assert not found, f"registered identifiers on the page: {sorted(found)}"
+
     def test_the_dashboard_shows_no_bare_comparator(self, tmp_path):
         import re
 

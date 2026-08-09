@@ -894,12 +894,23 @@ class TestPfcsQualityBusinessSection:
         Calling PFC asset-heavy for lending is the misreading the whole path
         exists to stop, and hiding the row instead would leave a reader
         wondering why a DuPont decomposition has two of three legs.
+
+        The argument for withholding it lives in the section's finding, not in
+        the row. Rendering it in both put the same paragraph on screen twice —
+        six times over this card's three inapplicable metrics — so the row now
+        states the fact and the finding keeps the explanation. Asserted as a
+        split rather than as a substring, because "the essay is in exactly one
+        of these two places" is the property that was wrong.
         """
         row = next(r for r in pfc_section.rows if r.metric_id == "dupont_turnover")
 
         assert row.value == "0.09x"
         assert not row.known
-        assert "loan book" in row.unknown.reason
+        assert "loan book" not in row.unknown.reason
+        assert "does not measure anything" in row.unknown.reason
+
+        findings = " ".join(f.text for f in pfc_section.findings)
+        assert "loan book" in findings
 
     def test_nothing_in_the_flow_carries_a_raw_identifier(self, pfc_section):
         """The end-to-end statement of R15, over text nobody wrote for a test."""
