@@ -824,19 +824,33 @@ class ReportGenerator:
             ("Eligibility Unknown", "neutral", ""),
         )
         gates = eligibility.get("gates", {})
+
+        # `EligibilityEvaluator` writes its reasons for a log: "Size headroom
+        # not met: market_cap 138,604.00 lt 30,000". Printed raw, that put
+        # three metric ids and a comparator on the page — R15 violated on the
+        # one surface this whole effort is about, and visible in the rendered
+        # PFC dashboard. `cli.py` already narrates the same strings; this is
+        # the same call, so the two surfaces cannot say it two ways.
+        narrate = self._reading_vocabulary().narrate
+
+        def reason_for(detail: dict) -> str:
+            return narrate(detail.get("reason") or "")
+
         return {
             "verdict": eligibility.get("verdict"),
             "label": label,
             "sentiment": sentiment,
             "description": description,
             "failed_reasons": [
-                gates[g]["reason"] for g in eligibility.get("failed", []) if g in gates
+                reason_for(gates[g]) for g in eligibility.get("failed", []) if g in gates
             ],
             "unknown_reasons": [
-                gates[g]["reason"] for g in eligibility.get("indeterminate", []) if g in gates
+                reason_for(gates[g])
+                for g in eligibility.get("indeterminate", []) if g in gates
             ],
             "gates": [
-                {"id": gid, **detail} for gid, detail in gates.items()
+                {**detail, "id": gid, "reason": reason_for(detail)}
+                for gid, detail in gates.items()
             ],
         }
 
@@ -1011,6 +1025,11 @@ class ReportGenerator:
         verdict = gate_result.get("verdict")
         label, sentiment, description = LANE_VERDICT_LABELS.get(verdict, ("", "", ""))
 
+        narrate = self._reading_vocabulary().narrate
+
+        def lane_reason(detail: dict) -> str:
+            return narrate(detail.get("reason") or "")
+
         return {
             "lane": lane,
             "lane_label": LANE_LABELS.get(lane, str(lane)),
@@ -1025,12 +1044,19 @@ class ReportGenerator:
             "verdict_label": label,
             "sentiment": sentiment,
             "description": description,
-            "gates": [{"id": gate_id, **detail} for gate_id, detail in gates.items()],
+            # Narrated for the same reason the 100x gates are: `LaneGateEvaluator`
+            # writes "Liquidity floor not met: daily_turnover_ratio 0.01 gte 0.02",
+            # which is the right sentence for a log and puts a metric id and a
+            # comparator on the page.
+            "gates": [
+                {**detail, "id": gate_id, "reason": lane_reason(detail)}
+                for gate_id, detail in gates.items()
+            ],
             "failed_reasons": [
-                gates[g]["reason"] for g in gate_result.get("failed", []) if g in gates
+                lane_reason(gates[g]) for g in gate_result.get("failed", []) if g in gates
             ],
             "unknown_reasons": [
-                gates[g]["reason"]
+                lane_reason(gates[g])
                 for g in gate_result.get("indeterminate", [])
                 if g in gates
             ],
@@ -1190,7 +1216,18 @@ class ReportGenerator:
                 decision = self._resolve_action(result)
                 summary["has_llm"] = True
                 summary["suggested_action"] = decision.get("action")
-                summary["action_constraint"] = decision
+                # `action_policy` builds `constraints` out of the same gate
+                # reasons, so the capping explanation carried the same metric
+                # ids and comparators onto the page as the gates above it.
+                # Narrated on a copy: `decision` is the guard's own output and
+                # is compared against the stored one elsewhere.
+                narrate = self._reading_vocabulary().narrate
+                summary["action_constraint"] = {
+                    **decision,
+                    "constraints": [
+                        narrate(c) for c in (decision.get("constraints") or [])
+                    ],
+                }
                 summary["conviction_level"] = p2.get("conviction_level")
                 summary["thesis"] = p2.get("thesis")
                 summary["holding_period"] = p2.get("target_holding_period")

@@ -181,6 +181,25 @@ class IncompleteSurface(TypeError):
 # which is the half a lookup table can never cover.
 _SNAKE_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 
+# The evaluators write their conditions with the comparator key they were
+# declared with — "Market Cap 5000.00 lte 3000" — and `lte` is as much a raw
+# identifier to a reader as the metric id beside it was. It survives
+# `_SNAKE_TOKEN` because it has no underscore, which is why it outlived the
+# first pass at this. Symbols rather than words ("is at most") because the
+# reason is already phrased as a condition that was or was not met, and
+# inserting a verb into someone else's sentence reads worse than the maths.
+# Keys mirror `eligibility.COMPARATORS`; a test pins the two sets equal, so a
+# fifth comparator cannot ship without wording.
+COMPARATOR_SYMBOLS: dict[str, str] = {
+    "lt": "<",
+    "lte": "≤",
+    "gt": ">",
+    "gte": "≥",
+}
+_COMPARATOR_TOKEN = re.compile(
+    r"\b(?:%s)\b" % "|".join(sorted(COMPARATOR_SYMBOLS, key=len, reverse=True))
+)
+
 # Markup, by surface. `<` and `>` are *not* banned on their own: shipped labels
 # read "Exceptional RoCE (>25%)" and "RoCE > 15% Count (10yr)", and a rule that
 # rejected those would be a rule the vocabulary has to be bent around.
@@ -744,10 +763,28 @@ class Vocabulary:
         """
         value = "" if text is None else str(text)
         value = _BACKTICKED.sub(lambda m: self._resolve(m.group(1)), value)
-        return _SNAKE_TOKEN.sub(lambda m: self._resolve(m.group(0)), value)
+        value = _SNAKE_TOKEN.sub(lambda m: self._resolve(m.group(0)), value)
+        return _COMPARATOR_TOKEN.sub(lambda m: COMPARATOR_SYMBOLS[m.group(0)], value)
 
     def _resolve(self, token: str) -> str:
-        return self.names.get(token.strip(), token)
+        """A metric id, else a flag id, else the token untouched.
+
+        Flags reach here because an evaluator names one in its prose — an
+        eligibility veto says "absence of `reverse_dcf_overpriced` cannot be
+        confirmed", and that id rendered raw on the dashboard beside the metric
+        ids that *were* being resolved. A flag is exactly as much an identifier
+        to a reader as a metric is, and `FLAG_LABELS` already holds its wording.
+
+        An unresolved token is still returned as-is rather than humanised:
+        `guard_text` refuses it downstream, which is the loud failure. Guessing
+        a label from the id is the leak with better typography that this whole
+        layer exists to refuse.
+        """
+        key = token.strip()
+        if key in self.names:
+            return self.names[key]
+        label = FLAG_LABELS.get(key)
+        return label[0] if label else token
 
 
 # ── Builders ──────────────────────────────────────────────────────────────

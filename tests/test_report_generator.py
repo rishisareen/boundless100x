@@ -1458,3 +1458,68 @@ class TestTheCompositeLineAgreesWithItself:
             console = _composite_reading(composite)
 
             assert note.text == console.text, composite
+
+
+class TestNoIdentifierReachesTheRenderedPage:
+    """R15, asserted against the rendered document rather than a component.
+
+    Every component is guarded at construction, and that was taken as proof
+    the page was clean. It was not: the eligibility gates interpolated
+    `{{ gate.reason }}` straight from the evaluator, which writes for a log —
+    "Size headroom not met: market_cap 138,604.00 lt 30,000". Three metric
+    ids, a flag id and a comparator reached the reader on the one surface this
+    work exists to clean up, and every component-level test still passed,
+    because none of that text was ever a component.
+
+    So this reads the finished HTML. It is the only check positioned where the
+    defect actually was.
+    """
+
+    # `claude_cli` is the one identifier that is also the right word: it is what
+    # the owner types (`--llm-provider claude_cli`) and what `config.yaml` holds,
+    # so rendering it as prose would name something the reader cannot act on.
+    # Allowlisted explicitly rather than by a pattern, so the next addition is a
+    # decision somebody makes rather than one a regex makes for them.
+    ALLOWED = frozenset({"claude_cli"})
+
+    def visible_text(self, html: str) -> str:
+        """The words a reader actually sees.
+
+        Entities are unescaped last and deliberately: `&gt;` survives tag
+        stripping as a bare `gt`, which reads as the comparator key and made
+        this test fail on labels like "RoCE > 15% Count (10yr)" that were never
+        wrong. Scanning the escaped form finds the markup, not the text.
+        """
+        import html as html_mod
+        import re
+
+        for block in ("script", "style"):
+            html = re.sub(rf"<{block}.*?</{block}>", " ", html, flags=re.S)
+        return re.sub(r"\s+", " ", html_mod.unescape(re.sub(r"<[^>]+>", " ", html)))
+
+    def test_the_dashboard_shows_no_snake_case_identifier(self, tmp_path):
+        import re
+
+        html, _ = render_legacy(tmp_path)
+        found = set(re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+                               self.visible_text(html))) - self.ALLOWED
+
+        assert not found, f"raw identifiers on the page: {sorted(found)}"
+
+    def test_the_dashboard_shows_no_bare_comparator(self, tmp_path):
+        import re
+
+        from boundless100x.output.report_components import COMPARATOR_SYMBOLS
+
+        text = self.visible_text(render_legacy(tmp_path)[0])
+        found = {c for c in COMPARATOR_SYMBOLS
+                 if re.search(rf"\b{c}\b", text)}
+
+        assert not found, f"raw comparators on the page: {sorted(found)}"
+
+    def test_the_comparator_vocabulary_covers_every_declared_one(self):
+        """A fifth comparator must not ship without wording."""
+        from boundless100x.compute_engine.eligibility import COMPARATORS
+        from boundless100x.output.report_components import COMPARATOR_SYMBOLS
+
+        assert set(COMPARATOR_SYMBOLS) == set(COMPARATORS)

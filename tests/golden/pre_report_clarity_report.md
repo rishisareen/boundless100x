@@ -11,9 +11,9 @@ Generated: <generated>
 
 | Gate | Result | Detail |
 |---|---|---|
-| Small enough to multiply | **fail** | Small enough to multiply not met: market_cap 5000.00 lte 3000 |
-| Reinvestment runway | pass | Reinvestment runway met: roce_5yr_avg 22.00 gte 18 |
-| Market not already pricing it | unknown | Market not already pricing it indeterminate: reverse_dcf_growth is unavailable |
+| Small enough to multiply | **fail** | Small enough to multiply not met: Market Cap (₹ Cr) 5000.00 ≤ 3000 |
+| Reinvestment runway | pass | Reinvestment runway met: RoCE (5yr Avg) 22.00 ≥ 18 |
+| Market not already pricing it | unknown | Market not already pricing it indeterminate: Reverse DCF Implied Growth is unavailable |
 
 | | |
 |---|---|
@@ -23,7 +23,7 @@ Generated: <generated>
 
 > **Action capped to WATCHLIST**
 > (model suggested BUY):
-> - Small enough to multiply not met: market_cap 5000.00 lte 3000
+> - Small enough to multiply not met: Market Cap (₹ Cr) 5000.00 ≤ 3000
 > - only 82% of the scoring evidence was available
 
 > A capital-light compounder with a durable distribution edge, priced for the growth it has already delivered.
@@ -266,12 +266,12 @@ Composite **6.12 → 6.52** (+0.40) over 90 days, 2026-01-01 to 2026-04-01.
 
 | Gate | Result | Detail |
 |---|---|---|
-| Quality floor | pass | Quality floor met: score composite 6.52 gte 5.5 |
-| Valuation discount | pass | Valuation discount met: pe_vs_historical 82.00 lte 90 |
-| Growth intact | pass | Growth intact met: ttm_growth_vs_cagr 4.00 gte 0 |
-| Institutional accumulation | unknown | Institutional accumulation indeterminate: institutional_accumulation_streak is unavailable |
+| Quality floor | pass | Quality floor met: score composite 6.52 ≥ 5.5 |
+| Valuation discount | pass | Valuation discount met: P/E Percentile (10yr traded range) 82.00 ≤ 90 |
+| Growth intact | pass | Growth intact met: TTM Growth vs 5yr CAGR (pp) 4.00 ≥ 0 |
+| Institutional accumulation | unknown | Institutional accumulation indeterminate: FII + DII Accumulation Streak is unavailable |
 | Catalyst identified | pass | Catalyst identified met: catalyst is active |
-| Liquidity floor | **fail** | Liquidity floor not met: daily_turnover_ratio 0.01 gte 0.02 |
+| Liquidity floor | **fail** | Liquidity floor not met: Daily Turnover Ratio (%) 0.01 ≥ 0.02 |
 
 ### Friction
 
