@@ -983,14 +983,29 @@ def metric_row(
             reason = _row_reason(reading, vocabulary)
             unknown = Unknown(subject=f"No reading for {name}", reason=reason)
         except ComponentContentError as exc:
+            # `reading.reason` for a `METRIC_ERROR` is `f"the metric reported:
+            # {error}"`, and `error` is `str(exc)` from whatever the metric's
+            # own implementation raised — a bare `KeyError('operating_profit')`
+            # stringifies to `'operating_profit'`, which looks exactly like the
+            # bare-quoted-key shape the guard exists to catch. That happened on
+            # ten of PFC's rows, and each one printed this same sentence, which
+            # is meta-commentary about the reporting system rather than
+            # anything about the company reading it.
+            #
+            # `reading.source_error` carries the raw text for the log — the
+            # same split `caveat_from_run_error` makes for a run-level error —
+            # so a maintainer can still find the `KeyError` without a reader
+            # meeting it.
             logger.warning(
-                f"The declared reason for {metric_id} is not renderable: {exc}"
+                f"The declared reason for {metric_id} is not renderable: {exc} "
+                f"(source: {reading.source_error!r})"
             )
             unknown = Unknown(
                 subject=f"No reading for {name}",
                 reason=(
-                    "this metric could not be read, and the explanation the "
-                    "model recorded is written in terms only the code uses"
+                    "could not be computed from this company's financial "
+                    "statements — the technical detail is in the run log "
+                    "rather than here"
                 ),
             )
 

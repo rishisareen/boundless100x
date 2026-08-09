@@ -13,10 +13,12 @@ chart div. Regenerate them deliberately (never to make a red test green) with:
     from tests.test_report_lane_status import normalise
     normalise(Path(report_dir / "TEST_dashboard.html").read_text())
 
-`pre_lane_section_dashboard.html` has been regenerated once since it was
-captured, when the reading layer was folded into the dashboard — every element
-section gained a one-line reading and a `<details>` around its metric rows.
-That was a deliberate, whole-report change; the golden's job here is the lane
+`pre_lane_section_dashboard.html` has been regenerated twice since it was
+captured: once when the reading layer was folded into the dashboard — every
+element section gained a one-line reading and a `<details>` around its metric
+rows — and again when that reading layer's own presentation was polished (a
+duplicated score number, stacked identical headlines, an overflowing table).
+Both were deliberate, whole-report changes; the golden's job here is the lane
 section, and it still holds it. `pre_lane_section_report.md` has **not** moved
 and must not: the reading layer landed in the dashboard and nowhere else, so a
 diff there means something leaked.

@@ -9,6 +9,11 @@
   /* Light theme (default) */
   :root {
     --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #f59e0b; --gray: #6b7280;
+    /* Two more, so a score badge has five colours for the five bands it can
+       read — "exceptional" and "thin" would otherwise share green and red
+       with "strong" and "weak", which is the same collapse the old 7/4 rule
+       made in words. Named for the shade, matching --green/--red/--amber. */
+    --emerald: #059669; --orange: #ea580c;
     --bg-body: #f8fafc; --bg-card: #ffffff; --bg-card-alt: #f8fafc; --bg-input: #f1f5f9;
     --text-primary: #1e293b; --text-secondary: #475569; --text-muted: #9ca3af;
     --border: #e2e8f0; --border-light: #f1f5f9;
@@ -34,6 +39,7 @@
     --exec-thesis-bg: #1e293b;
     --toc-bg: #1e293b;
     --blue: #60a5fa; --green: #4ade80; --red: #f87171; --amber: #fbbf24; --gray: #94a3b8;
+    --emerald: #34d399; --orange: #fb923c;
     --contrib-good-bg: #0a2618; --contrib-low-bg: #2d0a0a; --contrib-mid-bg: transparent;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -181,9 +187,18 @@
   details.reading-rows > summary { cursor: pointer; font-size: 0.85em; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0; }
   details.reading-rows > summary:hover { color: var(--blue); }
   details.reading-rows[open] > summary { margin-bottom: 6px; }
-  .reading-table { font-size: 0.88em; margin: 8px 0; }
-  .reading-table th[scope="row"] { background: transparent; font-weight: 600; width: 26%; }
-  .reading-table td.contribution { text-align: right; color: var(--text-muted); white-space: nowrap; }
+  /* `td.contribution` is `white-space: nowrap` on purpose — "0% of full marks
+     · 5% of this element" reads worse split across two lines — and that is
+     exactly what pushed the table past its container with no way back: a
+     `<table>` has no width ceiling of its own, so a nowrap cell is free to
+     make the whole table wider than the card, and it was clipped rather than
+     scrolled. `.reading-table-scroll` is the fix, not the column widths
+     alone: even a well-proportioned table can still overflow a narrow phone,
+     and clipping it silently is the one outcome worse than a scrollbar. */
+  .reading-table-scroll { overflow-x: auto; margin: 8px 0; }
+  .reading-table { font-size: 0.88em; margin: 0; width: 100%; }
+  .reading-table th[scope="row"] { background: transparent; font-weight: 600; width: 24%; }
+  .reading-table td.contribution { width: 20%; text-align: right; color: var(--text-muted); white-space: nowrap; }
   .reading-table tr.unknown th, .reading-table tr.unknown td { color: var(--text-muted); }
   /* Signal groups */
   .signal-group { margin-bottom: 16px; }
@@ -243,8 +258,8 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       </div>
     </div>
     <div style="text-align: right;">
-      <div class="composite-score" style="color: var(--amber);">
-        6.52<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+      <div class="composite-score" style="color: var(--green);">
+6.5<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
       </div>
       <div style="color: var(--gray); font-size: 0.85em;">SQGLP Composite</div>
       <div style="color: var(--red); font-size: 0.78em; margin-top: 3px;"
@@ -325,49 +340,49 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <div class="el-score" style="color: var(--amber);">
 5.0      </div>
       <div class="el-label">Size (10%)</div>
-      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 50.0%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: 50.0%; background: var(--amber);"></div></div>
     </a>
     <a href="#quality-business" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
       <div class="el-short">QB</div>
       <div class="el-score" style="color: var(--green);">
 7.4      </div>
       <div class="el-label">Quality — Business (20%)</div>
-      <div class="el-bar"><div class="el-bar-fill score-high" style="width: 74.0%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: 74.0%; background: var(--green);"></div></div>
     </a>
     <a href="#quality-management" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
       <div class="el-short">QM</div>
       <div class="el-score" style="color: var(--amber);">
 6.0      </div>
       <div class="el-label">Quality — Management (10%)</div>
-      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 60.0%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: 60.0%; background: var(--amber);"></div></div>
     </a>
     <a href="#growth" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
       <div class="el-short">G</div>
       <div class="el-score" style="color: var(--green);">
 7.2      </div>
       <div class="el-label">Growth (25%)</div>
-      <div class="el-bar"><div class="el-bar-fill score-high" style="width: 72.0%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: 72.0%; background: var(--green);"></div></div>
     </a>
     <a href="#longevity" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
       <div class="el-short">L</div>
       <div class="el-score" style="color: var(--amber);">
 6.1      </div>
       <div class="el-label">Longevity (20%)</div>
-      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 61.0%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: 61.0%; background: var(--amber);"></div></div>
     </a>
     <a href="#price" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
       <div class="el-short">P</div>
-      <div class="el-score" style="color: var(--amber);">
+      <div class="el-score" style="color: var(--orange);">
 4.3      </div>
       <div class="el-label">Price (15%)</div>
-      <div class="el-bar"><div class="el-bar-fill score-mid" style="width: 43.0%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: 43.0%; background: var(--orange);"></div></div>
     </a>
   </div>
 </div>
 
 <div class="card" style="margin-bottom: 30px;">
   <h3 style="margin-top: 0;">What this says</h3>
-  <p class="reading"><span class="headline">6.5 / 10</span> — Reads strong across the six scored elements.</p>
+  <p class="reading">Reads strong across the six scored elements.</p>
 <p class="qualifier">Scored on 82% of the model&#39;s declared metric weight — the rest could not be computed.</p>
   <div class="finding bad"><p class="headline">Not a 100x Candidate</p><p class="detail">Fails at least one necessary condition</p></div>
   <div class="finding neutral"><p class="headline">Action: Watchlist</p><p class="detail">The model suggested Buy; the guard lowered it because fails at least one necessary condition and the score rests on 82% of the declared metric weight.</p></div>
@@ -392,11 +407,11 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
     </div>
     <div class="element-weight">Weight: 10%</div>
     <div class="element-bar">
-      <div class="element-bar-fill score-mid" style="width: 50.0%;"></div>
+      <div class="element-bar-fill" style="width: 50.0%; background: var(--amber);"></div>
     </div>
   </div>
 
-  <p class="reading"><span class="headline">5.0 / 10</span> — Reads fair for this element.</p>
+  <p class="reading">Reads fair for this element.</p>
 
   <!-- Auto-generated summary -->
   <div class="element-summary">Average at 5.0/10.</div>
@@ -404,6 +419,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 
   <details class="reading-rows">
     <summary>The metrics behind this score (5)</summary>
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>Metric</th><th>Reading</th><th>Contribution</th>
@@ -416,6 +432,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <tr class="known"><th scope="row">Market Cap (₹ Cr) <a class="explain" href="#explain-market_cap" title="Market Cap (₹ Cr)">what this measures</a></th><td>₹5,000 Cr — moderate headroom (lower is better)</td><td class="contribution">50% of full marks · 25% of this element</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="caveat note">Whether these 4 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. &#39;Chemicals&#39; has not been reviewed against the metric set, so whether this metric measures anything here is unknown</p>
   </details>
 
@@ -441,11 +458,11 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
     </div>
     <div class="element-weight">Weight: 20%</div>
     <div class="element-bar">
-      <div class="element-bar-fill score-high" style="width: 74.0%;"></div>
+      <div class="element-bar-fill" style="width: 74.0%; background: var(--green);"></div>
     </div>
   </div>
 
-  <p class="reading"><span class="headline">7.4 / 10</span> — Reads strong for this element.</p>
+  <p class="reading">Reads strong for this element.</p>
 <p class="qualifier">Scored on 75% of this element&#39;s declared weight, below the 85% bar — the rest could not be computed, so this score rests on part of the evidence.</p>
 
   <!-- Auto-generated summary -->
@@ -454,6 +471,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 
   <details class="reading-rows">
     <summary>The metrics behind this score (13)</summary>
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>Metric</th><th>Reading</th><th>Contribution</th>
@@ -474,6 +492,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <tr class="unknown"><th scope="row">Working Capital Days Trend <a class="explain" href="#explain-working_capital_days_trend" title="Working Capital Days Trend">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="caveat note">Whether these 13 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. &#39;Chemicals&#39; has not been reviewed against the metric set, so whether this metric measures anything here is unknown</p>
   </details>
 
@@ -592,11 +611,11 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
     </div>
     <div class="element-weight">Weight: 10%</div>
     <div class="element-bar">
-      <div class="element-bar-fill score-mid" style="width: 60.0%;"></div>
+      <div class="element-bar-fill" style="width: 60.0%; background: var(--amber);"></div>
     </div>
   </div>
 
-  <p class="reading"><span class="headline">6.0 / 10</span> — Reads fair for this element.</p>
+  <p class="reading">Reads fair for this element.</p>
 <p class="qualifier">Scored on 80% of this element&#39;s declared weight, below the 85% bar — the rest could not be computed, so this score rests on part of the evidence.</p>
 
   <!-- Auto-generated summary -->
@@ -605,6 +624,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 
   <details class="reading-rows">
     <summary>The metrics behind this score (6)</summary>
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>Metric</th><th>Reading</th><th>Contribution</th>
@@ -618,6 +638,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <tr class="unknown"><th scope="row">Tax Rate Consistency (StdDev) <a class="explain" href="#explain-effective_tax_rate_variance" title="Tax Rate Consistency (StdDev)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="caveat note">Whether these 6 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. &#39;Chemicals&#39; has not been reviewed against the metric set, so whether this metric measures anything here is unknown</p>
   </details>
 
@@ -798,11 +819,11 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
     </div>
     <div class="element-weight">Weight: 25%</div>
     <div class="element-bar">
-      <div class="element-bar-fill score-high" style="width: 72.0%;"></div>
+      <div class="element-bar-fill" style="width: 72.0%; background: var(--green);"></div>
     </div>
   </div>
 
-  <p class="reading"><span class="headline">7.2 / 10</span> — Reads strong for this element.</p>
+  <p class="reading">Reads strong for this element.</p>
 
   <!-- Auto-generated summary -->
   <div class="element-summary">Strong on Revenue CAGR (5yr) (20.0) and PAT CAGR (5yr) (25.0).</div>
@@ -810,6 +831,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 
   <details class="reading-rows">
     <summary>The metrics behind this score (13)</summary>
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>Metric</th><th>Reading</th><th>Contribution</th>
@@ -830,6 +852,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <tr class="unknown"><th scope="row">TTM Growth vs 5yr CAGR (pp) <a class="explain" href="#explain-ttm_growth_vs_cagr" title="TTM Growth vs 5yr CAGR (pp)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">Does not contribute to the score</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="caveat note">Whether these 11 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. &#39;Chemicals&#39; has not been reviewed against the metric set, so whether this metric measures anything here is unknown</p>
   </details>
 
@@ -903,11 +926,11 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
     </div>
     <div class="element-weight">Weight: 20%</div>
     <div class="element-bar">
-      <div class="element-bar-fill score-mid" style="width: 61.0%;"></div>
+      <div class="element-bar-fill" style="width: 61.0%; background: var(--amber);"></div>
     </div>
   </div>
 
-  <p class="reading"><span class="headline">6.1 / 10</span> — Reads fair for this element.</p>
+  <p class="reading">Reads fair for this element.</p>
 <p class="qualifier">Scored on 80% of this element&#39;s declared weight, below the 85% bar — the rest could not be computed, so this score rests on part of the evidence.</p>
 
   <!-- Auto-generated summary -->
@@ -916,6 +939,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 
   <details class="reading-rows">
     <summary>The metrics behind this score (7)</summary>
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>Metric</th><th>Reading</th><th>Contribution</th>
@@ -930,6 +954,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <tr class="unknown"><th scope="row">Sector Tailwind (MOSL Dec 2025) <a class="explain" href="#explain-sector_tailwind" title="Sector Tailwind (MOSL Dec 2025)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="caveat note">Whether these 7 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. &#39;Chemicals&#39; has not been reviewed against the metric set, so whether this metric measures anything here is unknown</p>
   </details>
 
@@ -950,16 +975,16 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 <div class="card">
   <!-- Header: score + weight + bar -->
   <div class="element-header">
-    <div class="element-score-badge" style="color: var(--amber);">
+    <div class="element-score-badge" style="color: var(--orange);">
 4.3<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
     </div>
     <div class="element-weight">Weight: 15%</div>
     <div class="element-bar">
-      <div class="element-bar-fill score-mid" style="width: 43.0%;"></div>
+      <div class="element-bar-fill" style="width: 43.0%; background: var(--orange);"></div>
     </div>
   </div>
 
-  <p class="reading"><span class="headline">4.3 / 10</span> — Reads thin for this element.</p>
+  <p class="reading">Reads thin for this element.</p>
 <p class="qualifier">Scored on 80% of this element&#39;s declared weight, below the 85% bar — the rest could not be computed, so this score rests on part of the evidence.</p>
 
   <!-- Auto-generated summary -->
@@ -968,6 +993,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
 
   <details class="reading-rows">
     <summary>The metrics behind this score (9)</summary>
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>Metric</th><th>Reading</th><th>Contribution</th>
@@ -984,6 +1010,7 @@ Chemicals | Market Cap: ₹5,000 Cr | <generated>
       <tr class="unknown"><th scope="row">Trailing PEG (P/E ÷ 3yr PAT CAGR) <a class="explain" href="#explain-trailing_peg" title="Trailing PEG (P/E ÷ 3yr PAT CAGR)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">18% of this element</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="caveat note">Whether these 8 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. &#39;Chemicals&#39; has not been reviewed against the metric set, so whether this metric measures anything here is unknown</p>
     <p class="caveat note">A declared contradiction check on DCF Margin of Safety could not be run. These two readings could not be compared: Entry price sanity was not evaluated on this run</p>
   </details>

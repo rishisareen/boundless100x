@@ -43,6 +43,8 @@ cannot break its table, and the reason is upstream rather than in this file.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from markupsafe import escape
 
 from boundless100x.output.report_components import (
@@ -118,6 +120,41 @@ def finding_line(component: Finding) -> tuple[str, str]:
     return component.headline, component.text
 
 
+def grouped_findings(
+    findings: Sequence[Finding],
+) -> list[tuple[str, str, list[str]]]:
+    """`(headline, sentiment, bodies)` per distinct headline, first-seen order.
+
+    Three metrics sharing one trigger print the same headline three times
+    running — PFC's Quality — Business fires `sector_mismatch` on asset
+    turnover, the equity multiplier and free cash flow, so the section named
+    "Measures the wrong thing for this kind of company" three times, with the
+    one thing that differs between them — which metric — buried in the first
+    words of each body. This groups them for rendering: one heading, one body
+    paragraph per finding that shares it.
+
+    This is presentation only. `Section.findings` itself is untouched by it —
+    a caller counting fired reasons, or checking that AE1's three lender
+    mismatches were all named, still finds all three. KD5's "no roll-up" rule
+    is about one *section's* finding being folded into a different section's;
+    grouping findings that already share one trigger inside the *same*
+    section is not that — nothing is combined that R7 requires kept separate.
+    Order is first-seen rather than sorted, so F1's trigger order (sector
+    mismatch, then contradiction, then zero-score) survives into the grouping.
+    """
+    order: list[str] = []
+    bodies: dict[str, list[str]] = {}
+    sentiment: dict[str, str] = {}
+    for finding in findings:
+        if finding.headline not in bodies:
+            order.append(finding.headline)
+            bodies[finding.headline] = []
+            sentiment[finding.headline] = finding.sentiment
+        if finding.text:
+            bodies[finding.headline].append(finding.text)
+    return [(headline, sentiment[headline], bodies[headline]) for headline in order]
+
+
 def caveat_line(component: Caveat) -> str:
     if component.subject:
         return f"{component.subject} — {component.text}"
@@ -147,12 +184,22 @@ class HtmlComponents:
     template thin enough that its Markdown twin is recognisably the same file.
     """
 
-    def render_reading(self, component: ReadingLine) -> str:
+    def render_reading(self, component: ReadingLine, *, show_headline: bool = True) -> str:
+        """`show_headline=False` where a numeric badge already carries the
+        figure — the composite's `.composite-score` and each element's
+        `.element-score-badge`. Both printed a big number in a band colour and
+        then this line printed it again, smaller, in blue, inches below: "2.8"
+        in red, then "2.8 / 10 — Reads weak" in blue, on one card. The line's
+        words already read as a complete sentence without the number in front
+        of them ("Reads weak for this element."), so nothing is lost by
+        dropping it here — only the console and Markdown, which have no
+        separate badge, keep the number in the sentence itself.
+        """
         headline, body, qualifier = reading_line(component)
         state = "reading" if component.known else "reading unknown"
         lead = (
             f'<span class="headline">{escape(headline)}</span> — '
-            if headline else ""
+            if headline and show_headline else ""
         )
         out = [f'<p class="{state}">{lead}{escape(body)}</p>']
         if qualifier:
@@ -164,6 +211,24 @@ class HtmlComponents:
         detail = f'<p class="detail">{escape(body)}</p>' if body else ""
         return (
             f'<div class="finding {component.sentiment}">'
+            f'<p class="headline">{escape(headline)}</p>{detail}</div>'
+        )
+
+    def render_finding_group(
+        self, headline: str, sentiment: str, bodies: list[str]
+    ) -> str:
+        """`grouped_findings`'s HTML: one heading, one paragraph per body.
+
+        Not a seventh component. The heading and each paragraph are still a
+        `Finding`'s own already-guarded `headline`/`text` — this only decides
+        how several findings that share a heading share a wrapper, the way
+        `render_finding` decides how one does. HTML is the only surface that
+        needed it: three near-identical headline blocks in a row is a visual
+        problem the console's one-line-per-metric table does not have.
+        """
+        detail = "".join(f'<p class="detail">{escape(b)}</p>' for b in bodies)
+        return (
+            f'<div class="finding {sentiment}">'
             f'<p class="headline">{escape(headline)}</p>{detail}</div>'
         )
 

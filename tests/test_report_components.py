@@ -991,8 +991,8 @@ class TestBuildingASectionWithNothingToWorkFrom:
 
         assert not row.known
         assert row.unknown.reason == (
-            "this metric could not be read, and the explanation the model "
-            "recorded is written in terms only the code uses"
+            "could not be computed from this company's financial statements "
+            "— the technical detail is in the run log rather than here"
         )
 
 

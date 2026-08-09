@@ -9,6 +9,11 @@
   /* Light theme (default) */
   :root {
     --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #f59e0b; --gray: #6b7280;
+    /* Two more, so a score badge has five colours for the five bands it can
+       read — "exceptional" and "thin" would otherwise share green and red
+       with "strong" and "weak", which is the same collapse the old 7/4 rule
+       made in words. Named for the shade, matching --green/--red/--amber. */
+    --emerald: #059669; --orange: #ea580c;
     --bg-body: #f8fafc; --bg-card: #ffffff; --bg-card-alt: #f8fafc; --bg-input: #f1f5f9;
     --text-primary: #1e293b; --text-secondary: #475569; --text-muted: #9ca3af;
     --border: #e2e8f0; --border-light: #f1f5f9;
@@ -34,6 +39,7 @@
     --exec-thesis-bg: #1e293b;
     --toc-bg: #1e293b;
     --blue: #60a5fa; --green: #4ade80; --red: #f87171; --amber: #fbbf24; --gray: #94a3b8;
+    --emerald: #34d399; --orange: #fb923c;
     --contrib-good-bg: #0a2618; --contrib-low-bg: #2d0a0a; --contrib-mid-bg: transparent;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -181,9 +187,18 @@
   details.reading-rows > summary { cursor: pointer; font-size: 0.85em; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0; }
   details.reading-rows > summary:hover { color: var(--blue); }
   details.reading-rows[open] > summary { margin-bottom: 6px; }
-  .reading-table { font-size: 0.88em; margin: 8px 0; }
-  .reading-table th[scope="row"] { background: transparent; font-weight: 600; width: 26%; }
-  .reading-table td.contribution { text-align: right; color: var(--text-muted); white-space: nowrap; }
+  /* `td.contribution` is `white-space: nowrap` on purpose — "0% of full marks
+     · 5% of this element" reads worse split across two lines — and that is
+     exactly what pushed the table past its container with no way back: a
+     `<table>` has no width ceiling of its own, so a nowrap cell is free to
+     make the whole table wider than the card, and it was clipped rather than
+     scrolled. `.reading-table-scroll` is the fix, not the column widths
+     alone: even a well-proportioned table can still overflow a narrow phone,
+     and clipping it silently is the one outcome worse than a scrollbar. */
+  .reading-table-scroll { overflow-x: auto; margin: 8px 0; }
+  .reading-table { font-size: 0.88em; margin: 0; width: 100%; }
+  .reading-table th[scope="row"] { background: transparent; font-weight: 600; width: 24%; }
+  .reading-table td.contribution { width: 20%; text-align: right; color: var(--text-muted); white-space: nowrap; }
   .reading-table tr.unknown th, .reading-table tr.unknown td { color: var(--text-muted); }
   /* Signal groups */
   .signal-group { margin-bottom: 16px; }
@@ -245,8 +260,13 @@
       </div>
     </div>
     <div style="text-align: right;">
-      <div class="composite-score" style="color: {% if executive_summary.composite_score and executive_summary.composite_score >= 7 %}var(--green){% elif executive_summary.composite_score and executive_summary.composite_score >= 4 %}var(--amber){% else %}var(--red){% endif %};">
-        {{ executive_summary.composite_score or 'N/A' }}<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
+      {# The scorer stores the composite at its own working precision
+         (`5.318...` rounded to 2dp), and this badge used to print that
+         verbatim while every element badge beside it and the "Reads {band}"
+         sentence below it both spoke in one decimal — three numbers, two
+         precisions, for one figure. One format now. #}
+      <div class="composite-score" style="color: var(--{{ executive_summary.composite_score | score_color }});">
+        {% if executive_summary.composite_score is not none %}{{ "%.1f"|format(executive_summary.composite_score) }}{% else %}N/A{% endif %}<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
       </div>
       <div style="color: var(--gray); font-size: 0.85em;">SQGLP Composite</div>
       {% if executive_summary.coverage and executive_summary.coverage.composite is not none and executive_summary.coverage.composite < 0.999 %}
@@ -377,11 +397,11 @@
     {% set sc = el_scores.get(el_key) %}
     <a href="#{{ el_key | replace('_', '-') }}" class="sqglp-score-card" style="text-decoration: none; color: inherit;">
       <div class="el-short">{{ cfg.short }}</div>
-      <div class="el-score" style="color: {% if sc and sc >= 7 %}var(--green){% elif sc and sc >= 4 %}var(--amber){% else %}var(--red){% endif %};">
+      <div class="el-score" style="color: var(--{{ sc | score_color }});">
         {% if sc is not none %}{{ "%.1f"|format(sc) }}{% else %}—{% endif %}
       </div>
       <div class="el-label">{{ cfg.label }} ({{ cfg.weight }})</div>
-      <div class="el-bar"><div class="el-bar-fill {% if sc and sc >= 7 %}score-high{% elif sc and sc >= 4 %}score-mid{% else %}score-low{% endif %}" style="width: {{ (sc or 0) * 10 }}%;"></div></div>
+      <div class="el-bar"><div class="el-bar-fill" style="width: {{ (sc or 0) * 10 }}%; background: var(--{{ sc | score_color }});"></div></div>
     </a>
     {% endfor %}
   </div>
@@ -402,7 +422,7 @@
 {% if reading and reading.lead %}
 <div class="card" style="margin-bottom: 30px;">
   <h3 style="margin-top: 0;">{{ reading.lead.title }}</h3>
-  {{ surface.render_reading(reading.lead.reading) }}
+  {{ surface.render_reading(reading.lead.reading, show_headline=false) }}
   {% for finding in reading.lead.findings %}
   {{ surface.render_finding(finding) }}
   {% endfor %}
@@ -431,12 +451,12 @@
 <div class="card">
   <!-- Header: score + weight + bar -->
   <div class="element-header">
-    <div class="element-score-badge" style="color: {% if sc and sc >= 7 %}var(--green){% elif sc and sc >= 4 %}var(--amber){% else %}var(--red){% endif %};">
+    <div class="element-score-badge" style="color: var(--{{ sc | score_color }});">
       {% if sc is not none %}{{ "%.1f"|format(sc) }}{% else %}—{% endif %}<span style="font-size: 0.4em; opacity: 0.6;">/10</span>
     </div>
     <div class="element-weight">Weight: {{ cfg.weight }}</div>
     <div class="element-bar">
-      <div class="element-bar-fill {% if sc and sc >= 7 %}score-high{% elif sc and sc >= 4 %}score-mid{% else %}score-low{% endif %}" style="width: {{ (sc or 0) * 10 }}%;"></div>
+      <div class="element-bar-fill" style="width: {{ (sc or 0) * 10 }}%; background: var(--{{ sc | score_color }});"></div>
     </div>
   </div>
 
@@ -446,7 +466,7 @@
      a third of the evidence reads exactly like a 6.9 scored on all of it
      unless somebody says so. #}
   {% if section %}
-  {{ surface.render_reading(section.reading) }}
+  {{ surface.render_reading(section.reading, show_headline=false) }}
   {% endif %}
 
   <!-- Auto-generated summary -->
@@ -462,9 +482,15 @@
      conclusion. A collapsed section has no findings by construction —
      `SectionDecision.expand` is `bool(reasons)` — so this loop renders nothing
      unless there is something to say. #}
+  {# Grouped by headline, first-seen order (F1's trigger order survives it):
+     three metrics firing `sector_mismatch` used to print "Measures the wrong
+     thing for this kind of company" three times running, with the one thing
+     that differed between them — which metric — buried in the first words of
+     each body. `Section.findings` itself is untouched; this only decides how
+     several findings that already share a heading share one block. #}
   {% if section %}
-  {% for finding in section.findings %}
-  {{ surface.render_finding(finding) }}
+  {% for headline, sentiment, bodies in section.findings | grouped_findings %}
+  {{ surface.render_finding_group(headline, sentiment, bodies) }}
   {% endfor %}
   {% endif %}
 
@@ -484,6 +510,7 @@
   <details class="reading-rows"{% if section.expanded %} open{% endif %}>
     <summary>{{ reading.details_summary.format(count=section.rows|length) }}</summary>
     {% if section.rows %}
+    <div class="reading-table-scroll">
     <table class="reading-table">
       <thead><tr>
         <th>{{ reading.row_headers[0] }}</th><th>{{ reading.row_headers[1] }}</th><th>{{ reading.row_headers[2] }}</th>
@@ -494,6 +521,7 @@
       {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
     {% if section.unknowns %}
     <ul class="unknowns">

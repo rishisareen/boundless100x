@@ -53,10 +53,15 @@ from boundless100x.output.report_components import (
     Vocabulary,
     build_section,
     composite_reading,
+    score_band,
 )
 from boundless100x.output.report_expansion import ExpansionDecider, load_scored_corpus
-from boundless100x.output.report_reading import read_metrics
-from boundless100x.output.report_surfaces import ROW_HEADERS, HtmlComponents
+from boundless100x.output.report_reading import is_number, read_metrics
+from boundless100x.output.report_surfaces import (
+    ROW_HEADERS,
+    HtmlComponents,
+    grouped_findings,
+)
 from boundless100x.output.report_vocabulary import (
     ACTION_LABELS,
     ACTION_UNKNOWN_LABEL,
@@ -79,6 +84,7 @@ from boundless100x.output.report_vocabulary import (
     METRIC_EXPLANATIONS_TITLE,
     MOMENTUM_UNAVAILABLE_LABEL,
     READING_LEAD_TITLE,
+    SCORE_BAND_CSS_COLOR,
     SECTION_DETAILS_SUMMARY,
 )
 
@@ -203,6 +209,26 @@ def _md_text(text) -> str:
     return re.sub(r"\s*\n\s*", " ", str(text)).replace("|", r"\|")
 
 
+def _score_color(score) -> str:
+    """`sc | score_color` — the CSS variable a score badge should be drawn in.
+
+    Every score badge on the dashboard used to colour itself by its own rule —
+    green at 7, amber at 4, red below — while the reading line printed beside
+    it worded the same figure against `SCORE_BANDS`' five boundaries. The two
+    rules agreed often enough to hide the gap and disagreed exactly where it
+    mattered: a 6.8 painted "strong" green on the same line its own sentence
+    called "fair". One rule now decides both, because this walks the same
+    `SCORE_BANDS` the sentence does and looks up the colour beside it.
+
+    Returns the *name* of a custom property (`"green"`, not `"var(--green)"`),
+    so the template composes `var(--{{ sc|score_color }})` and a missing
+    mapping fails loudly rather than rendering the literal word as a colour.
+    """
+    if not is_number(score):
+        return "gray"
+    return SCORE_BAND_CSS_COLOR.get(score_band(round(float(score), 1)), "gray")
+
+
 def _sanitize_filename(name: str, max_length: int = 40) -> str:
     """Sanitize a string for use in filenames."""
     clean = re.sub(r"[^\w\s-]", "", name)  # Remove special chars
@@ -226,6 +252,8 @@ class ReportGenerator:
         # two surfaces' escaping rules read as one decision made twice and the
         # reason for the difference lives with the code.
         self.env.filters["md_text"] = _md_text
+        self.env.filters["score_color"] = _score_color
+        self.env.filters["grouped_findings"] = grouped_findings
         self.output_dir = Path(output_dir) if output_dir else Path(__file__).parent / "reports"
         # The research note's registry and vocabulary, built on first use and
         # kept for the life of the generator. Both are declaration-level —

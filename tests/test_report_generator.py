@@ -14,9 +14,12 @@ whole-document comparison sees them.
 The two goldens are now asymmetric, on purpose. **The Markdown golden is still
 frozen**: the reading layer landed in the dashboard and nowhere else, so a
 change to `pre_report_clarity_report.md` means something leaked. **The HTML
-golden was re-baselined once**, when the reading layer was folded in — and it
-is what proves nothing was lost doing it, because it still carries every
-section, every chart and every figure the dashboard had before.
+golden moves whenever the reading layer's own presentation changes** — once
+when it was folded in, again when its first pass turned out to need polish
+(one number shown twice per section in two colours, three identical headlines
+stacked, a table clipped at its own edge) — and each re-baseline is what
+proves nothing was *lost* doing it: the section, chart and chip counts are
+checked against the previous golden before the new one is written, every time.
 
 Regenerating the goldens is a deliberate act, never a way to make a red test
 green. When a change to either report *is* intended:
@@ -827,7 +830,15 @@ def content_of(context: dict) -> list[str]:
     for section in [context["lead"], *context["sections"].values()]:
         pieces.append(section.title)
         headline, body, qualifier = rs.reading_line(section.reading)
-        pieces.extend(p for p in (headline, body, qualifier) if p)
+        # The headline is excluded on purpose, not an oversight this test
+        # missed: it is the score, and the dashboard already shows the score
+        # once per section via its own numeric badge (the composite's
+        # `.composite-score`, each element's `.element-score-badge`) — the
+        # reading line used to repeat it, in a different colour, inches below.
+        # `TestOneRunProducesOneReadableReport::test_the_two_reports_agree_on_
+        # every_element_score` is what checks the number itself still reaches
+        # the page; this test is about everything else the model said.
+        pieces.extend(p for p in (body, qualifier) if p)
         for finding in section.findings:
             pieces.extend(p for p in rs.finding_line(finding) if p)
         for row in section.rows:
@@ -900,19 +911,36 @@ class TestOneRunProducesOneReadableReport:
         The reading layer reads its figures off the same `result` the rest of
         the dashboard does, so a disagreement would mean one of them recomputed
         something.
+
+        Matched with an optional space around the slash rather than a literal
+        `" / "`: the dashboard's score badge and its reading line used to both
+        print the figure, in two formats inches apart, and the badge's own
+        `X.X/10` carries no space around the slash by design (it is a
+        superscript-style suffix, not a fraction). One number is now shown
+        once per section, so the exact spacing is a rendering detail, not the
+        property this test is about.
         """
+        import re
+
         result = lender_result()
         report_dir = ReportGenerator(output_dir=str(tmp_path)).generate(
             result, formats=["html", "md"],
         )
         legacy = (report_dir / "TEST_report.md").read_text()
-        dashboard = (report_dir / "TEST_dashboard.html").read_text()
+        # The badge splits "7.4" and "/10" across a `<span>` for the smaller
+        # suffix — real markup a plain substring or a tag-blind regex both
+        # miss. `visible_text` is what a reader sees once that span
+        # disappears into ordinary text, which is what this assertion is
+        # actually about.
+        dashboard = visible_text((report_dir / "TEST_dashboard.html").read_text())
 
         for score in result.scores["elements"].values():
             assert f"{score:.1f}/10" in legacy
-            assert f"{score:.1f} / 10" in dashboard
+            assert re.search(rf"{score:.1f}\s*/\s*10", dashboard)
         assert str(result.scores["composite"]) in legacy
-        assert f"{result.scores['composite']:.1f} / 10" in dashboard
+        assert re.search(
+            rf"{result.scores['composite']:.1f}\s*/\s*10", dashboard
+        )
 
 
 class TestNothingTheModelCarriedIsDropped:
@@ -1539,3 +1567,169 @@ class TestNoIdentifierReachesTheRenderedPage:
         from boundless100x.output.report_components import COMPARATOR_SYMBOLS
 
         assert set(COMPARATOR_SYMBOLS) == set(COMPARATORS)
+
+
+class TestTheBadgeColourAgreesWithTheWords:
+    """The score badge used to colour itself by its own 7/4 rule while the
+    reading line beside it worded the same figure against `SCORE_BANDS`' five
+    boundaries — a 6.8 could be painted "strong" green on the same line its
+    own sentence called "fair". `_score_color` is the one rule both now share.
+    """
+
+    def test_every_band_the_report_can_say_has_a_css_colour(self):
+        from boundless100x.output.report_components import SCORE_BANDS, SCORE_LOW_LABEL
+        from boundless100x.output.report_vocabulary import SCORE_BAND_CSS_COLOR
+
+        words = {label for _, label in SCORE_BANDS} | {SCORE_LOW_LABEL}
+
+        assert set(SCORE_BAND_CSS_COLOR) == words
+
+    @pytest.mark.parametrize(
+        "score",
+        # One value inside each of the five bands, plus 6.97 — the exact
+        # figure that motivated `composite_reading`: it rounds up across the
+        # strong/fair edge, so a colour driven by the raw value would still
+        # disagree with a headline driven by the rounded one.
+        [1.2, 3.9, 5.4, 6.97, 7.0, 8.5, 10.0],
+    )
+    def test_the_badge_colour_is_read_off_the_same_band_the_words_use(self, score):
+        from boundless100x.output.report_components import score_band
+        from boundless100x.output.report_generator import _score_color
+        from boundless100x.output.report_vocabulary import SCORE_BAND_CSS_COLOR
+
+        shown = round(float(score), 1)
+        assert _score_color(score) == SCORE_BAND_CSS_COLOR[score_band(shown)]
+
+    def test_a_missing_score_is_grey_rather_than_a_guess(self):
+        from boundless100x.output.report_generator import _score_color
+
+        assert _score_color(None) == "gray"
+
+    def test_a_non_numeric_score_is_grey_rather_than_an_exception(self):
+        from boundless100x.output.report_generator import _score_color
+
+        assert _score_color("N/A") == "gray"
+
+
+class TestGroupedFindings:
+    """Three metrics sharing one trigger used to print the same headline three
+    times running, with the one thing that differed between them — which
+    metric — buried in the first words of each body. `grouped_findings` is
+    the render-time fix; `Section.findings` itself stays untouched.
+    """
+
+    @staticmethod
+    def finding(headline, text="", sentiment="bad"):
+        from boundless100x.output.report_components import Finding
+
+        return Finding(headline=headline, text=text, sentiment=sentiment)
+
+    def test_findings_sharing_a_headline_group_into_one_entry(self):
+        from boundless100x.output.report_surfaces import grouped_findings
+
+        findings = [
+            self.finding("Measures the wrong thing", "About asset turnover."),
+            self.finding("Measures the wrong thing", "About the equity multiplier."),
+            self.finding("Measures the wrong thing", "About free cash flow."),
+        ]
+
+        groups = grouped_findings(findings)
+
+        assert len(groups) == 1
+        headline, sentiment, bodies = groups[0]
+        assert headline == "Measures the wrong thing"
+        assert sentiment == "bad"
+        assert bodies == [
+            "About asset turnover.",
+            "About the equity multiplier.",
+            "About free cash flow.",
+        ]
+
+    def test_distinct_headlines_stay_distinct_groups_in_first_seen_order(self):
+        """F1's trigger order (sector mismatch, then contradiction, then
+        zero-score) must survive grouping — this is why the function preserves
+        first-seen order rather than sorting alphabetically, the way a
+        template-level `groupby` filter would have."""
+        from boundless100x.output.report_surfaces import grouped_findings
+
+        findings = [
+            self.finding("Two readings here disagree", "The contradiction."),
+            self.finding("Measures the wrong thing", "Metric A."),
+            self.finding("Measures the wrong thing", "Metric B."),
+        ]
+
+        groups = grouped_findings(findings)
+
+        assert [g[0] for g in groups] == [
+            "Two readings here disagree",
+            "Measures the wrong thing",
+        ]
+        assert groups[1][2] == ["Metric A.", "Metric B."]
+
+    def test_a_headline_only_finding_groups_with_an_empty_body_list(self):
+        """A flag-derived finding ("Capex Dominated by Acquisitions") has no
+        body at all — `render_finding` already treats that as a legitimate
+        badge, and grouping must not invent one."""
+        from boundless100x.output.report_surfaces import grouped_findings
+
+        groups = grouped_findings([self.finding("Capex Dominated by Acquisitions")])
+
+        assert groups == [("Capex Dominated by Acquisitions", "bad", [])]
+
+    def test_an_empty_findings_list_produces_no_groups(self):
+        from boundless100x.output.report_surfaces import grouped_findings
+
+        assert grouped_findings([]) == []
+
+    def test_html_renders_one_heading_and_one_paragraph_per_body(self):
+        from boundless100x.output.report_surfaces import HtmlComponents
+
+        html = HtmlComponents().render_finding_group(
+            "Measures the wrong thing", "bad", ["About A.", "About B."]
+        )
+
+        assert html.count('<p class="headline">') == 1
+        assert html.count('<p class="detail">') == 2
+        assert "Measures the wrong thing" in html
+        assert "About A." in html and "About B." in html
+
+    def test_html_renders_no_detail_paragraph_for_an_empty_body_list(self):
+        from boundless100x.output.report_surfaces import HtmlComponents
+
+        html = HtmlComponents().render_finding_group("Capex Dominated", "bad", [])
+
+        assert html.count('<p class="detail">') == 0
+
+
+class TestOneNumberOncePerSection:
+    """The score used to appear twice on one card — the badge in its band
+    colour, then the reading line repeating it in blue, inches below.
+    `show_headline=False` is how the reading line stops carrying the number
+    where a badge already does.
+    """
+
+    def test_the_composite_reading_line_does_not_repeat_the_badge_number(
+        self, tmp_path
+    ):
+        html = render_dashboard(tmp_path)
+        text = visible_text(html)
+
+        section = text[text.index("What this says"):text.index("What this says") + 400]
+
+        assert "/ 10" not in section and "/10" not in section
+
+    def test_an_element_reading_line_does_not_repeat_the_badge_number(self, tmp_path):
+        """Scoped to the `p.reading` paragraph itself, not the whole card —
+        the card's auto-generated summary ("Average at 5.0/10.") legitimately
+        contains this shape for an unrelated figure, and a broader scan would
+        flag that sentence as if it were the defect."""
+        import re
+
+        html = render_dashboard(tmp_path)
+        card = section_markup(html, "Size (S)")
+
+        match = re.search(r'<p class="reading[^"]*">.*?</p>', card, re.S)
+        assert match, "no reading paragraph found in the Size section"
+        text = visible_text(match.group(0))
+
+        assert "/ 10" not in text and "/10" not in text

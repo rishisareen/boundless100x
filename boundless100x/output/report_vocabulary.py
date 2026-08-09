@@ -654,15 +654,17 @@ CATEGORICAL_VALUE_LABELS: dict[str, dict[str, tuple[str, str]]] = {
 
 # ── The ten-point scale, in words ──
 #
-# Five bands, not three, and they are **not** the cutoffs the dashboard colours
-# by. Those are 7 and 4, and lifting them was a mistake worth naming: a colour
-# bucket answers "green, amber or red" and an interpretation band answers "what
-# is this number telling me", and the two need different resolution. On a
+# Five bands, not three. The dashboard used to colour its score badges by its
+# own 7-and-4 cutoffs, lifted from nowhere in particular — a colour bucket
+# answers "green, amber or red" and an interpretation band answers "what is
+# this number telling me", and the two need different resolution. On that
 # three-band table every one of the eight scored companies read `middling` —
 # composites run 4.2 to 5.96 and the whole range sat in one bucket, so the
 # headline sentence of every report said the same word. A band that cannot
 # separate the corpus it describes carries no information, which is the exact
-# defect this vocabulary exists to remove.
+# defect this vocabulary exists to remove. The badge is now coloured from
+# these same boundaries (`SCORE_BAND_CSS_COLOR`, below), so a number cannot be
+# painted one band's colour while its own sentence names another.
 #
 # The boundaries are **absolute**, not fitted to the corpus: they say what the
 # model means by a score, so a report does not change its wording because other
@@ -693,6 +695,25 @@ SCORE_BAND_COLOURS: dict[str, str] = {
     "strong": "green",
     "fair": "yellow",
     "thin": "bright_red",
+    "weak": "red",
+}
+
+# What each band looks like on the dashboard. A CSS custom-property name, not
+# a colour value — the template already declares `--green`/`--amber`/`--red`
+# (and, for the two bands those three cannot also carry, `--emerald` and
+# `--orange`) in both its light and dark palettes, and this table is what
+# stops the score badge from being coloured by a rule of its own. It used to
+# be: the badge painted itself green or red at 7 and 4 while the sentence
+# beneath it read one of five words at 8.0/6.5/5.0/3.5, so a 6.8 could be
+# painted "strong" green on the same line its own words called "fair". One
+# rule now decides both, because `_score_color` walks the same `SCORE_BANDS`
+# this table is keyed on. A test pins the two key sets equal, so a sixth band
+# cannot ship uncoloured.
+SCORE_BAND_CSS_COLOR: dict[str, str] = {
+    "exceptional": "emerald",
+    "strong": "green",
+    "fair": "amber",
+    "thin": "orange",
     "weak": "red",
 }
 
