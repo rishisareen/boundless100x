@@ -41,7 +41,6 @@ from boundless100x.output.contradiction import ContradictionPairs
 from boundless100x.output.report_expansion import (
     SECTOR_MISMATCH,
     TRIGGER_LABELS,
-    DEFAULT_REPORTS_DIR,
     ExpansionDecider,
     ScoredCorpus,
     load_scored_corpus,
