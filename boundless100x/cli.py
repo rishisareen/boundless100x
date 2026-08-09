@@ -988,8 +988,13 @@ def _score_cell(line, rendered: str) -> str:
     """
     from boundless100x.output.report_components import score_band
 
+    from boundless100x.output.report_vocabulary import SCORE_BAND_COLOURS
+
     band = score_band(_shown_score(line)) if getattr(line, "known", True) else None
-    colour = {"strong": "green", "middling": "yellow", "weak": "red"}.get(band, "dim")
+    # `dim` is reserved for a line carrying no score. A band with no colour
+    # would land there too and read as unscored, so the map is declared beside
+    # the bands and pinned equal to them rather than spelled here.
+    colour = SCORE_BAND_COLOURS.get(band, "dim")
     return f"[{colour}]{rendered}[/{colour}]"
 
 

@@ -55,9 +55,20 @@ from boundless100x.output.report_vocabulary import (
     LANE_LABELS,
     LANE_SHORT_LABELS,
     METRIC_DISPLAY_NAMES,
+    SCORE_BAND_COLOURS,
+    SCORE_BANDS,
     STATE_LABELS,
 )
 from tests.conftest import make_result, make_scores
+
+# Every band edge, plus the values either side of it that round across it, plus
+# the ends of the scale. Derived so a recalibration re-aims the sweep instead of
+# leaving it testing the boundaries of a band table that no longer exists.
+BOUNDARY_SWEEP = sorted({0.0, 10.0} | {
+    round(edge + offset, 2)
+    for edge, _ in SCORE_BANDS
+    for offset in (-0.06, -0.03, 0.0, 0.04)
+})
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -573,7 +584,10 @@ class TestTheScoreCellIsColouredByItsOwnWords:
     `get_element_summary` pre-rounds, which is not a property anything held.
     """
 
-    BAND_COLOUR = {"strong": "green", "middling": "yellow", "weak": "red"}
+    # Read off the vocabulary, not spelled. A recalibration of SCORE_BANDS
+    # must move this test's expectations with it; a literal map here would go
+    # on asserting a colour for a word the report had stopped using.
+    BAND_COLOUR = SCORE_BAND_COLOURS
 
     def cell(self, line) -> str:
         return cli._score_cell(line, ConsoleComponents().render_reading(line))
@@ -588,19 +602,25 @@ class TestTheScoreCellIsColouredByItsOwnWords:
         assert cell.startswith("[green]")
 
     def test_the_raw_figure_is_the_one_that_would_have_disagreed(self):
-        """Named rather than implied: this is the exact number and the exact
-        two answers, so a future rewrite that reaches for the raw score again
-        fails here with the reason written down."""
-        assert rc.score_band(6.97) == "middling"
-        assert rc.score_band(round(6.97, 1)) == "strong"
+        """Named rather than implied, and derived rather than spelled.
 
-        assert "strong" in cli._composite_reading(6.97).text
-        assert self.cell(cli._composite_reading(6.97)).startswith("[green]")
+        A figure just under a band edge rounds up across it, so banding the raw
+        value and rounding the headline give two different words for one score.
+        The value is computed from the edges so a recalibration keeps testing
+        the real disagreement instead of a number that used to be one.
+        """
+        edge = rc.SCORE_BANDS[1][0]          # a mid-ladder cutoff
+        below = round(edge - 0.03, 2)        # rounds up to the edge at 1dp
 
-    @pytest.mark.parametrize(
-        "score",
-        [0.0, 2.5, 3.94, 3.96, 3.99, 4.0, 4.04, 6.94, 6.96, 6.97, 7.0, 8.2, 9.96],
-    )
+        assert rc.score_band(below) != rc.score_band(round(below, 1)), below
+
+        line = cli._composite_reading(below)
+        shown = rc.score_band(round(below, 1))
+
+        assert shown in line.text
+        assert self.cell(line).startswith(f"[{SCORE_BAND_COLOURS[shown]}]")
+
+    @pytest.mark.parametrize("score", BOUNDARY_SWEEP)
     def test_no_score_colours_a_cell_against_its_own_reading(self, score, engine):
         """The property, across both builders and across every boundary.
 
@@ -620,6 +640,26 @@ class TestTheScoreCellIsColouredByItsOwnWords:
             assert self.cell(line).startswith(f"[{self.BAND_COLOUR[band[0]]}]"), (
                 score, line.text
             )
+
+    def test_every_band_the_report_can_say_has_a_colour(self):
+        """The vocabulary and the palette are one set, checked both ways.
+
+        A band with no colour falls through to `dim`, which is reserved for a
+        line carrying no score at all — so the omission would not render as a
+        missing colour, it would render as a missing *score*. A surplus colour
+        is dead vocabulary that reads as coverage.
+        """
+        words = {label for _, label in rc.SCORE_BANDS} | {rc.SCORE_LOW_LABEL}
+
+        assert set(SCORE_BAND_COLOURS) == words
+
+    def test_the_bands_separate_the_scale_rather_than_bucketing_it(self):
+        """Why five and not three. Three bands put every scored company in the
+        corpus on the same word — 4.2 and 5.96 both read `middling` — and a
+        band that cannot separate what it describes carries no information."""
+        readings = {rc.score_band(v) for v in (2.0, 4.2, 5.3, 6.0, 7.2, 8.5)}
+
+        assert len(readings) >= 4, readings
 
     def test_a_reading_with_no_score_is_dim_rather_than_red(self):
         """Dim is "there is no score"; red is "the score is bad". An unscored

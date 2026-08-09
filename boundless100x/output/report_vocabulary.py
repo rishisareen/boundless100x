@@ -654,14 +654,47 @@ CATEGORICAL_VALUE_LABELS: dict[str, dict[str, tuple[str, str]]] = {
 
 # ── The ten-point scale, in words ──
 #
-# The cutoffs are the ones `sqglp_report.html.j2` already colours by (7 and 4),
-# lifted rather than chosen so the new report's wording and the existing
-# report's colours cannot disagree about the same score. Walked in order, first
-# threshold reached wins — the same rule as every `presentation.bands` list, so
-# there is one band-walking convention in this codebase rather than two.
+# Five bands, not three, and they are **not** the cutoffs the dashboard colours
+# by. Those are 7 and 4, and lifting them was a mistake worth naming: a colour
+# bucket answers "green, amber or red" and an interpretation band answers "what
+# is this number telling me", and the two need different resolution. On a
+# three-band table every one of the eight scored companies read `middling` —
+# composites run 4.2 to 5.96 and the whole range sat in one bucket, so the
+# headline sentence of every report said the same word. A band that cannot
+# separate the corpus it describes carries no information, which is the exact
+# defect this vocabulary exists to remove.
+#
+# The boundaries are **absolute**, not fitted to the corpus: they say what the
+# model means by a score, so a report does not change its wording because other
+# companies were analysed later. Against today's 48 element scores they fall
+# 10 / 13 / 13 / 8 / 4, which is a real spread rather than a fitted one —
+# a useful check that the words discriminate, not the reason they were chosen.
+#
+# Walked in order, first threshold reached wins — the same rule as every
+# `presentation.bands` list, so there is one band-walking convention here
+# rather than two.
 SCORE_SCALE = 10
-SCORE_BANDS: tuple[tuple[float, str], ...] = ((7.0, "strong"), (4.0, "middling"))
+SCORE_BANDS: tuple[tuple[float, str], ...] = (
+    (8.0, "exceptional"),
+    (6.5, "strong"),
+    (5.0, "fair"),
+    (3.5, "thin"),
+)
 SCORE_LOW_LABEL = "weak"
+
+# What each band looks like on a terminal. Declared beside the bands rather
+# than in `cli.py`, where it was a literal map of three words that silently
+# fell through to `dim` the moment a fourth existed — a score rendered with no
+# colour reads as a score nobody could band, which is a different claim. A test
+# pins these keys equal to the band words, so adding a band without a colour is
+# a failure here rather than a grey row on the console.
+SCORE_BAND_COLOURS: dict[str, str] = {
+    "exceptional": "bright_green",
+    "strong": "green",
+    "fair": "yellow",
+    "thin": "bright_red",
+    "weak": "red",
+}
 
 # The composite, as a surface names it and reads it. `report_generator`'s
 # `_clarity_lead` builds the note's opening line from the same band walk, so
