@@ -69,6 +69,7 @@ from boundless100x.output.report_expansion import (
     section_applicability_line,
 )
 from boundless100x.output.report_reading import read_metric, read_metrics
+from tests.conftest import latest_scores_for
 
 # The one shipped pair, and the two readings it names.
 SHIPPED_PAIR = "cheap_on_dcf_but_entry_price_gate_failed"
@@ -1928,8 +1929,8 @@ class TestAgainstTheGeneratedCorpus:
         assert rate.suppresses is True
 
     def test_ae7_pfcs_quality_business_coverage_is_a_third(self, real_corpus):
-        pfc = DEFAULT_REPORTS_DIR / "PFC_20260808" / "scores.json"
-        if not pfc.is_file():
+        pfc = latest_scores_for("PFC")
+        if pfc is None:
             pytest.skip("PFC has not been analysed on this machine")
 
         coverage = json.loads(pfc.read_text())["coverage"]["elements"]

@@ -20,6 +20,19 @@ somebody forgot — fails on the line defining the class rather than as a sectio
 that silently exists in one report and not the other. Only `html` and
 `markdown` register here; `console` is the CLI's, and U11 owns it.
 
+**`MarkdownComponents` has no consumer today, and stays anyway.** The reading
+layer shipped as a separate note rendered on both surfaces; the note is gone
+and the layer now renders inside the HTML dashboard, while the Markdown report
+still comes from its own template. Its turn is deferred, not cancelled. Two
+things argue against deleting the renderer in the meantime. It is 25 lines of
+punctuation over composition helpers it does not own, so it costs nothing to
+keep. And it is the second surface the paragraph above rests on: with one
+renderer left, "the composition is shared and only the markup differs" stops
+being checkable by reading this file — a phrase written straight into a
+fragment would look exactly like a phrase composed from `metric_cells`, and
+nothing would notice until the Markdown report's turn came and the two
+documents disagreed about a company.
+
 **Escaping is per surface and asymmetric on purpose.** HTML escapes everything,
 because a company name really can contain an ampersand. Markdown escapes
 nothing, because `guard_text` already refuses every character that would

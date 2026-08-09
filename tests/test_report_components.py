@@ -58,6 +58,7 @@ from boundless100x.output.report_vocabulary import (
     ELEMENT_CONFIG,
     FLAG_LABELS,
 )
+from tests.conftest import latest_scores_for
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -805,10 +806,11 @@ class TestASurfaceMustRenderEveryMember:
 # ── Against the company the plan was written about ────────────────────────
 
 
+
 @pytest.fixture(scope="module")
 def pfc_scores():
-    path = DEFAULT_REPORTS_DIR / "PFC_20260808" / "scores.json"
-    if not path.is_file():
+    path = latest_scores_for("PFC")
+    if path is None:
         pytest.skip("PFC has not been analysed on this machine")
     return json.loads(path.read_text())
 

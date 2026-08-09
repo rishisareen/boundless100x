@@ -148,6 +148,43 @@
   .drilldown-table .contrib-low td:nth-child(3) { color: var(--red); font-weight: 600; }
   /* Element flags */
   .element-flags { margin-top: 14px; }
+  /* ── The reading layer (U9's closed component set) ──
+     Class names here are `report_surfaces.HtmlComponents`'s, not this
+     template's: that renderer emits `<p class="reading">`, `<div class="finding
+     good">`, `<li class="unknown">` and the rest as pre-escaped fragments, and
+     the template only supplies the frame. Renaming one of these silently
+     unstyles a component rather than breaking a build, so they are grouped
+     here under one heading instead of scattered among the sections. */
+  p.reading { margin: 4px 0 2px; font-size: 1.02em; color: var(--text-primary); }
+  p.reading.unknown { color: var(--text-muted); }
+  p.reading .headline { font-weight: 700; color: var(--blue); }
+  p.qualifier { color: var(--text-muted); font-size: 0.85em; font-style: italic; margin-bottom: 6px; }
+  .finding { border-left: 4px solid var(--gray); background: var(--bg-card-alt); padding: 10px 16px; margin: 10px 0; border-radius: 0 8px 8px 0; }
+  .finding.good { border-left-color: var(--green); }
+  .finding.bad { border-left-color: var(--red); }
+  .finding .headline { font-weight: 600; }
+  .finding .detail { margin-top: 4px; font-size: 0.92em; color: var(--text-secondary); }
+  ul.unknowns { list-style: none; margin: 12px 0 0; padding: 0; }
+  li.unknown { color: var(--text-muted); font-size: 0.88em; margin: 6px 0; padding-left: 12px; border-left: 2px dotted var(--border); }
+  p.caveat { background: var(--flag-bg); color: var(--flag-text); padding: 8px 14px; border-radius: 6px; margin: 10px 0; font-size: 0.86em; }
+  p.caveat.note { background: var(--bg-input); color: var(--text-secondary); }
+  a.explain { font-size: 0.8em; font-weight: 400; color: var(--blue); text-decoration: none; margin-left: 6px; white-space: nowrap; }
+  a.explain::before { content: "\21B3 "; }
+  .disclosure { padding: 10px 0; border-bottom: 1px solid var(--border-light); }
+  .disclosure h4 { font-size: 0.95em; margin: 0 0 3px; }
+  .disclosure p { color: var(--text-secondary); font-size: 0.9em; }
+  /* R5's shape: a section with nothing to explain is closed, one with a fired
+     trigger is `open`. No script — the contrast has to survive a printed page
+     and a reader with JS off, which is why this is `<details>` and not a
+     toggle. */
+  details.reading-rows { margin-top: 14px; }
+  details.reading-rows > summary { cursor: pointer; font-size: 0.85em; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0; }
+  details.reading-rows > summary:hover { color: var(--blue); }
+  details.reading-rows[open] > summary { margin-bottom: 6px; }
+  .reading-table { font-size: 0.88em; margin: 8px 0; }
+  .reading-table th[scope="row"] { background: transparent; font-weight: 600; width: 26%; }
+  .reading-table td.contribution { text-align: right; color: var(--text-muted); white-space: nowrap; }
+  .reading-table tr.unknown th, .reading-table tr.unknown td { color: var(--text-muted); }
   /* Signal groups */
   .signal-group { margin-bottom: 16px; }
   .signal-group-label { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; color: var(--gray); }
@@ -277,6 +314,13 @@ Market Cap: ₹5,000 Cr | <generated>
   </div>
 </div>
 
+<div class="card" style="margin-bottom: 30px;">
+  <h3 style="margin-top: 0;">What this says</h3>
+  <p class="reading"><span class="headline">6.5 / 10</span> — Reads strong across the six scored elements.</p>
+  <div class="finding good"><p class="headline">No section needed more than its score and one line</p><p class="detail">Nothing here tripped a check that earns a section room to explain itself, so every element below opens as a score and one reading.</p></div>
+  <p class="caveat note">A section with nothing to explain renders as its score and one line. Every metric&#39;s own row is still here — open the section to read it.</p>
+</div>
+
 
 
 
@@ -298,12 +342,30 @@ Market Cap: ₹5,000 Cr | <generated>
     </div>
   </div>
 
+  <p class="reading"><span class="headline">5.0 / 10</span> — Reads fair for this element.</p>
+
   <!-- Auto-generated summary -->
   <div class="element-summary">Average at 5.0/10.</div>
 
-  <!-- Score drilldown table -->
 
-  <!-- Element flags -->
+  <details class="reading-rows">
+    <summary>The metrics behind this score (5)</summary>
+    <table class="reading-table">
+      <thead><tr>
+        <th>Metric</th><th>Reading</th><th>Contribution</th>
+      </tr></thead>
+      <tbody>
+      <tr class="unknown"><th scope="row">Analyst Coverage Count <a class="explain" href="#explain-analyst_coverage" title="Analyst Coverage Count">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">25% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Daily Turnover Ratio (%) <a class="explain" href="#explain-daily_turnover_ratio" title="Daily Turnover Ratio (%)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">25% of this element</td></tr>
+      <tr class="unknown"><th scope="row">FII + DII Accumulation Streak <a class="explain" href="#explain-institutional_accumulation_streak" title="FII + DII Accumulation Streak">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">Does not contribute to the score</td></tr>
+      <tr class="unknown"><th scope="row">FII + DII Holding (%) <a class="explain" href="#explain-institutional_holding" title="FII + DII Holding (%)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">25% of this element</td></tr>
+      <tr class="known"><th scope="row">Market Cap (₹ Cr) <a class="explain" href="#explain-market_cap" title="Market Cap (₹ Cr)">what this measures</a></th><td>₹5,000 Cr — moderate headroom (lower is better)</td><td class="contribution">25% of this element</td></tr>
+      </tbody>
+    </table>
+    <p class="caveat note">No scores were supplied for this company, so a metric that scored zero on something that matters could not be spotted</p>
+    <p class="caveat note">Whether these 4 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. No sector is recorded for this company, so whether its metrics fit could not be judged — refetch to pick up the sector breadcrumb</p>
+  </details>
+
 </div>
 
 
@@ -326,12 +388,38 @@ Market Cap: ₹5,000 Cr | <generated>
     </div>
   </div>
 
+  <p class="reading"><span class="headline">7.0 / 10</span> — Reads strong for this element.</p>
+
   <!-- Auto-generated summary -->
   <div class="element-summary">Scores well at 7.0/10.</div>
 
-  <!-- Score drilldown table -->
 
-  <!-- Element flags -->
+  <details class="reading-rows">
+    <summary>The metrics behind this score (13)</summary>
+    <table class="reading-table">
+      <thead><tr>
+        <th>Metric</th><th>Reading</th><th>Contribution</th>
+      </tr></thead>
+      <tbody>
+      <tr class="unknown"><th scope="row">Capital Reinvestment Rate (ΔCapital / NOPAT) <a class="explain" href="#explain-capital_reinvestment_rate" title="Capital Reinvestment Rate (ΔCapital / NOPAT)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Cash Conversion (OCF/EBITDA) <a class="explain" href="#explain-cash_conversion" title="Cash Conversion (OCF/EBITDA)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">8% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Debt / Equity <a class="explain" href="#explain-debt_equity" title="Debt / Equity">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">8% of this element</td></tr>
+      <tr class="unknown"><th scope="row">DuPont: Asset Turnover <a class="explain" href="#explain-dupont_turnover" title="DuPont: Asset Turnover">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">DuPont: Equity Multiplier <a class="explain" href="#explain-dupont_equity_multiplier" title="DuPont: Equity Multiplier">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">3% of this element</td></tr>
+      <tr class="unknown"><th scope="row">DuPont: Net Profit Margin <a class="explain" href="#explain-dupont_margin" title="DuPont: Net Profit Margin">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">FCF Yield <a class="explain" href="#explain-fcf_yield" title="FCF Yield">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">7% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Interest Coverage <a class="explain" href="#explain-interest_coverage" title="Interest Coverage">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">7% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Operating Margin (5yr Avg) <a class="explain" href="#explain-operating_margin_5yr" title="Operating Margin (5yr Avg)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">10% of this element</td></tr>
+      <tr class="unknown"><th scope="row">ROIIC (Return on Incremental Capital) <a class="explain" href="#explain-roiic" title="ROIIC (Return on Incremental Capital)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">10% of this element</td></tr>
+      <tr class="unknown"><th scope="row">RoCE (5yr Avg) <a class="explain" href="#explain-roce_5yr_avg" title="RoCE (5yr Avg)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      <tr class="unknown"><th scope="row">RoE (5yr Avg) <a class="explain" href="#explain-roe_5yr_avg" title="RoE (5yr Avg)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">12% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Working Capital Days Trend <a class="explain" href="#explain-working_capital_days_trend" title="Working Capital Days Trend">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      </tbody>
+    </table>
+    <p class="caveat note">No scores were supplied for this company, so a metric that scored zero on something that matters could not be spotted</p>
+    <p class="caveat note">Whether these 13 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. No sector is recorded for this company, so whether its metrics fit could not be judged — refetch to pick up the sector breadcrumb</p>
+  </details>
+
 </div>
 
 
@@ -446,12 +534,31 @@ Market Cap: ₹5,000 Cr | <generated>
     </div>
   </div>
 
+  <p class="reading"><span class="headline">6.0 / 10</span> — Reads fair for this element.</p>
+
   <!-- Auto-generated summary -->
   <div class="element-summary">Average at 6.0/10.</div>
 
-  <!-- Score drilldown table -->
 
-  <!-- Element flags -->
+  <details class="reading-rows">
+    <summary>The metrics behind this score (6)</summary>
+    <table class="reading-table">
+      <thead><tr>
+        <th>Metric</th><th>Reading</th><th>Contribution</th>
+      </tr></thead>
+      <tbody>
+      <tr class="unknown"><th scope="row">Dividend Payout Consistency <a class="explain" href="#explain-dividend_consistency" title="Dividend Payout Consistency">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Owner-Operator Signal <a class="explain" href="#explain-owner_operator_signal" title="Owner-Operator Signal">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Promoter Holding Trend (5yr) <a class="explain" href="#explain-promoter_holding_trend" title="Promoter Holding Trend (5yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">20% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Promoter Pledge % <a class="explain" href="#explain-promoter_pledge" title="Promoter Pledge %">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">20% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Shares Outstanding Growth (10yr) <a class="explain" href="#explain-equity_dilution" title="Shares Outstanding Growth (10yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Tax Rate Consistency (StdDev) <a class="explain" href="#explain-effective_tax_rate_variance" title="Tax Rate Consistency (StdDev)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      </tbody>
+    </table>
+    <p class="caveat note">No scores were supplied for this company, so a metric that scored zero on something that matters could not be spotted</p>
+    <p class="caveat note">Whether these 6 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. No sector is recorded for this company, so whether its metrics fit could not be judged — refetch to pick up the sector breadcrumb</p>
+  </details>
+
 </div>
 
 
@@ -633,12 +740,38 @@ Market Cap: ₹5,000 Cr | <generated>
     </div>
   </div>
 
+  <p class="reading"><span class="headline">7.0 / 10</span> — Reads strong for this element.</p>
+
   <!-- Auto-generated summary -->
   <div class="element-summary">Scores well at 7.0/10.</div>
 
-  <!-- Score drilldown table -->
 
-  <!-- Element flags -->
+  <details class="reading-rows">
+    <summary>The metrics behind this score (13)</summary>
+    <table class="reading-table">
+      <thead><tr>
+        <th>Metric</th><th>Reading</th><th>Contribution</th>
+      </tr></thead>
+      <tbody>
+      <tr class="unknown"><th scope="row">EBIT CAGR (3yr) <a class="explain" href="#explain-ebit_cagr_3yr" title="EBIT CAGR (3yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">EBIT CAGR (5yr) <a class="explain" href="#explain-ebit_cagr_5yr" title="EBIT CAGR (5yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">EPS CAGR (5yr) <a class="explain" href="#explain-eps_cagr_5yr" title="EPS CAGR (5yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">11% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Financial Leverage (avg) <a class="explain" href="#explain-financial_leverage_ratio" title="Financial Leverage (avg)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">7% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Growth Quality Grade <a class="explain" href="#explain-growth_quality_grade" title="Growth Quality Grade">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">19% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Operating Leverage (avg) <a class="explain" href="#explain-operating_leverage" title="Operating Leverage (avg)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">11% of this element</td></tr>
+      <tr class="unknown"><th scope="row">PAT CAGR (3yr) <a class="explain" href="#explain-pat_cagr_3yr" title="PAT CAGR (3yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">7% of this element</td></tr>
+      <tr class="unknown"><th scope="row">PAT CAGR (5yr) <a class="explain" href="#explain-pat_cagr_5yr" title="PAT CAGR (5yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">11% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Real Revenue Growth (vs inflation) <a class="explain" href="#explain-price_lever_signal" title="Real Revenue Growth (vs inflation)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">Does not contribute to the score</td></tr>
+      <tr class="unknown"><th scope="row">Revenue CAGR (3yr) <a class="explain" href="#explain-revenue_cagr_3yr" title="Revenue CAGR (3yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Revenue CAGR (5yr) <a class="explain" href="#explain-revenue_cagr_5yr" title="Revenue CAGR (5yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">11% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Revenue Growth Consistency <a class="explain" href="#explain-revenue_growth_consistency" title="Revenue Growth Consistency">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">7% of this element</td></tr>
+      <tr class="unknown"><th scope="row">TTM Growth vs 5yr CAGR (pp) <a class="explain" href="#explain-ttm_growth_vs_cagr" title="TTM Growth vs 5yr CAGR (pp)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">Does not contribute to the score</td></tr>
+      </tbody>
+    </table>
+    <p class="caveat note">No scores were supplied for this company, so a metric that scored zero on something that matters could not be spotted</p>
+    <p class="caveat note">Whether these 11 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. No sector is recorded for this company, so whether its metrics fit could not be judged — refetch to pick up the sector breadcrumb</p>
+  </details>
+
 </div>
 
 
@@ -704,12 +837,32 @@ Market Cap: ₹5,000 Cr | <generated>
     </div>
   </div>
 
+  <p class="reading"><span class="headline">6.0 / 10</span> — Reads fair for this element.</p>
+
   <!-- Auto-generated summary -->
   <div class="element-summary">Average at 6.0/10.</div>
 
-  <!-- Score drilldown table -->
 
-  <!-- Element flags -->
+  <details class="reading-rows">
+    <summary>The metrics behind this score (7)</summary>
+    <table class="reading-table">
+      <thead><tr>
+        <th>Metric</th><th>Reading</th><th>Contribution</th>
+      </tr></thead>
+      <tbody>
+      <tr class="unknown"><th scope="row">CAP Proxy (Consecutive yrs RoCE &gt; CoE) <a class="explain" href="#explain-cap_proxy" title="CAP Proxy (Consecutive yrs RoCE &gt; CoE)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">19% of this element</td></tr>
+      <tr class="unknown"><th scope="row">FCF Positive Count (10yr) <a class="explain" href="#explain-fcf_consistency" title="FCF Positive Count (10yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">14% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Gross Margin Stability (10yr StdDev) <a class="explain" href="#explain-gross_margin_stability" title="Gross Margin Stability (10yr StdDev)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">14% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Max Consecutive Growth Years (&gt;10%) <a class="explain" href="#explain-revenue_growth_streak" title="Max Consecutive Growth Years (&gt;10%)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">14% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Reinvestment Rate (Capex/Depreciation) <a class="explain" href="#explain-reinvestment_rate" title="Reinvestment Rate (Capex/Depreciation)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">14% of this element</td></tr>
+      <tr class="unknown"><th scope="row">RoCE &gt; 15% Count (10yr) <a class="explain" href="#explain-roce_consistency" title="RoCE &gt; 15% Count (10yr)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">19% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Sector Tailwind (MOSL Dec 2025) <a class="explain" href="#explain-sector_tailwind" title="Sector Tailwind (MOSL Dec 2025)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      </tbody>
+    </table>
+    <p class="caveat note">No scores were supplied for this company, so a metric that scored zero on something that matters could not be spotted</p>
+    <p class="caveat note">Whether these 7 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. No sector is recorded for this company, so whether its metrics fit could not be judged — refetch to pick up the sector breadcrumb</p>
+  </details>
+
 </div>
 
 
@@ -732,12 +885,35 @@ Market Cap: ₹5,000 Cr | <generated>
     </div>
   </div>
 
+  <p class="reading"><span class="headline">4.0 / 10</span> — Reads thin for this element.</p>
+
   <!-- Auto-generated summary -->
   <div class="element-summary">Average at 4.0/10.</div>
 
-  <!-- Score drilldown table -->
 
-  <!-- Element flags -->
+  <details class="reading-rows">
+    <summary>The metrics behind this score (9)</summary>
+    <table class="reading-table">
+      <thead><tr>
+        <th>Metric</th><th>Reading</th><th>Contribution</th>
+      </tr></thead>
+      <tbody>
+      <tr class="unknown"><th scope="row">DCF Margin of Safety <a class="explain" href="#explain-dcf_margin_of_safety" title="DCF Margin of Safety">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      <tr class="unknown"><th scope="row">EV/EBITDA <a class="explain" href="#explain-ev_ebitda" title="EV/EBITDA">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">12% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Earnings Yield Spread vs G-Sec <a class="explain" href="#explain-earnings_yield_vs_gsec" title="Earnings Yield Spread vs G-Sec">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">5% of this element</td></tr>
+      <tr class="unknown"><th scope="row">P/E (TTM) <a class="explain" href="#explain-pe_ttm" title="P/E (TTM)">what this measures</a></th><td>30.0x — Scored against sector peers rather than an absolute line, because the same multiple is cheap for a consumer franchise and dear for a commodity processor — an absolute band would be wrong about one of them every time. Read it beside P/E Percentile (10yr traded range), which does band the company against itself. (lower is better)</td><td class="contribution">12% of this element</td></tr>
+      <tr class="unknown"><th scope="row">P/E Percentile (10yr traded range) <a class="explain" href="#explain-pe_vs_historical" title="P/E Percentile (10yr traded range)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">13% of this element</td></tr>
+      <tr class="unknown"><th scope="row">PEG Ratio (5yr EPS, trailing) <a class="explain" href="#explain-peg_ratio" title="PEG Ratio (5yr EPS, trailing)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">15% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Re-rating Headroom (own-fundamentals justified multiple) <a class="explain" href="#explain-rerating_headroom" title="Re-rating Headroom (own-fundamentals justified multiple)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">Does not contribute to the score</td></tr>
+      <tr class="unknown"><th scope="row">Reverse DCF Implied Growth <a class="explain" href="#explain-reverse_dcf_growth" title="Reverse DCF Implied Growth">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">10% of this element</td></tr>
+      <tr class="unknown"><th scope="row">Trailing PEG (P/E ÷ 3yr PAT CAGR) <a class="explain" href="#explain-trailing_peg" title="Trailing PEG (P/E ÷ 3yr PAT CAGR)">what this measures</a></th><td>no figure — this metric was not computed for this company</td><td class="contribution">18% of this element</td></tr>
+      </tbody>
+    </table>
+    <p class="caveat note">No scores were supplied for this company, so a metric that scored zero on something that matters could not be spotted</p>
+    <p class="caveat note">Whether these 8 metrics measure anything for a company of this kind has not been checked, so a category mismatch in this section would not have been caught. No sector is recorded for this company, so whether its metrics fit could not be judged — refetch to pick up the sector breadcrumb</p>
+    <p class="caveat note">A declared contradiction check on DCF Margin of Safety could not be run. These two readings could not be compared: DCF Margin of Safety could not be read for this company; Entry price sanity was not evaluated on this run</p>
+  </details>
+
 </div>
 
 
@@ -1010,6 +1186,63 @@ Market Cap: ₹5,000 Cr | <generated>
 
 </div>
 
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">What each metric measures</h3>
+  <div class="disclosure" id="explain-analyst_coverage"><h4>Analyst Coverage Count</h4><p>How many analysts publish on the company. Fewer is better here — a stock that twenty desks already model is a stock already priced.</p></div>
+  <div class="disclosure" id="explain-cap_proxy"><h4>CAP Proxy (Consecutive yrs RoCE &gt; CoE)</h4><p>The longest unbroken run of years the business earned more than its cost of capital. A rough measure of how long the advantage actually lasted.</p></div>
+  <div class="disclosure" id="explain-capital_reinvestment_rate"><h4>Capital Reinvestment Rate (ΔCapital / NOPAT)</h4><p>How much of its after-tax operating profit the company ploughs back instead of paying out. High returns on capital only compound while the money stays in the business.</p></div>
+  <div class="disclosure" id="explain-cash_conversion"><h4>Cash Conversion (OCF/EBITDA)</h4><p>How much of the reported operating profit actually arrived as cash, averaged over five years. Profit that never reaches the bank is the oldest warning sign there is.</p></div>
+  <div class="disclosure" id="explain-dcf_margin_of_safety"><h4>DCF Margin of Safety</h4><p>How far below the model&#39;s estimate of intrinsic value the shares trade. It is only ever as good as the growth and discount rate assumed underneath it.</p></div>
+  <div class="disclosure" id="explain-daily_turnover_ratio"><h4>Daily Turnover Ratio (%)</h4><p>How much of the company changes hands on an average day. Too little and a position cannot be built or exited; too much and you are trading against a crowd.</p></div>
+  <div class="disclosure" id="explain-debt_equity"><h4>Debt / Equity</h4><p>How much the company has borrowed against every rupee of its own capital. Debt is what turns a bad year into a final one.</p></div>
+  <div class="disclosure" id="explain-dividend_consistency"><h4>Dividend Payout Consistency</h4><p>In how many of the last ten years the company paid a dividend at all. An unbroken record is evidence the reported profit was real cash.</p></div>
+  <div class="disclosure" id="explain-dupont_turnover"><h4>DuPont: Asset Turnover</h4><p>How many rupees of sales each rupee of assets produces. The second lever behind return on equity — how hard the asset base is worked.</p></div>
+  <div class="disclosure" id="explain-dupont_equity_multiplier"><h4>DuPont: Equity Multiplier</h4><p>How many rupees of assets sit on each rupee of equity. The third lever behind return on equity, and the only one that raises it by taking risk rather than by being good at something.</p></div>
+  <div class="disclosure" id="explain-dupont_margin"><h4>DuPont: Net Profit Margin</h4><p>What is left of each rupee of sales after everything, in the latest year. The first of the three levers that together make up return on equity.</p></div>
+  <div class="disclosure" id="explain-ebit_cagr_3yr"><h4>EBIT CAGR (3yr)</h4><p>How fast operating profit compounded over the last three years, before interest and tax.</p></div>
+  <div class="disclosure" id="explain-ebit_cagr_5yr"><h4>EBIT CAGR (5yr)</h4><p>How fast operating profit compounded over five years, before interest and tax could flatter it or spoil it.</p></div>
+  <div class="disclosure" id="explain-eps_cagr_5yr"><h4>EPS CAGR (5yr)</h4><p>How fast profit *per share* compounded over five years. This is the one an existing owner actually received, after any new shares were issued.</p></div>
+  <div class="disclosure" id="explain-ev_ebitda"><h4>EV/EBITDA</h4><p>What the whole company costs including its debt, against its pre-tax operating cash profit. The valuation multiple that does not care how the business is financed.</p></div>
+  <div class="disclosure" id="explain-earnings_yield_vs_gsec"><h4>Earnings Yield Spread vs G-Sec</h4><p>The earnings the company produces per rupee of price, minus what a ten-year government bond pays for no risk at all. It asks what the risk is buying you.</p></div>
+  <div class="disclosure" id="explain-fcf_consistency"><h4>FCF Positive Count (10yr)</h4><p>In how many of the last ten years the business generated more cash than it spent. It is the difference between a compounder and a story.</p></div>
+  <div class="disclosure" id="explain-fcf_yield"><h4>FCF Yield</h4><p>The spare cash the business threw off last year, as a share of what the whole company costs to buy. It is what an owner could take out without shrinking it.</p></div>
+  <div class="disclosure" id="explain-institutional_accumulation_streak"><h4>FII + DII Accumulation Streak</h4><p>How many quarters in a row the funds have been adding. Two or more says somebody is buying before the accounts have explained why.</p></div>
+  <div class="disclosure" id="explain-institutional_holding"><h4>FII + DII Holding (%)</h4><p>How much of the company professional funds already own. A little is validation that somebody serious has looked; a lot means the re-rating has happened without you.</p></div>
+  <div class="disclosure" id="explain-financial_leverage_ratio"><h4>Financial Leverage (avg)</h4><p>How much faster earnings per share grow than operating profit. Near one is healthy; well above it means borrowed money is doing the work and will do the damage too.</p></div>
+  <div class="disclosure" id="explain-gross_margin_stability"><h4>Gross Margin Stability (10yr StdDev)</h4><p>How much the operating margin swings across ten years. A margin that holds through a full cycle is the clearest evidence of pricing power there is.</p></div>
+  <div class="disclosure" id="explain-growth_quality_grade"><h4>Growth Quality Grade</h4><p>Whether growth came from selling more at better prices, from fixed costs spreading over a bigger base, or from borrowing. Only the first two survive a downturn.</p></div>
+  <div class="disclosure" id="explain-interest_coverage"><h4>Interest Coverage</h4><p>How many times over last year&#39;s operating profit covers the interest bill. Below three, a soft year starts eating the lenders&#39; money rather than the owners&#39;.</p></div>
+  <div class="disclosure" id="explain-market_cap"><h4>Market Cap (₹ Cr)</h4><p>What the whole company costs today. Small is the point here — a hundred-bagger needs room to grow into, and a large cap has already used most of its room up.</p></div>
+  <div class="disclosure" id="explain-revenue_growth_streak"><h4>Max Consecutive Growth Years (&gt;10%)</h4><p>The longest unbroken run of years sales grew more than 10%. Streaks say whether growth is a habit or an episode.</p></div>
+  <div class="disclosure" id="explain-operating_leverage"><h4>Operating Leverage (avg)</h4><p>How much faster operating profit grows than sales. Above one, each extra rupee of sales brings more than its share of profit with it.</p></div>
+  <div class="disclosure" id="explain-operating_margin_5yr"><h4>Operating Margin (5yr Avg)</h4><p>What is left of each rupee of sales after running the business, averaged over five years. Wide margins that hold usually mean the company sets its own prices.</p></div>
+  <div class="disclosure" id="explain-owner_operator_signal"><h4>Owner-Operator Signal</h4><p>Whether the people running the company own enough of it to think like owners. Founder-led with a large stake is the shape this model looks for.</p></div>
+  <div class="disclosure" id="explain-pe_ttm"><h4>P/E (TTM)</h4><p>What the market pays for each rupee of the last year&#39;s profit. Cheap and dear only mean anything next to the sector and the company&#39;s own history.</p></div>
+  <div class="disclosure" id="explain-pe_vs_historical"><h4>P/E Percentile (10yr traded range)</h4><p>Where today&#39;s P/E sits inside the range this company has actually traded at over ten years. It asks whether the stock is dear for itself, not for the market.</p></div>
+  <div class="disclosure" id="explain-pat_cagr_3yr"><h4>PAT CAGR (3yr)</h4><p>How fast net profit compounded over the last three years — the recent slice of the five-year record, and where a slowdown appears first.</p></div>
+  <div class="disclosure" id="explain-pat_cagr_5yr"><h4>PAT CAGR (5yr)</h4><p>How fast net profit compounded over five years. Faster than sales means margins widened; slower means something ate the gain on the way down.</p></div>
+  <div class="disclosure" id="explain-peg_ratio"><h4>PEG Ratio (5yr EPS, trailing)</h4><p>The P/E divided by the five-year earnings growth rate. Around one, you are paying about a year of growth for a year of growth.</p></div>
+  <div class="disclosure" id="explain-promoter_holding_trend"><h4>Promoter Holding Trend (5yr)</h4><p>How much of the company the founding family still owns, latest quarter. The score reads the five-year change rather than the level: promoters selling down is the signal, not the number itself.</p></div>
+  <div class="disclosure" id="explain-promoter_pledge"><h4>Promoter Pledge %</h4><p>How much of the promoters&#39; own stake is mortgaged to lenders. Pledged shares get sold in a falling market, by someone who is not the promoter; the implementation calls anything above 10% a red flag.</p></div>
+  <div class="disclosure" id="explain-roiic"><h4>ROIIC (Return on Incremental Capital)</h4><p>What the newest rupee of capital earned, rather than the whole base. Headline RoCE can stay high on old assets long after fresh money stops earning, and this is the number that fades first.</p></div>
+  <div class="disclosure" id="explain-rerating_headroom"><h4>Re-rating Headroom (own-fundamentals justified multiple)</h4><p>How far above today&#39;s traded multiple the company&#39;s own RoCE, growth and consistency would justify.</p></div>
+  <div class="disclosure" id="explain-price_lever_signal"><h4>Real Revenue Growth (vs inflation)</h4><p>Whether sales grew faster than inflation, and by how much. It cannot tell selling more from charging more — no filing this system reads reports unit volumes.</p></div>
+  <div class="disclosure" id="explain-reinvestment_rate"><h4>Reinvestment Rate (Capex/Depreciation)</h4><p>What the company spends on assets against what its existing assets wear out by. Below one it is living off the base it already has.</p></div>
+  <div class="disclosure" id="explain-revenue_cagr_3yr"><h4>Revenue CAGR (3yr)</h4><p>How fast sales compounded over the last three years — the recent record, to be read against the five-year one beside it.</p></div>
+  <div class="disclosure" id="explain-revenue_cagr_5yr"><h4>Revenue CAGR (5yr)</h4><p>How fast sales compounded over five years. It is the top of the funnel — nothing below it grows for long without it.</p></div>
+  <div class="disclosure" id="explain-revenue_growth_consistency"><h4>Revenue Growth Consistency</h4><p>How widely the year-on-year sales growth rate swings about. A steady grower is worth more than a faster one that keeps stopping.</p></div>
+  <div class="disclosure" id="explain-reverse_dcf_growth"><h4>Reverse DCF Implied Growth</h4><p>The growth rate today&#39;s price already assumes, forever. The question it poses is whether the company has ever grown that fast; the flags answer it against the company&#39;s own delivered CAGR.</p></div>
+  <div class="disclosure" id="explain-roce_5yr_avg"><h4>RoCE (5yr Avg)</h4><p>What the business earns on every rupee tied up in it, averaged over five years. 15% is the bar this model sets for a quality compounder, and the same bar RoCE &gt; 15% Count (10yr) counts years against.</p></div>
+  <div class="disclosure" id="explain-roce_consistency"><h4>RoCE &gt; 15% Count (10yr)</h4><p>In how many of the last ten years the business cleared a 15% return on capital. One good year is luck; eight of ten is a moat.</p></div>
+  <div class="disclosure" id="explain-roe_5yr_avg"><h4>RoE (5yr Avg)</h4><p>What the business earns on shareholders&#39; money alone, averaged over five years. Borrowing flatters it, which is why RoCE sits beside it.</p></div>
+  <div class="disclosure" id="explain-sector_tailwind"><h4>Sector Tailwind (MOSL Dec 2025)</h4><p>Whether the company sits in one of the sectors the Dec 2025 study found compounders cluster in. Context about the pond, not a verdict on the fish.</p></div>
+  <div class="disclosure" id="explain-equity_dilution"><h4>Shares Outstanding Growth (10yr)</h4><p>How much the share count grew over ten years once bonuses and splits are stripped out. Every genuinely new share divides the same company more ways.</p></div>
+  <div class="disclosure" id="explain-ttm_growth_vs_cagr"><h4>TTM Growth vs 5yr CAGR (pp)</h4><p>How the last twelve months&#39; growth compares with the five-year rate the company has actually delivered. Positive means it is still doing what its record says it does.</p></div>
+  <div class="disclosure" id="explain-effective_tax_rate_variance"><h4>Tax Rate Consistency (StdDev)</h4><p>How much the company&#39;s effective tax rate swings from year to year. A rate that jumps around often means the profit underneath it does too.</p></div>
+  <div class="disclosure" id="explain-trailing_peg"><h4>Trailing PEG (P/E ÷ 3yr PAT CAGR)</h4><p>The same test as PEG on a shorter, more recent window — the P/E against three years of profit growth rather than five of earnings.</p></div>
+  <div class="disclosure" id="explain-working_capital_days_trend"><h4>Working Capital Days Trend</h4><p>How long cash sits stuck in unsold stock and unpaid bills. Fewer days is better, and the score reads the five-year direction of travel rather than the level shown.</p></div>
+</div>
+
 
 <!-- Footer -->
 <div class="footer">
@@ -1031,6 +1264,19 @@ function toggleTheme() {
     const saved = localStorage.getItem('sqglp-theme');
     if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
   } catch(e) {}
+})();
+// Printing opens every collapsed section. A closed <details> prints as a
+// heading with nothing under it, which is the empty-section failure this
+// report exists to end — and there is no click on paper. Progressive
+// enhancement only: the collapse itself is <details>, so it works with this
+// script blocked, and an anchor link into an explanation still resolves.
+(function() {
+  const expandAll = () => document.querySelectorAll('details.reading-rows')
+    .forEach(d => { d.dataset.wasOpen = d.open ? '1' : '0'; d.open = true; });
+  const restore = () => document.querySelectorAll('details.reading-rows')
+    .forEach(d => { d.open = d.dataset.wasOpen === '1'; });
+  window.addEventListener('beforeprint', expandAll);
+  window.addEventListener('afterprint', restore);
 })();
 </script>
 </body>

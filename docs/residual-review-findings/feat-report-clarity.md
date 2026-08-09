@@ -75,12 +75,14 @@ triage.
   `Quantity._fallback_text` still returns a raw grade verbatim if it is ever
   reached.
 
-- **The clarity note subsystem sits inside `ReportGenerator`.** Twelve
-  `_clarity_*` methods, ~380 lines, in a class that is now ~1,850 — where
-  `report_components`, `report_expansion` and `report_reading` were extracted
-  in the same work. Extracting it to `output/report_clarity.py`, invoked the
-  way `report_charts` is, is the obvious next tidy. No defect; a single
-  reviewer's structural call.
+- **The reading-layer subsystem sits inside `ReportGenerator`.** Now eight
+  `_reading_*` methods rather than twelve `_clarity_*` ones (the note's own
+  subtitle, unscored section and appendix builders went with the note when the
+  layer was folded into the dashboard), but the call stands: they sit in a
+  class that is ~1,700 lines, where `report_components`, `report_expansion` and
+  `report_reading` were extracted in the same work. Extracting them to
+  `output/report_clarity.py`, invoked the way `report_charts` is, is the
+  obvious next tidy. No defect; a single reviewer's structural call.
 
 - **`possible_bonus_split_year_N` is registered for N in 1..12.** `growth.py`
   indexes by annual row position and the cache already holds 13 annual rows,

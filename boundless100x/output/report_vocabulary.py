@@ -738,8 +738,6 @@ ACTION_LABELS: dict[str, str] = {
 # note on why a derived label is a leak with better typography.
 ACTION_UNKNOWN_LABEL = "an action this report has no wording for"
 
-RESEARCH_NOTE_TITLE = "Research Note"
-
 # What a metric row says when the metric produced no figure at all. R4 forbids
 # the empty cell and R12 forbids the bare number; a dash is the empty cell with
 # a character in it, so the cell says what happened instead.
@@ -757,11 +755,33 @@ DISCLOSURE_LINK_TEXT = "what this measures"
 # Why a collapsed section shows no rows, said once rather than per section.
 # R5 is deliberate — length is the verdict (KD5) — but a reader meeting six
 # one-line sections deserves to be told the rows still exist somewhere.
+#
+# It used to end "…stay in the full dashboard generated beside this note",
+# which was true only while the reading layer lived in a second document. It
+# does not: the rows are on this page, one click away, and a sentence sending
+# the reader to another file is exactly the two-documents-open complaint that
+# collapsed the note into the dashboard.
 COLLAPSED_SECTIONS_NOTE = (
     "A section with nothing to explain renders as its score and one line. "
-    "Every metric's own row, and the model's written thesis where there is "
-    "one, stay in the full dashboard generated beside this note."
+    "Every metric's own row is still here — open the section to read it."
 )
+
+# The disclosure a collapsed section hides its table behind. `{count}` is how
+# many rows are inside, stated rather than left to the triangle: a reader
+# deciding whether to open one of six sections wants to know what it costs.
+#
+# No plural form, deliberately. "The 1 metrics behind this score" would be the
+# obvious bug; phrasing that reads correctly at every count is cheaper than a
+# pluralisation rule in a data-only module the tests forbid functions in.
+SECTION_DETAILS_SUMMARY = "The metrics behind this score ({count})"
+
+# R3's deferred half, where the explanations actually live. One heading, in the
+# Appendix, that every metric row links into by anchor.
+METRIC_EXPLANATIONS_TITLE = "What each metric measures"
+
+# The reading layer's own heading in the dashboard: the composite in words,
+# the guarded action in a sentence, and how many sections earned space.
+READING_LEAD_TITLE = "What this says"
 
 # The section carrying every metric that sits outside the six scored elements.
 # They are not a seventh element and must not read like one: nothing in here

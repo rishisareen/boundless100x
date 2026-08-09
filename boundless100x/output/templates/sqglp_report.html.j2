@@ -148,6 +148,43 @@
   .drilldown-table .contrib-low td:nth-child(3) { color: var(--red); font-weight: 600; }
   /* Element flags */
   .element-flags { margin-top: 14px; }
+  /* ── The reading layer (U9's closed component set) ──
+     Class names here are `report_surfaces.HtmlComponents`'s, not this
+     template's: that renderer emits `<p class="reading">`, `<div class="finding
+     good">`, `<li class="unknown">` and the rest as pre-escaped fragments, and
+     the template only supplies the frame. Renaming one of these silently
+     unstyles a component rather than breaking a build, so they are grouped
+     here under one heading instead of scattered among the sections. */
+  p.reading { margin: 4px 0 2px; font-size: 1.02em; color: var(--text-primary); }
+  p.reading.unknown { color: var(--text-muted); }
+  p.reading .headline { font-weight: 700; color: var(--blue); }
+  p.qualifier { color: var(--text-muted); font-size: 0.85em; font-style: italic; margin-bottom: 6px; }
+  .finding { border-left: 4px solid var(--gray); background: var(--bg-card-alt); padding: 10px 16px; margin: 10px 0; border-radius: 0 8px 8px 0; }
+  .finding.good { border-left-color: var(--green); }
+  .finding.bad { border-left-color: var(--red); }
+  .finding .headline { font-weight: 600; }
+  .finding .detail { margin-top: 4px; font-size: 0.92em; color: var(--text-secondary); }
+  ul.unknowns { list-style: none; margin: 12px 0 0; padding: 0; }
+  li.unknown { color: var(--text-muted); font-size: 0.88em; margin: 6px 0; padding-left: 12px; border-left: 2px dotted var(--border); }
+  p.caveat { background: var(--flag-bg); color: var(--flag-text); padding: 8px 14px; border-radius: 6px; margin: 10px 0; font-size: 0.86em; }
+  p.caveat.note { background: var(--bg-input); color: var(--text-secondary); }
+  a.explain { font-size: 0.8em; font-weight: 400; color: var(--blue); text-decoration: none; margin-left: 6px; white-space: nowrap; }
+  a.explain::before { content: "\21B3 "; }
+  .disclosure { padding: 10px 0; border-bottom: 1px solid var(--border-light); }
+  .disclosure h4 { font-size: 0.95em; margin: 0 0 3px; }
+  .disclosure p { color: var(--text-secondary); font-size: 0.9em; }
+  /* R5's shape: a section with nothing to explain is closed, one with a fired
+     trigger is `open`. No script — the contrast has to survive a printed page
+     and a reader with JS off, which is why this is `<details>` and not a
+     toggle. */
+  details.reading-rows { margin-top: 14px; }
+  details.reading-rows > summary { cursor: pointer; font-size: 0.85em; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0; }
+  details.reading-rows > summary:hover { color: var(--blue); }
+  details.reading-rows[open] > summary { margin-bottom: 6px; }
+  .reading-table { font-size: 0.88em; margin: 8px 0; }
+  .reading-table th[scope="row"] { background: transparent; font-weight: 600; width: 26%; }
+  .reading-table td.contribution { text-align: right; color: var(--text-muted); white-space: nowrap; }
+  .reading-table tr.unknown th, .reading-table tr.unknown td { color: var(--text-muted); }
   /* Signal groups */
   .signal-group { margin-bottom: 16px; }
   .signal-group-label { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; color: var(--gray); }
@@ -351,6 +388,30 @@
 </div>
 {% endif %}
 
+{# ═══════════════════════════════════════════════════════════════
+   The reading layer's opening (R5, AE5).
+
+   Everything above this is badges: a verdict chip whose explanation is a
+   `title=` tooltip, an action chip whose cap reasons are the evaluator's own
+   sentences. This says the same three things in prose — where the composite
+   lands in words, what the action is and why the guard lowered it, and how
+   many of the six sections below are open. That last one is the point: a
+   reader comparing two companies should see which one has problems before
+   reading either.
+   ═══════════════════════════════════════════════════════════════ #}
+{% if reading and reading.lead %}
+<div class="card" style="margin-bottom: 30px;">
+  <h3 style="margin-top: 0;">{{ reading.lead.title }}</h3>
+  {{ surface.render_reading(reading.lead.reading) }}
+  {% for finding in reading.lead.findings %}
+  {{ surface.render_finding(finding) }}
+  {% endfor %}
+  {% for caveat in reading.lead.caveats %}
+  {{ surface.render_caveat(caveat) }}
+  {% endfor %}
+</div>
+{% endif %}
+
 
 {# ═══════════════════════════════════════════════════════════════
    MACRO: Render a SQGLP element section
@@ -361,6 +422,7 @@
 {% set sc = scores.get('elements', {}).get(el_key) %}
 {% set dd = score_drilldown.get(el_key, []) %}
 {% set summary_text = element_summaries.get(el_key, '') %}
+{% set section = reading.sections.get(el_key) if reading else none %}
 {% set el_flags = [] %}
 {% for f in flags if f.element == el_key %}{% if el_flags.append(f) %}{% endif %}{% endfor %}
 
@@ -378,13 +440,79 @@
     </div>
   </div>
 
+  {# R5's one line, and R18's coverage clause when the section is thin. The
+     score badge above is a number; this is the number in words, plus what
+     share of the element's declared weight actually computed — a 6.9 scored on
+     a third of the evidence reads exactly like a 6.9 scored on all of it
+     unless somebody says so. #}
+  {% if section %}
+  {{ surface.render_reading(section.reading) }}
+  {% endif %}
+
   <!-- Auto-generated summary -->
   {% if summary_text %}
   <div class="element-summary">{{ summary_text }}</div>
   {% endif %}
 
-  <!-- Score drilldown table -->
-  {% if dd %}
+  {# The fired findings, and they are deliberately *outside* the disclosure
+     below and *above* the table. PFC's Quality — Business scores asset
+     turnover, the equity multiplier and free cash flow at zero because those
+     three describe manufacturers and PFC is a lender; a reader who meets three
+     zeroes before meeting that sentence has already drawn the wrong
+     conclusion. A collapsed section has no findings by construction —
+     `SectionDecision.expand` is `bool(reasons)` — so this loop renders nothing
+     unless there is something to say. #}
+  {% if section %}
+  {% for finding in section.findings %}
+  {{ surface.render_finding(finding) }}
+  {% endfor %}
+  {% endif %}
+
+  {# The metric rows. Open when a trigger fired, closed otherwise (R5, AE5):
+     the contrast between a section that opens itself and one that does not is
+     the report telling a reader where to look. Nothing is hidden — a closed
+     section is one click from every row it holds.
+
+     `Metric | Reading | Contribution`, not the old `Metric | Value | Score |
+     Weight`. That table put `0.09` (a ratio), `25.7` (a percentage), `2.0` (a
+     count of years) and `0.84` (a coefficient of variation) in one column with
+     nothing to tell them apart, beside two adjacent percentage columns meaning
+     different things. Here every figure carries its unit and its direction of
+     goodness and sits next to its own interpretation, and a metric that
+     produced nothing says why instead of showing a dash. #}
+  {% if section %}
+  <details class="reading-rows"{% if section.expanded %} open{% endif %}>
+    <summary>{{ reading.details_summary.format(count=section.rows|length) }}</summary>
+    {% if section.rows %}
+    <table class="reading-table">
+      <thead><tr>
+        <th>{{ reading.row_headers[0] }}</th><th>{{ reading.row_headers[1] }}</th><th>{{ reading.row_headers[2] }}</th>
+      </tr></thead>
+      <tbody>
+      {% for row in section.rows %}
+      {{ surface.render_metric_row(row) }}
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if section.unknowns %}
+    <ul class="unknowns">
+    {% for unknown in section.unknowns %}
+    {{ surface.render_unknown(unknown) }}
+    {% endfor %}
+    </ul>
+    {% endif %}
+    {% for caveat in section.caveats %}
+    {{ surface.render_caveat(caveat) }}
+    {% endfor %}
+  </details>
+  {% elif dd %}
+  {# The degrade path, not a leftover. `_reading_or_none` returns None when the
+     reading layer could not be built — a bad edit to one of the two
+     hand-maintained YAML tables it reads is enough — and losing the section's
+     metrics with it would make a display-table typo cost the dashboard its
+     substance. So the drill-down the report has always had renders instead,
+     and the reason is in Warnings & Errors. #}
   <table class="drilldown-table">
     <thead><tr><th>Metric</th><th>Value</th><th>Score</th><th>Weight</th></tr></thead>
     <tbody>
@@ -400,7 +528,9 @@
   </table>
   {% endif %}
 
-  <!-- Element flags -->
+  {# Element flags, unchanged. They stay chips rather than becoming findings
+     because `finding_from_flag` builds a headline and no body — as a finding
+     block a flag would say exactly what the chip says, four times as tall. #}
   {% if el_flags %}
   <div class="element-flags">
     {% for f in el_flags %}
@@ -1136,6 +1266,21 @@
   {% endif %}
 </div>
 
+{# R3's deferred half: what each metric measures, reachable from every metric
+   row above by anchor and appearing nowhere in the reading flow. Inline
+   explanations were the density problem — a definition beside every row turns
+   a six-row table into a page — and a definition nobody can reach is the
+   opposite failure. `Section.flow` excludes the bodies structurally, so this
+   is the only place they can be. #}
+{% if reading and reading.disclosures %}
+<div class="card" style="margin-top: 15px;">
+  <h3 style="margin-top: 0;">{{ reading.explanations_title }}</h3>
+  {% for disclosure in reading.disclosures %}
+  {{ surface.render_disclosure(disclosure) }}
+  {% endfor %}
+</div>
+{% endif %}
+
 {# Warnings & Errors #}
 {% if errors %}
 <div class="card" style="margin-top: 15px;">
@@ -1166,6 +1311,19 @@ function toggleTheme() {
     const saved = localStorage.getItem('sqglp-theme');
     if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
   } catch(e) {}
+})();
+// Printing opens every collapsed section. A closed <details> prints as a
+// heading with nothing under it, which is the empty-section failure this
+// report exists to end — and there is no click on paper. Progressive
+// enhancement only: the collapse itself is <details>, so it works with this
+// script blocked, and an anchor link into an explanation still resolves.
+(function() {
+  const expandAll = () => document.querySelectorAll('details.reading-rows')
+    .forEach(d => { d.dataset.wasOpen = d.open ? '1' : '0'; d.open = true; });
+  const restore = () => document.querySelectorAll('details.reading-rows')
+    .forEach(d => { d.open = d.dataset.wasOpen === '1'; });
+  window.addEventListener('beforeprint', expandAll);
+  window.addEventListener('afterprint', restore);
 })();
 </script>
 </body>

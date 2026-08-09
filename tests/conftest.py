@@ -531,3 +531,22 @@ def make_result(ticker: str = "TEST", metrics: dict | None = None,
 @pytest.fixture
 def analysis_result():
     return make_result()
+
+
+def latest_scores_for(ticker: str):
+    """The most recent `scores.json` this machine holds for a ticker, or None.
+
+    Globbed rather than named. Two fixtures used to open
+    `PFC_20260808/scores.json` — a literal date, which stops existing the day
+    after it is written. The failure mode is the quiet one: the test does not
+    break, it *skips*, so the suite stays green while the case it was written
+    for silently stops being checked. `analyze` writes one directory per ticker
+    per date, so the latest is the one to read.
+    """
+    from boundless100x.output.report_expansion import DEFAULT_REPORTS_DIR
+
+    for report in sorted(DEFAULT_REPORTS_DIR.glob(f"{ticker}_*"), reverse=True):
+        scores = report / "scores.json"
+        if scores.is_file():
+            return scores
+    return None

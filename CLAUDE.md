@@ -159,21 +159,22 @@ boundless100x/
     │                             # and nothing else (R13–R15) — data a surface
     │                             # renders, not markup it parses, so HTML,
     │                             # Markdown and console can't drift apart
-    ├── report_surfaces.py        # R14's two document renderers
-    │                             # (html, markdown) for the closed component set;
+    ├── report_surfaces.py        # The two document renderers (html, markdown)
+    │                             # for the closed component set;
     │                             # `@component_surface` refuses one missing a
     │                             # render_* at import time, not as a section
-    │                             # quietly missing from just one surface
+    │                             # quietly missing from just one surface.
+    │                             # Only `html` has a consumer today — markdown
+    │                             # is kept, see the module docstring
     ├── templates/
-    │   ├── sqglp_report.html.j2
-    │   ├── sqglp_report.md.j2
-    │   ├── clarity_report.html.j2 # The new report's HTML surface —
-    │   │                          # same loops, same order as its .md.j2 twin below,
-    │   │                          # no Plotly and no charts (those stay in the
-    │   │                          # dashboard sqglp_report.html.j2 generates)
-    │   └── clarity_report.md.j2  # ...its Markdown twin; `md_text` guards
-    │                             # the handful of slots no component ever escapes
-    │                             # (company name, sector, a scraped quarter label)
+    │   ├── sqglp_report.html.j2  # The one document. Charts, thesis and every
+    │   │                         # prior section, plus the reading layer folded
+    │   │                         # into each element section: a one-line
+    │   │                         # reading under the score, the fired findings
+    │   │                         # above the table, a `<details>` around the
+    │   │                         # rows that opens only when a trigger fired
+    │   └── sqglp_report.md.j2    # The legacy Markdown report, untouched by
+    │                             # the reading layer — its turn is deferred
     └── reports/{TICKER}_{DATE}/  # Generated reports (HTML, JSON)
 ```
 
@@ -217,6 +218,7 @@ boundless100x/
   - **A cap is checked before the transition, not counted after it** (Phase 4 residual fix). `portfolio.would_breach(lane, sector, reading)` is the single statement of "does one more name fit?", asked identically by `propose_routing` (advisory) and by `advance_ticker` (money-moving) — two copies would disagree invisibly, a router skipping what the transition path buys reading as a ranking quirk. **The sector axis fails closed by worst case, not by refusal**: every positioned name whose sector could not be read is counted as though it might be in the sector at issue, and a candidate with no sector of its own is measured against the fullest group — so one sectorless holding cannot freeze the book, but a genuinely unprovable fit is refused with the refetch named. `check_concentration` carries **every** sector group including singles (`_MIN_GROUP` gates only the prose in `notes`) plus a top-level `sector_max`, which is what lets a cap of 1 fire at all and a cap of 0 reach a sector holding nothing. `advance()` supplies a **live** gate recomputed per candidate, because an applying run changes the occupancy it is checking: two probes into a lane with room for one would both pass a reading taken up front. It fires only when a transition would **add a name** — `probe → scale` moves an already-counted company and is not gated. A breach withholds `should_apply` even under `--apply`; `--override-caps` proceeds and **writes the breach into the append-only evidence**, because the override that needs no flag is editing `config.yaml`, and that one leaves no record. Fail-closed on an unbuildable reading, per the layer's rule that absence must not read as headroom.
   - **Routing safety is fail-closed per lane** (KTD11) and cannot reuse `action_policy.resolve_for_result`, which returns `None` on the `use_llm=False` path `advance` takes and would pass every candidate silently. Core candidates need an `eligible` 100x verdict; re-rating candidates need a `qualifies` **lane-gate** verdict — applying the 100x question there would reimpose the gate set §9.2 exists to replace. Anything other than the exact positive verdict blocks with its reason.
   - **Only a `Current` routing snapshot may render a proposal.** Freshness is tracked by **revision counters, not clocks** (`as_of` may be a historical business date, and a clock comparison misses every non-scoring mutation). A `--quarterly` run advances a subset and never overwrites the canonical snapshot. Routing records **deployment, not intent**: a route is refused unless the candidate holds an owner-applied position transition dated after the exit, and the idle reading closes at `deployed_at` rather than when someone typed the command.
+- **The reading layer lives in the dashboard, and there is no second document.** `report_reading` → `report_expansion` → `report_components` → `report_surfaces` turn a declaration plus a computed value into a reading, a decision about whether a section has earned space, one of six components, and finally markup. `ReportGenerator._reading_context` assembles all of it and `sqglp_report.html.j2` renders it *inside* each element section: a one-line reading under the score (with R18's coverage clause when the element is thin), the fired findings above the table, and a `Metric | Reading | Contribution` table inside a `<details>` that carries `open` only when a trigger fired. It shipped first as a separate `clarity` note written beside the dashboard and that was the mistake — the note carried six headings and none of the dashboard's figures, thesis, snapshot or DCF, so understanding one company meant reading two files. **The four-column `Metric | Value | Score | Weight` drill-down it replaced is the defect the layer exists to remove**: that `Value` column held `0.09` (a ratio), `25.7` (a percentage), `2.0` (a count of years) and `0.84` (a coefficient of variation) with nothing to tell them apart, beside two adjacent percentage columns meaning different things. It survives as the **degrade path** — `_reading_or_none` fences the whole layer, because `SectorApplicability` and `ContradictionPairs` each parse a hand-maintained YAML validated nowhere else, and a typo in a *display* table must not cost the dashboard its metrics. The Markdown report still renders its own drill-down and is deliberately untouched; its golden must not move.
 - **MetricResult**: Every compute function returns `MetricResult(value, raw_series, flags, metadata, error)`. Flags communicate data quality issues (e.g., `insufficient_history`, `possible_bonus_split`, `cfi_dominated_by_acquisitions`).
 - **Scoring**: Threshold-based (higher/lower_is_better), range_optimal, categorical, sector_relative_percentile, trend_direction modes. All defined in YAML. Scorer receives full MetricResult for trend analysis.
 - **Data contract**: Fetchers write to `raw_data/{TICKER}/` in standardized CSV/JSON. Compute engine reads from there. BSE codes auto-detected from Screener.in metadata. `quarterly.csv` (Screener's quarterly results, `quarter` period column) is parsed from the same cached company page as the annual tables and shares `_parse_table` with them; it feeds Phase 1's checkpoints and Phase 2's `quarterly_momentum`. Screener renders only ~11–13 recent quarters, which is enough for consecutive-quarter checks but not for deep historical replay. The corpus was refetched on **2026-08-07** (`corpus refetch`), so all 22 cached tickers now carry a quarterly series — `quarterly_momentum` computes on 21 of 22, the exception being SPLPETRO, whose Screener page renders only 5 quarters against the 6 a second difference needs. `max_reports: 3` likewise applies from its landing forward: the corpus now holds 54 annual-report years across 20 BSE codes, up from 29. **A ticker fetched before either landed still has neither** — refetch to upgrade.

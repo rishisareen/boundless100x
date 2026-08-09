@@ -168,12 +168,13 @@ def analyze(
         None, "--llm-provider",
         help="Which transport carries the LLM calls (default: config's llm.provider)",
     ),
-    # `clarity` is the research note (U10). This call site passes `formats=`
-    # explicitly, so the generator's own default never reaches it — the token
-    # has to be here or an `analyze` run produces every report except the new
-    # one (KTD3).
+    # This call site passes `formats=` explicitly, so the generator's own
+    # `DEFAULT_FORMATS` never reaches it — the two lists have to agree by hand.
+    # There was briefly a fourth token, `clarity`, for the reading layer's own
+    # note; the reading layer now renders inside the dashboard, so `html`
+    # carries it.
     formats: str = typer.Option(
-        "html,md,clarity,json", help="Output formats (comma-separated)"
+        "html,md,json", help="Output formats (comma-separated)"
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
@@ -897,7 +898,7 @@ def corpus_audit_cmd(
 def _declaration_view(result, svc):
     """`(vocabulary, readings, configs)` — the declarations, read for this run.
 
-    The same three inputs `_clarity_context` assembles from: the registry's
+    The same three inputs `_reading_context` assembles from: the registry's
     `presentation:` blocks, the sector-applicability table, and this run's own
     `MetricResult`s. Built here rather than passed in because both display
     helpers need it and building it twice is how two surfaces come to disagree
@@ -916,7 +917,7 @@ def _declaration_view(result, svc):
     whole LLM spend, and before a single report has been written: unfenced, a
     typo in a *display* table aborts `analyze` with a traceback and leaves
     nothing on disk to show for the run. `ReportGenerator.generate` already
-    fences the identical construction inside its clarity block, appending to
+    fences the identical construction inside `_reading_or_none`, appending to
     `result.errors` rather than raising; this is the same decision on the
     console's side of the boundary.
     """
@@ -1060,7 +1061,7 @@ def _element_reading(element, vocabulary, score, coverage):
 
 
 def _composite_reading(composite):
-    """The composite as a `ReadingLine`, built by hand for `_clarity_lead`'s
+    """The composite as a `ReadingLine`, built by hand for `_reading_lead`'s
     reason: it is not an element, so no element-shaped builder covers it.
 
     The score is rounded **before** it is banded, which is the rule

@@ -13,6 +13,14 @@ chart div. Regenerate them deliberately (never to make a red test green) with:
     from tests.test_report_lane_status import normalise
     normalise(Path(report_dir / "TEST_dashboard.html").read_text())
 
+`pre_lane_section_dashboard.html` has been regenerated once since it was
+captured, when the reading layer was folded into the dashboard — every element
+section gained a one-line reading and a `<details>` around its metric rows.
+That was a deliberate, whole-report change; the golden's job here is the lane
+section, and it still holds it. `pre_lane_section_report.md` has **not** moved
+and must not: the reading layer landed in the dashboard and nowhere else, so a
+diff there means something leaked.
+
 "Unchanged" is a claim about *untracked* reports and about the rest of a
 tracked one. A tracked entry in either lane gains the section — a core entry
 shows lane and state, a re-rating entry shows its gates and its catalyst too —

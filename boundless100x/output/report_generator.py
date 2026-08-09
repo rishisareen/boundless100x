@@ -39,7 +39,7 @@ from boundless100x.llm_layer.transport import COST_BASIS_ESTIMATED
 # test suite, and a caller that reaches for one here is not wrong about where it
 # means something.
 from boundless100x.output.report_charts import render_charts
-# The research note's three collaborators (U6, U8, U9), each a leaf this module
+# The reading layer's three collaborators (U6, U8, U9), each a leaf this module
 # is allowed to depend on and none of which depends back. The direction is what
 # lets `report_reading` stay pure and testable without a generator.
 from boundless100x.output.contradiction import ContradictionPairs
@@ -49,24 +49,14 @@ from boundless100x.output.report_components import (
     NEUTRAL,
     Caveat,
     Finding,
-    ReadingLine,
     Section,
-    Unknown,
     Vocabulary,
     build_section,
-    caveat_from_run_error,
     composite_reading,
-    disclosure_for,
-    finding_from_flag,
-    metric_row,
 )
 from boundless100x.output.report_expansion import ExpansionDecider, load_scored_corpus
 from boundless100x.output.report_reading import read_metrics
-from boundless100x.output.report_surfaces import (
-    ROW_HEADERS,
-    HtmlComponents,
-    MarkdownComponents,
-)
+from boundless100x.output.report_surfaces import ROW_HEADERS, HtmlComponents
 from boundless100x.output.report_vocabulary import (
     ACTION_LABELS,
     ACTION_UNKNOWN_LABEL,
@@ -86,10 +76,10 @@ from boundless100x.output.report_vocabulary import (
     LANE_LABELS,
     LANE_VERDICT_LABELS,
     METRIC_DISPLAY_NAMES,
+    METRIC_EXPLANATIONS_TITLE,
     MOMENTUM_UNAVAILABLE_LABEL,
-    RESEARCH_NOTE_TITLE,
-    UNSCORED_SECTION_READING,
-    UNSCORED_SECTION_TITLE,
+    READING_LEAD_TITLE,
+    SECTION_DETAILS_SUMMARY,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,23 +100,17 @@ def _safe_numeric(val) -> float | None:
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# The fourth format token (KTD3). A token rather than a template rewrite, so
-# the two blocks that render the current report are not touched and R16 holds
-# by construction rather than by care.
-CLARITY = "clarity"
-
 # What `formats=None` means. Spelled out rather than left as a literal at the
-# one call site, because the new report joining it is a decision worth being
-# able to find: a caller that names no formats is asking for everything this
-# generator produces, and a default that quietly omitted one of the reports
-# would be the silent-omission failure this whole plan is about.
-DEFAULT_FORMATS: list[str] = ["html", "md", CLARITY, "json"]
-
-# The note's opening section. One constant because it is both the section's
-# title and its reading's subject, and the two must be the same string: every
-# surface prints the title as a heading and then prints the reading beneath it,
-# so a subject that differed would put two names on one section.
-LEAD_TITLE = "What this says"
+# one call site, because a caller that names no formats is asking for
+# everything this generator produces, and a default that quietly omitted one
+# would be a silent omission.
+#
+# There were briefly four tokens: the reading layer shipped as a separate
+# `clarity` note written beside the dashboard. It is now folded *into* the
+# dashboard, which is the whole point — a reading layer in its own file is a
+# second document to open, and a reader holding two documents to understand one
+# company has been given less than one that reads.
+DEFAULT_FORMATS: list[str] = ["html", "md", "json"]
 
 
 def _md_inline(text: str) -> str:
@@ -258,10 +242,8 @@ class ReportGenerator:
 
         Args:
             result: AnalysisResult from the service layer.
-            formats: List of formats to generate (html, md, clarity, json).
-                Default: all of them. `clarity` is the research note (U10) and
-                writes two files of its own — the same content as HTML and as
-                Markdown, per R14.
+            formats: List of formats to generate (html, md, json).
+                Default: all of them.
             lane_context: `lifecycle.lane_view.build_lane_context` output for a
                 watchlisted company, or None. **None by default, so every
                 existing call site is untouched** — a ticker analysed outside
@@ -314,6 +296,7 @@ class ReportGenerator:
                 flags_precomputed=flags,
                 forward_signals=forward_signals,
                 lane_status=lane_status,
+                reading=self._reading_or_none(result),
             )
             path = report_dir / f"{result.ticker}_dashboard.html"
             path.write_text(html)
@@ -338,26 +321,6 @@ class ReportGenerator:
             path.write_text(md)
             logger.info(f"Markdown report: {path}")
 
-        if CLARITY in formats:
-            # The research note, in both surfaces R14 names. Deliberately last
-            # and deliberately fenced: it is an *additional* output, and a
-            # failure inside it must not cost the caller the two reports
-            # already on disk or the analysis behind them — the same trade
-            # `score_history` makes for a failed write. The reason travels back
-            # in `result.errors`, where the CLI prints it, rather than only
-            # into a log nobody is reading.
-            try:
-                self._render_clarity(
-                    result, report_dir,
-                    financial_snapshot=financial_snapshot,
-                    cashflow_quality=cashflow_quality,
-                    shareholding_data=shareholding_data,
-                    flags=flags,
-                )
-            except Exception as e:  # noqa: BLE001 - see the comment above
-                logger.exception(f"Research note failed for {result.ticker}")
-                result.errors.append(f"Research note generation failed: {e}")
-
         return report_dir
 
     # ── HTML ──
@@ -380,10 +343,13 @@ class ReportGenerator:
                      element_summaries: dict | None = None,
                      flags_precomputed: list | None = None,
                      forward_signals: dict | None = None,
-                     lane_status: dict | None = None) -> str:
+                     lane_status: dict | None = None,
+                     reading: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.html.j2")
         flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
         return template.render(
+            reading=reading,
+            surface=HtmlComponents(),
             ticker=result.ticker,
             metadata=result.data.get("metadata", {}),
             scores=result.scores,
@@ -452,14 +418,22 @@ class ReportGenerator:
             generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
-    # ── The research note (Report Clarity, U10) ──
+    # ── The reading layer (Report Clarity, U10) ──
     #
-    # A fourth format beside the three above, not a rewrite of any of them
-    # (KTD3, R16). Everything below reads the declarations — `presentation:`
-    # blocks through the reading layer, the sector table, the contradiction
-    # pairs, the scored corpus — and renders them through U9's closed component
-    # set. Nothing here recomputes a number: the figures in this report and the
-    # figures in the two above come from the same `result`.
+    # Everything below reads the declarations — `presentation:` blocks through
+    # the reading layer, the sector table, the contradiction pairs, the scored
+    # corpus — and renders them through U9's closed component set. Nothing here
+    # recomputes a number: the figures it shows and the figures the rest of the
+    # dashboard shows come from the same `result`.
+    #
+    # It shipped first as a separate `clarity` note written beside the
+    # dashboard, and that was the mistake. A reading layer in its own document
+    # is a second file to open: the note carried six headings and none of the
+    # dashboard's six figures, no thesis, no snapshot and no DCF, so
+    # understanding one company meant reading two documents side by side. The
+    # builders below are unchanged — the same context, the same components, the
+    # same decisions — and only their destination moved. `_reading_context` is
+    # the old `_clarity_context` renamed, deliberately rather than rewritten.
 
     def _metric_registry(self):
         """The metric registry the declarations live in, loaded once.
@@ -471,11 +445,10 @@ class ReportGenerator:
         depends on a macro assumption, and the values rendered were computed
         upstream by the service's engine, not by this one.
 
-        Both report paths read it. The note needs the declarations; the legacy
-        drill-down needs the *name*, because the hand-maintained
+        Both report paths read it. The reading layer needs the declarations;
+        the Markdown drill-down needs the *name*, because the hand-maintained
         `METRIC_DISPLAY_NAMES` disagrees with the registry on 39 of the 49
-        scored metrics and a default run now renders both documents for the
-        same company.
+        scored metrics.
         """
         if self._registry is None:
             from boundless100x.compute_engine.engine import ComputeEngine
@@ -483,65 +456,55 @@ class ReportGenerator:
             self._registry = ComputeEngine()
         return self._registry
 
-    def _clarity_vocabulary(self) -> Vocabulary:
+    def _reading_vocabulary(self) -> Vocabulary:
         if self._vocabulary is None:
             self._vocabulary = Vocabulary(self._metric_registry().metrics)
         return self._vocabulary
 
-    def _render_clarity(self, result, report_dir: Path, *,
-                        financial_snapshot: list | None = None,
-                        cashflow_quality: dict | None = None,
-                        shareholding_data: list | None = None,
-                        flags: list | None = None) -> tuple[Path, Path]:
-        """Write the research note in both of R14's document surfaces.
+    def _reading_or_none(self, result) -> dict | None:
+        """The reading layer, or `None` and a caveat in `result.errors`.
 
-        One context, two templates, two surface renderers. The context is built
-        once — a second build could differ, and "the two reports never disagree
-        on a number" is one of the plan's three success criteria.
+        The fence the research note had, kept where the note's own block used
+        to be. It is *more* load-bearing now, not less: the note was an extra
+        file and losing it cost a run nothing already on disk, whereas the
+        reading layer is now inside the one document the run exists to produce.
+        So the failure has to degrade rather than propagate — the dashboard
+        renders without it, falling back to the drill-down table it has always
+        had, and the reason travels back in `result.errors` where the CLI
+        prints it rather than only into a log nobody is reading.
+
+        Everything it touches can genuinely fail on a real company:
+        `SectorApplicability` parses a hand-maintained YAML validated nowhere
+        else, `ContradictionPairs` validates a second one, and
+        `load_scored_corpus` globs a directory that grows by an entry per run.
         """
-        context = self._clarity_context(
-            result,
-            financial_snapshot=financial_snapshot,
-            cashflow_quality=cashflow_quality,
-            shareholding_data=shareholding_data,
-            flags=flags,
-        )
+        try:
+            return self._reading_context(result)
+        except Exception as e:  # noqa: BLE001 - see the docstring above
+            logger.exception(f"Reading layer failed for {result.ticker}")
+            result.errors.append(f"Reading layer unavailable: {e}")
+            return None
 
-        html_path = report_dir / f"{result.ticker}_note.html"
-        html_path.write_text(
-            self.env.get_template("clarity_report.html.j2").render(
-                surface=HtmlComponents(), **context
-            )
-        )
-        md_path = report_dir / f"{result.ticker}_note.md"
-        md_path.write_text(
-            self.env.get_template("clarity_report.md.j2").render(
-                surface=MarkdownComponents(), **context
-            )
-        )
-        logger.info(f"Research note: {html_path} and {md_path}")
-        return html_path, md_path
+    def _reading_context(self, result) -> dict:
+        """Everything the reading layer contributes to the dashboard.
 
-    def _clarity_context(self, result, *,
-                         financial_snapshot: list | None = None,
-                         cashflow_quality: dict | None = None,
-                         shareholding_data: list | None = None,
-                         flags: list | None = None) -> dict:
-        """Everything both surfaces render, assembled once.
+        Public enough to be tested directly: the acceptance criteria are claims
+        about what a reader is shown, and the only way to state them without
+        matching markup is to walk the model the template was given.
 
-        Public enough to be tested directly: the R14 comparison asks whether
-        two renderings carry the same content, and the only way to state what
-        "the same content" *is* without comparing markup is to walk the model
-        both of them were given.
+        Formerly `_clarity_context`, which assembled the same model for a
+        separate note. What changed is the destination and what the dashboard
+        already says for itself — the multi-year tables, the flag chips and the
+        whole-flag Signals list are the dashboard's own sections and are not
+        rebuilt here.
         """
         from boundless100x.compute_engine.eligibility import effective_gates
         from boundless100x.compute_engine.sector import SectorApplicability
 
         engine = self._metric_registry()
-        vocabulary = self._clarity_vocabulary()
+        vocabulary = self._reading_vocabulary()
         configs = engine.metrics
         metadata = result.data.get("metadata", {})
-        flags = flags if flags is not None else self._collect_flags(result.metrics)
 
         readings = read_metrics(
             configs, result.metrics or {},
@@ -573,79 +536,61 @@ class ReportGenerator:
         )
         weight_shares = {mid: decider.weight_share(mid) for mid in configs}
 
-        # Which flags each section is handed, kept rather than rebuilt inline:
-        # the appendix has to know what the sections already showed, and a
-        # second comprehension spelling the same filter is a second thing to
-        # keep in step (see `_clarity_appendix`).
-        flags_by_element: dict[str, list[str]] = {}
-        for flag in flags:
-            flags_by_element.setdefault(flag.get("element"), []).append(flag["raw"])
-
-        sections = [
-            build_section(
+        # **No flags are passed in**, and that is a decision rather than an
+        # omission. `finding_from_flag` builds a headline and no body, so a
+        # flag rendered as a finding says exactly what the dashboard's own
+        # chip already says at four times the height — and the chips are
+        # existing content that must not be lost. What the reading layer adds
+        # to a section is the findings that carry an *explanation*: the fired
+        # expansion reasons, which are the reason the section is open at all.
+        sections = {
+            element: build_section(
                 element, decisions[element], readings, vocabulary, result.scores,
-                flags=flags_by_element.get(element, []),
                 weight_shares=weight_shares,
             )
             for element in ELEMENT_CONFIG
-        ]
-        unscored = self._clarity_unscored(configs, readings, vocabulary)
-
-        return {
-            "ticker": result.ticker,
-            "company": metadata.get("name", result.ticker),
-            "title": RESEARCH_NOTE_TITLE,
-            "subtitle": self._clarity_subtitle(result.ticker, metadata),
-            "lead": self._clarity_lead(result, sections),
-            "sections": sections,
-            "unscored": unscored,
-            "appendix": self._clarity_appendix(
-                result, [*sections, unscored] if unscored else sections, flags,
-                financial_snapshot, cashflow_quality, shareholding_data,
-                # Only an *expanded* section renders its findings — both
-                # templates gate on `section.expanded` — so a flag carried by a
-                # collapsed section has still not reached the page and must
-                # keep its place in the appendix.
-                already_shown={
-                    raw
-                    for section in sections if section.expanded
-                    for raw in flags_by_element.get(section.key, ())
-                },
-            ),
-            "row_headers": ROW_HEADERS,
-            "generation_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
 
-    @staticmethod
-    def _clarity_subtitle(ticker: str, metadata: dict) -> str:
-        """The one line under the title: who this is, and how big.
+        # R3's deferred half. Collected across every section — including the
+        # collapsed ones, whose rows are one click away rather than absent — so
+        # a row's anchor always resolves. `setdefault` on the anchor because two
+        # sections can reference one explanation and a body printed twice would
+        # give the page two elements with the same id.
+        bodies: dict[str, object] = {}
+        for section in sections.values():
+            for disclosure in section.disclosures:
+                bodies.setdefault(disclosure.anchor, disclosure)
 
-        The market cap carries its unit here rather than in a component,
-        because it is masthead rather than reading — but R12's rule is the same
-        either way, and a bare number would be as unreadable in a header as it
-        is in a table.
-        """
-        parts = [str(ticker)]
-        sector = metadata.get("sector")
-        if sector:
-            parts.append(str(sector))
-        market_cap = _safe_numeric(metadata.get("Market Cap"))
-        if market_cap is not None:
-            parts.append(f"Market cap ₹{market_cap:,.0f} Cr")
-        return " · ".join(parts)
+        return {
+            "lead": self._reading_lead(result, list(sections.values())),
+            # Keyed by element so the template's per-section macro can look one
+            # up, and insertion-ordered by `ELEMENT_CONFIG` so `.values()` is
+            # still the report's order.
+            "sections": sections,
+            "explanations_title": METRIC_EXPLANATIONS_TITLE,
+            "disclosures": sorted(bodies.values(), key=lambda d: d.title),
+            "row_headers": ROW_HEADERS,
+            "details_summary": SECTION_DETAILS_SUMMARY,
+        }
 
-    def _clarity_lead(self, result, sections: list[Section]) -> Section:
+    def _reading_lead(self, result, sections: list[Section]) -> Section:
         """The opening: where this lands, and how long the rest of it is.
 
         Built by hand rather than through `build_section`, which assembles an
         *element* — this is not one, has no element weight and no expansion
         decision. It is still a `Section` of the same components, so R13 holds
-        and both surfaces render it through the same handlers as everything
-        else.
+        and the surface renders it through the same handlers as everything else.
 
         **It states no finding twice.** The shape line counts sections and
         names them; it never restates what any of them found, which is the
         roll-up KD4 rejected.
+
+        The verdict and the action are already in the executive summary above
+        it — as *badges*, whose explanation is a `title=` tooltip. A tooltip is
+        invisible in print, invisible on a touch screen, and invisible to
+        anyone not currently hovering, so restating both as sentences is not
+        the duplication it looks like: it is the first time either of them is
+        actually readable.
         """
         scores = result.scores or {}
         composite = _safe_numeric(scores.get("composite"))
@@ -660,34 +605,34 @@ class ReportGenerator:
 
         # One builder, shared with the console. Built by hand here first, it
         # banded the raw composite while rounding the headline — so a 6.97 read
-        # `7.0 / 10 — Reads middling` in the note and `7.0 / 10 — Reads strong`
-        # on the console, for the same company on the same run.
-        reading = composite_reading(composite, subject=LEAD_TITLE,
+        # `7.0 / 10 — Reads middling` in the report and `7.0 / 10 — Reads
+        # strong` on the console, for the same company on the same run.
+        reading = composite_reading(composite, subject=READING_LEAD_TITLE,
                                     qualifier=qualifier)
 
         findings = [f for f in (
-            self._clarity_verdict_finding(result),
-            self._clarity_action_finding(result, coverage),
-            self._clarity_shape_finding(sections),
+            self._reading_verdict_finding(result),
+            self._reading_action_finding(result, coverage),
+            self._reading_shape_finding(sections),
         ) if f is not None]
 
         return Section(
             key="lead",
-            title=LEAD_TITLE,
+            title=READING_LEAD_TITLE,
             reading=reading,
             findings=tuple(findings),
             caveats=(Caveat(text=COLLAPSED_SECTIONS_NOTE),),
             expanded=True,
         )
 
-    def _clarity_verdict_finding(self, result) -> Finding | None:
+    def _reading_verdict_finding(self, result) -> Finding | None:
         """The 100x verdict, in the badge's own words.
 
         The gate *reasons* are deliberately not rendered here: they are the
         evaluator's sentences and carry raw metric ids ("market_cap 5000.00 lte
         3000"), which R15 keeps off the page and `guard_text` would refuse. The
         badge's label and description say the same thing in the reader's words,
-        and the gate table itself is in the dashboard beside this note.
+        and the gate table itself is in the executive summary above.
         """
         badge = self._build_eligibility_badge(result)
         if not badge or not badge.get("label"):
@@ -699,13 +644,13 @@ class ReportGenerator:
             source="eligibility",
         )
 
-    def _clarity_action_finding(self, result, coverage) -> Finding | None:
+    def _reading_action_finding(self, result, coverage) -> Finding | None:
         """The action, guarded, with the cap explained in clean prose.
 
         `_resolve_action` is the single derivation and is called fresh here for
         the reason its own docstring gives — a stored `final_action` is an
         output of that function and must never become an input to it. What this
-        adds is wording: the surfaces render `ACTION_LABELS`, never the enum.
+        adds is wording: the surface renders `ACTION_LABELS`, never the enum.
         """
         decision = self._resolve_action(result)
         action = (decision or {}).get("action")
@@ -721,7 +666,7 @@ class ReportGenerator:
             suggested = ACTION_LABELS.get(
                 decision.get("llm_action"), ACTION_UNKNOWN_LABEL
             )
-            reasons = self._clarity_cap_reasons(result, coverage)
+            reasons = self._reading_cap_reasons(result, coverage)
             text = (
                 f"The model suggested {suggested}; the guard lowered it "
                 f"because {reasons}."
@@ -732,7 +677,7 @@ class ReportGenerator:
             source="action",
         )
 
-    def _clarity_cap_reasons(self, result, coverage) -> str:
+    def _reading_cap_reasons(self, result, coverage) -> str:
         """Why the action was capped, said without the evaluator's vocabulary.
 
         `action_policy` builds its `constraints` list out of gate reasons,
@@ -758,12 +703,12 @@ class ReportGenerator:
         return " and ".join(reasons) or "the evidence does not support an entry"
 
     @staticmethod
-    def _clarity_shape_finding(sections: list[Section]) -> Finding:
+    def _reading_shape_finding(sections: list[Section]) -> Finding:
         """How long this report is, and why — KD5's "the length is the verdict".
 
         A reader comparing two companies should not have to read either to see
         which one has problems, so the count is stated rather than left to be
-        inferred from scroll length (AE5).
+        inferred from how many sections happen to be open (AE5).
         """
         expanded = [section.title for section in sections if section.expanded]
         if not expanded:
@@ -771,8 +716,8 @@ class ReportGenerator:
                 headline="No section needed more than its score and one line",
                 text=(
                     "Nothing here tripped a check that earns a section room to "
-                    "explain itself, so the rest of this note is six readings "
-                    "long."
+                    "explain itself, so every element below opens as a score "
+                    "and one reading."
                 ),
                 sentiment=GOOD,
                 source="shape",
@@ -787,105 +732,19 @@ class ReportGenerator:
             source="shape",
         )
 
-    def _clarity_unscored(self, configs, readings, vocabulary) -> Section | None:
-        """Every metric outside the six scored elements, in one place.
-
-        These are the zero-weight signals whose element is absent from
-        `element_weights` — the forward-growth readings and the quality-growth
-        quadrant. They are not a seventh element and must not read like one, so
-        the section carries no score, states plainly that nothing in it moved
-        one, and is never subject to the expansion decision (a signal that
-        cannot move a score must not move the report's shape either, KTD5).
-
-        Their rows are shown rather than collapsed because there is nothing to
-        collapse *to*: R5's collapsed form is a score and one line, and a
-        section with no score would render as a single unknown — the metrics
-        would simply vanish from the note.
-        """
-        outside = [
-            metric_id for metric_id, config in configs.items()
-            if (config or {}).get("element") not in ELEMENT_CONFIG
-        ]
-        if not outside:
-            return None
-
-        rows, unknowns, disclosures = [], [], []
-        for metric_id in sorted(
-            outside, key=lambda mid: vocabulary.metric_name(mid) or mid
-        ):
-            reading = readings.get(metric_id)
-            if reading is None:
-                continue
-            built = metric_row(metric_id, reading, vocabulary)
-            if isinstance(built, Unknown):
-                unknowns.append(built)
-                continue
-            rows.append(built)
-            disclosure = disclosure_for(metric_id, reading, vocabulary)
-            if disclosure is not None:
-                disclosures.append(disclosure)
-
-        return Section(
-            key="unscored",
-            title=UNSCORED_SECTION_TITLE,
-            reading=ReadingLine(
-                subject=UNSCORED_SECTION_TITLE,
-                text=UNSCORED_SECTION_READING,
-                key="unscored",
-            ),
-            rows=tuple(rows),
-            unknowns=tuple(unknowns),
-            caveats=(Caveat(text=FORWARD_SIGNALS_DISCLAIMER),),
-            disclosures=tuple(disclosures),
-            expanded=True,
-        )
-
-    def _clarity_appendix(self, result, sections, flags,
-                          financial_snapshot, cashflow_quality,
-                          shareholding_data, *,
-                          already_shown: set[str] | None = None) -> dict:
-        """R10's exile, R3's deferred half, and the run's own warnings.
-
-        Three multi-year tables move here out of the section bodies where the
-        current report puts them: twelve rows of cash-flow history given the
-        same visual weight as the composite score is the density problem this
-        plan opens on. The disclosure *bodies* live here too, which is what
-        makes R3 structural rather than a convention — `Section.flow` excludes
-        them, so a reading flow physically cannot contain the explanation.
-
-        **`already_shown` is the flags an expanded section has already put on
-        the page.** `build_section` turns every element-mapped flag into a
-        section finding, and this once re-derived signals from the whole flag
-        list with no filter — so most of the note's signals printed twice in
-        one document, once under their element and once here. That is not
-        KD4's rule that several *sections* may independently state the same
-        finding; it is one flag rendered twice. Flags no section showed —
-        `composite`, the forward signals, and everything in a section that
-        stayed collapsed — still belong here, which is why the filter is a set
-        of what was rendered rather than "drop anything with an element".
-        """
-        bodies: dict[str, object] = {}
-        for section in sections:
-            for disclosure in section.disclosures:
-                bodies.setdefault(disclosure.anchor, disclosure)
-
-        shown = already_shown or set()
-        signals, signal_unknowns = [], []
-        for flag in flags or []:
-            if flag["raw"] in shown:
-                continue
-            built = finding_from_flag(flag["raw"])
-            (signal_unknowns if isinstance(built, Unknown) else signals).append(built)
-
-        return {
-            "disclosures": sorted(bodies.values(), key=lambda d: d.title),
-            "signals": signals,
-            "signal_unknowns": signal_unknowns,
-            "snapshot": financial_snapshot or [],
-            "cashflow": cashflow_quality or {},
-            "shareholding": shareholding_data or [],
-            "caveats": [caveat_from_run_error(e) for e in (result.errors or [])],
-        }
+    # There is no "signals that move no score" section here, and no appendix
+    # builder. Both were the note's, and both are things the dashboard already
+    # does for itself: the four zero-weight metrics the note gathered into an
+    # unscored section are exactly the dashboard's own Forward Signals section
+    # plus the quadrant badge in the executive summary, and the note's appendix
+    # rebuilt the ten-year snapshot, the cash-flow history, the shareholding
+    # table and the whole-flag Signals list that the dashboard's Appendix has
+    # carried since long before any of this. Rebuilding them here would have
+    # put each on the page twice.
+    #
+    # What the reading layer *does* add to the Appendix is R3's deferred half:
+    # the explanation bodies, collected in `_reading_context` and linked to
+    # from every metric row by anchor.
 
     # ── JSON Export ──
 
