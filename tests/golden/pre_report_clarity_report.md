@@ -53,8 +53,8 @@ Generated: <generated>
 
 | Metric | Value | Score | Weight |
 |--------|-------|-------|--------|
-| Market Cap | 5,000 | 50% | 6% |
-| FII + DII Holding | 13.0 | 50% | 4% |
+| Market Cap (₹ Cr) | 5,000 | 50% | 6% |
+| FII + DII Holding (%) | 13.0 | 50% | 4% |
 
 **Signals:** • Mid Cap | • Low Institutional Ownership
 
@@ -63,13 +63,13 @@ Generated: <generated>
 
 ## Quality — Business (QB) — 7.4/10 (Weight: 20%)
 
-> Strong on RoCE 5yr Avg (22.0), OPM 5yr Avg (25.0) and Debt/Equity (0.02).
+> Strong on RoCE (5yr Avg) (22.0), Operating Margin (5yr Avg) (25.0) and Debt / Equity (0.02).
 
 | Metric | Value | Score | Weight |
 |--------|-------|-------|--------|
-| RoCE 5yr Avg | 22.0 | 82% | 12% |
-| OPM 5yr Avg | 25.0 | 70% | 5% |
-| Debt/Equity | 0.02 | 95% | 3% |
+| RoCE (5yr Avg) | 22.0 | 82% | 12% |
+| Operating Margin (5yr Avg) | 25.0 | 70% | 5% |
+| Debt / Equity | 0.02 | 95% | 3% |
 
 **Signals:** ✓ Consistently High RoCE | ✓ High Operating Margin | ✓ Virtually Debt-Free
 
@@ -95,12 +95,12 @@ Generated: <generated>
 
 ## Quality — Management (QM) — 6.0/10 (Weight: 10%)
 
-> Strong on Equity Dilution 10yr (0.40).
+> Strong on Shares Outstanding Growth (10yr) (0.40).
 
 | Metric | Value | Score | Weight |
 |--------|-------|-------|--------|
-| Promoter Holding Trend | 0.00 | 50% | 5% |
-| Equity Dilution 10yr | 0.40 | 90% | 5% |
+| Promoter Holding Trend (5yr) | 0.00 | 50% | 5% |
+| Shares Outstanding Growth (10yr) | 0.40 | 90% | 5% |
 
 
 ### Shareholding Trend
@@ -133,12 +133,12 @@ Generated: <generated>
 
 ## Growth (G) — 7.2/10 (Weight: 25%)
 
-> Strong on Revenue CAGR 5yr (20.0) and PAT CAGR 5yr (25.0).
+> Strong on Revenue CAGR (5yr) (20.0) and PAT CAGR (5yr) (25.0).
 
 | Metric | Value | Score | Weight |
 |--------|-------|-------|--------|
-| Revenue CAGR 5yr | 20.0 | 75% | 10% |
-| PAT CAGR 5yr | 25.0 | 85% | 10% |
+| Revenue CAGR (5yr) | 20.0 | 75% | 10% |
+| PAT CAGR (5yr) | 25.0 | 85% | 10% |
 | Growth Quality Grade | Moderate | 50% | 5% |
 
 **Signals:** ✓ Minimal Equity Dilution | • Moderate Growth Quality
@@ -166,12 +166,12 @@ Generated: <generated>
 
 ## Longevity (L) — 6.1/10 (Weight: 20%)
 
-> Strong on FCF+ Years (9.0).
+> Strong on FCF Positive Count (10yr) (9.0).
 
 | Metric | Value | Score | Weight |
 |--------|-------|-------|--------|
-| FCF+ Years | 9.0 | 90% | 10% |
-| CAP Proxy | 6.0 | 60% | 10% |
+| FCF Positive Count (10yr) | 9.0 | 90% | 10% |
+| CAP Proxy (Consecutive yrs RoCE > CoE) | 6.0 | 60% | 10% |
 
 **Signals:** ✓ Consistent Free Cash Flow Generator | • Moderate Moat (Market Cap Proxy)
 
@@ -180,13 +180,13 @@ Generated: <generated>
 
 ## Price (P) — 4.3/10 (Weight: 15%)
 
-> Weak on PE TTM (30.0) and DCF Margin of Safety (-12.5).
+> Weak on P/E (TTM) (30.0) and DCF Margin of Safety (-12.5).
 
 | Metric | Value | Score | Weight |
 |--------|-------|-------|--------|
-| PE TTM | 30.0 | 35% | 6% |
+| P/E (TTM) | 30.0 | 35% | 6% |
 | DCF Margin of Safety | -12.5 | 30% | 5% |
-| P/E vs Traded History | 82.0 | 20% | 4% |
+| P/E Percentile (10yr traded range) | 82.0 | 20% | 4% |
 
 **Signals:** ✗ PE Above 75th Percentile — Expensive | ✗ DCF: Overvalued | ✗ Market Overpricing Growth (Reverse DCF)
 

@@ -461,15 +461,21 @@ class ReportGenerator:
     # set. Nothing here recomputes a number: the figures in this report and the
     # figures in the two above come from the same `result`.
 
-    def _clarity_registry(self):
+    def _metric_registry(self):
         """The metric registry the declarations live in, loaded once.
 
         The generator is handed an `AnalysisResult`, which carries computed
         values and no declarations — `presentation`, `name`, `element` and
-        `scoring.weight` all live in the registry. So the note loads its own
-        `ComputeEngine`, with default macro: nothing the note reads off a
-        metric config depends on a macro assumption, and the values it renders
-        were computed upstream by the service's engine, not by this one.
+        `scoring.weight` all live in the registry. So it loads its own
+        `ComputeEngine`, with default macro: nothing read off a metric config
+        depends on a macro assumption, and the values rendered were computed
+        upstream by the service's engine, not by this one.
+
+        Both report paths read it. The note needs the declarations; the legacy
+        drill-down needs the *name*, because the hand-maintained
+        `METRIC_DISPLAY_NAMES` disagrees with the registry on 39 of the 49
+        scored metrics and a default run now renders both documents for the
+        same company.
         """
         if self._registry is None:
             from boundless100x.compute_engine.engine import ComputeEngine
@@ -479,7 +485,7 @@ class ReportGenerator:
 
     def _clarity_vocabulary(self) -> Vocabulary:
         if self._vocabulary is None:
-            self._vocabulary = Vocabulary(self._clarity_registry().metrics)
+            self._vocabulary = Vocabulary(self._metric_registry().metrics)
         return self._vocabulary
 
     def _render_clarity(self, result, report_dir: Path, *,
@@ -531,7 +537,7 @@ class ReportGenerator:
         from boundless100x.compute_engine.eligibility import effective_gates
         from boundless100x.compute_engine.sector import SectorApplicability
 
-        engine = self._clarity_registry()
+        engine = self._metric_registry()
         vocabulary = self._clarity_vocabulary()
         configs = engine.metrics
         metadata = result.data.get("metadata", {})
@@ -1428,8 +1434,28 @@ class ReportGenerator:
             if weight == 0:
                 continue
 
-            element, display_name = METRIC_DISPLAY_NAMES.get(metric_id, (None, None))
-            if element is None:
+            # The registry first, `METRIC_DISPLAY_NAMES` only as a fallback.
+            #
+            # The two tables disagree on 39 of the 49 scored metrics ("Revenue
+            # CAGR 5yr" against "Revenue CAGR (5yr)"), which cost nothing while
+            # only one document rendered — but a default run now writes the
+            # dashboard and the research note for the same company, and the
+            # note reads the registry. Two spellings of one metric, side by
+            # side, in one run's output.
+            #
+            # It also closes the silent drop the problem frame names: a metric
+            # absent from the hand-maintained table used to vanish from the
+            # drill-down entirely rather than appear unlabelled. Today no
+            # scored metric is missing from it, so nothing is added here — the
+            # guard now catches only a metric absent from *both*, which a
+            # `custom/` drop-in could be.
+            config = self._metric_registry().metrics.get(metric_id) or {}
+            fallback_element, fallback_name = METRIC_DISPLAY_NAMES.get(
+                metric_id, (None, None)
+            )
+            element = config.get("element") or fallback_element
+            display_name = config.get("name") or fallback_name
+            if element is None or display_name is None:
                 continue
 
             score = info.get("score")

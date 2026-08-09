@@ -660,7 +660,9 @@ class TestTheLegacyReportIsFrozen:
         "| Small enough to multiply | **fail** |",
         "| Market not already pricing it | unknown |",
         "**Action capped to WATCHLIST**",
-        "| RoCE 5yr Avg | 22.0 | 82% | 12% |",
+        # The drill-down now labels metrics from the registry rather than the
+        # hand-maintained table, so this row reads "RoCE (5yr Avg)".
+        "| RoCE (5yr Avg) | 22.0 | 82% | 12% |",
         "### Cash Flow Quality",
         "### Shareholding Trend",
         "### The 4-Lever Earnings Decomposition",
