@@ -31,6 +31,33 @@ import plotly.io as pio
 logger = logging.getLogger(__name__)
 
 
+def _drawn(name: str, builder, *args) -> str:
+    """One builder's fragment, or `""` when it could not draw at all.
+
+    The contract above — a data gap costs one panel and never the report — is
+    honoured by every builder for the gaps it *anticipates*: a missing column,
+    an empty frame, a metric that did not compute. This extends the same
+    guarantee to the ones none of them anticipated, because the failure it was
+    written for is precisely the unanticipated kind:
+    `pe_band_chart_historical` reached `interpolate(method="time")` with a
+    `NaT` in its index and pandas raised `NotImplementedError` from three
+    frames down, which took out a CAPLIPOINT report whose JSON exports, copied
+    annual reports and *paid two-pass LLM analysis* were already on disk. One
+    panel was worth losing. The document was not.
+
+    Logged at `exception` rather than swallowed: a chart that silently stops
+    drawing is a defect that hides, and the golden comparison only notices the
+    missing container if someone reads the count. This buys the report a
+    degraded panel and a stack trace — it does not make a broken builder
+    correct.
+    """
+    try:
+        return builder(*args)
+    except Exception:
+        logger.exception("Chart %r failed to render — omitting that panel", name)
+        return ""
+
+
 def render_charts(result) -> dict:
     charts = {}
 
@@ -38,29 +65,29 @@ def render_charts(result) -> dict:
 
     ratios = result.data.get("ratios")
     if ratios is not None and not ratios.empty:
-        charts["roce_trend"] = roce_trend_chart(ratios)
+        charts["roce_trend"] = _drawn("roce_trend", roce_trend_chart, ratios)
 
     price = result.data.get("price")
     metrics = result.metrics
     if price is not None and not price.empty:
-        charts["pe_band"] = pe_band_chart(price, metrics)
+        charts["pe_band"] = _drawn("pe_band", pe_band_chart, price, metrics)
 
-    charts["growth"] = growth_chart(metrics)
+    charts["growth"] = _drawn("growth", growth_chart, metrics)
 
     # Shareholding: uses HTML table now, no chart needed
 
     # Feature 4: DCF gauge
-    dcf_chart = dcf_visualization(result)
+    dcf_chart = _drawn("dcf_gauge", dcf_visualization, result)
     if dcf_chart:
         charts["dcf_gauge"] = dcf_chart
 
     # Feature 5: Cash flow quality
-    cf_chart = cashflow_quality_chart(result)
+    cf_chart = _drawn("cashflow_quality", cashflow_quality_chart, result)
     if cf_chart:
         charts["cashflow_quality"] = cf_chart
 
     # Feature 7: Historical PE band
-    pe_hist = pe_band_chart_historical(result)
+    pe_hist = _drawn("pe_band_historical", pe_band_chart_historical, result)
     if pe_hist:
         charts["pe_band_historical"] = pe_hist
 
@@ -312,7 +339,31 @@ def pe_band_chart_historical(result) -> str:
         return ""
 
     # Parse fiscal year end dates (e.g., "Mar 2023" → 2023-03-31)
-    eps_dates = pd.to_datetime(df_fin["year"], format="%b %Y", errors="coerce") + pd.offsets.MonthEnd(0)
+    #
+    # `errors="coerce"` makes an unparseable label `NaT`, and a `NaT` reaching
+    # the index is not a cosmetic gap: `interpolate(method="time")` below raises
+    # `NotImplementedError` on it. That took the whole HTML report down *after*
+    # the JSON exports and a paid LLM run had already been written to disk.
+    #
+    # The label that gets this far is Screener's **fiscal-year-transition
+    # stub**. A company that moves its year end renders a part-year column —
+    # Caplin Point, which went from a June to a March year end, has
+    # `Mar 20169m` for the 9-month stub — and that starts with "Mar", so the
+    # `_annual` filter above admits it where it correctly drops `TTM`. Matching
+    # a prefix is not the same as parsing a date, which is the whole lesson.
+    #
+    # Dropping the row is the right *reading*, not just the safe one: a stub
+    # period has no well-defined year end to interpolate between, and its EPS
+    # covers nine months of earnings beside neighbours covering twelve.
+    parsed = pd.to_datetime(df_fin["year"], format="%b %Y", errors="coerce")
+    df_fin = df_fin[parsed.notna()]
+    eps_dates = parsed.dropna() + pd.offsets.MonthEnd(0)
+
+    # Re-checked after the drop, not just before it: the count that matters is
+    # how many points are left to interpolate between.
+    if len(df_fin) < 3:
+        return ""
+
     eps_series = pd.Series(df_fin["eps_num"].values, index=eps_dates).sort_index()
 
     # --- Standardize price data ---
