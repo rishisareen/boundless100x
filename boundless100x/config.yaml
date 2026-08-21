@@ -24,6 +24,22 @@ analysis_period:
 
 # ── Data Fetching ──
 fetching:
+  # Whether data fetches go through the machine's system proxy.
+  #
+  # False on purpose. Every source here is a public financial site, and a
+  # system proxy on a personal machine is usually an ad blocker or a VPN
+  # rather than the only way out — Magic Lasso Adblock's packet-tunnel
+  # extension advertises itself on an ephemeral loopback port, so HTTP_PROXY
+  # is set for every process without anyone configuring it. While such a proxy
+  # reloads its filter lists it refuses the CONNECT handshake, and every HTTPS
+  # fetch in that window dies three times over with
+  # "Tunnel connection failed: 400 Bad Request" for a failure retrying cannot
+  # fix. The port changes on each restart, so NO_PROXY is not a durable answer.
+  #
+  # Set true on a machine that reaches the internet only through its proxy.
+  # This governs FETCHING only; llm_layer/transport.py allowlists the proxy
+  # variables into the headless CLI's environment separately and on purpose.
+  use_system_proxy: false
   rate_limit_seconds: 2
   cache_ttl_hours: 24
   screener_base_url: "https://www.screener.in"

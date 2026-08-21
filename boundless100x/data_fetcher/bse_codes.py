@@ -23,6 +23,7 @@ import re
 import requests
 
 from boundless100x.data_fetcher.cache.cache_manager import CacheManager
+from boundless100x.data_fetcher.proxy import bypassed
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +59,29 @@ def _normalise_name(name: str) -> str:
 class BseCodeResolver:
     """Ticker -> BSE scrip code, from the exchange's own list."""
 
-    def __init__(self, cache_dir: str | None = None, timeout: int = 30):
+    def __init__(
+        self,
+        cache_dir: str | None = None,
+        timeout: int = 30,
+        use_system_proxy: bool = False,
+    ):
         self.cache = CacheManager(cache_dir=cache_dir, ttl_hours=CACHE_TTL_HOURS)
         self.timeout = timeout
         self._scrips: list[dict] | None = None
         self._index: dict | None = None
         self._lookup_failed = False
+        self.use_system_proxy = use_system_proxy
 
     # ── data ─────────────────────────────────────────────────────────────
 
     def _download_scrips(self) -> list[dict]:
-        response = requests.get(
-            SCRIP_MASTER_URL, headers=REQUEST_HEADERS, timeout=self.timeout
-        )
+        # The one network call in this module, and the only one that does not
+        # go through `BaseFetcher`'s session — so it needs the bypass applied
+        # directly. See data_fetcher/proxy.py.
+        with bypassed(self.use_system_proxy):
+            response = requests.get(
+                SCRIP_MASTER_URL, headers=REQUEST_HEADERS, timeout=self.timeout
+            )
         response.raise_for_status()
         return response.json()
 

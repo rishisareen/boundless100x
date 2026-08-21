@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from boundless100x.data_fetcher.base import BaseFetcher
+from boundless100x.data_fetcher.proxy import bypassed
 
 # Timeout for jugaad-data calls (seconds) — NSE often blocks/hangs
 JUGAAD_TIMEOUT = 15
@@ -79,13 +80,17 @@ class PriceVolumeFetcher(BaseFetcher):
 
             yf_ticker = f"{ticker}.NS"
             logger.debug(f"yfinance: downloading {yf_ticker}")
-            df = yf.download(
-                yf_ticker,
-                start=start.isoformat(),
-                end=end.isoformat(),
-                progress=False,
-                auto_adjust=False,
-            )
+            # yfinance takes no session of ours and reads the proxy variables
+            # out of the environment itself, so the bypass has to be applied
+            # to the environment for the duration of the call.
+            with bypassed(self.use_system_proxy):
+                df = yf.download(
+                    yf_ticker,
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                    progress=False,
+                    auto_adjust=False,
+                )
             if df.empty:
                 logger.warning(f"yfinance returned empty data for {yf_ticker}")
                 return None
@@ -113,12 +118,15 @@ class PriceVolumeFetcher(BaseFetcher):
             old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
             signal.alarm(JUGAAD_TIMEOUT)
             try:
-                df = stock_df(
-                    symbol=ticker,
-                    from_date=start,
-                    to_date=end,
-                    series="EQ",
-                )
+                # Reads the proxy variables from the environment, like
+                # yfinance above — see data_fetcher/proxy.py.
+                with bypassed(self.use_system_proxy):
+                    df = stock_df(
+                        symbol=ticker,
+                        from_date=start,
+                        to_date=end,
+                        series="EQ",
+                    )
             finally:
                 signal.alarm(0)  # Cancel the alarm
                 signal.signal(signal.SIGALRM, old_handler)

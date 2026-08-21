@@ -10,6 +10,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from boundless100x.data_fetcher.cache.cache_manager import CacheManager
+from boundless100x.data_fetcher.proxy import apply_to_session
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,19 @@ class BaseFetcher:
         rate_limit_seconds: float = 2.0,
         retry_count: int = 3,
         retry_delay_seconds: float = 5.0,
+        use_system_proxy: bool = False,
     ):
         self.cache = CacheManager(ttl_hours=cache_ttl_hours)
+        # Read by subclasses whose client reads os.environ itself rather than
+        # taking our session — yfinance and jugaad-data both do.
+        self.use_system_proxy = use_system_proxy
         self.rate_limit_seconds = rate_limit_seconds
         self._last_request_time: float = 0.0
 
         self.session = requests.Session()
+        # Public financial sites, reached directly. See data_fetcher/proxy.py
+        # for why the default steps around a system proxy rather than using it.
+        apply_to_session(self.session, use_system_proxy)
         self.session.headers.update(
             {
                 "User-Agent": (

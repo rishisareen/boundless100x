@@ -36,10 +36,17 @@ class DataFetcherSuite:
         cache_ttl = fetch_config.get("cache_ttl_hours", 24)
         retry_count = fetch_config.get("retry_count", 3)
 
+        # Default False: a system proxy on a personal machine is more often an
+        # ad blocker than required egress, and one refusing a CONNECT while it
+        # reloads kills a fetch that would otherwise have worked. See
+        # data_fetcher/proxy.py.
+        use_system_proxy = fetch_config.get("use_system_proxy", False)
+
         common_kwargs = {
             "rate_limit_seconds": rate_limit,
             "cache_ttl_hours": cache_ttl,
             "retry_count": retry_count,
+            "use_system_proxy": use_system_proxy,
         }
 
         self.financials = FinancialsFetcher(**common_kwargs)
@@ -50,7 +57,7 @@ class DataFetcherSuite:
         self.analyst_coverage = AnalystCoverageFetcher(**common_kwargs)
         self.annual_reports = AnnualReportDownloader(**common_kwargs)
         # Screener no longer carries the scrip code; BSE's own list does.
-        self._bse_codes = BseCodeResolver()
+        self._bse_codes = BseCodeResolver(use_system_proxy=use_system_proxy)
 
         self.analysis_years = config.get("analysis_period", {}).get("financials_years", 10)
         self.price_years = config.get("analysis_period", {}).get("price_history_years", 10)
