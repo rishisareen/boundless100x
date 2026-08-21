@@ -12,7 +12,10 @@ import pandas as pd
 from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup
 
-from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.base import (
+    UNSCORABLE_FLAGS,
+    MetricResult,
+)
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 # The shipped tax and slippage rates, so a lane section handed no assumptions
 # still states the numbers the model would actually have applied rather than a
@@ -296,7 +299,7 @@ class ReportGenerator:
         score_drilldown = self._build_score_drilldown(result)
         forward_signals = self._build_forward_signals(result)
         lane_status = self._build_lane_status(lane_context)
-        flags = self._collect_flags(result.metrics)
+        flags = self._collect_flags(result.metrics, result.scores)
         element_summaries = self._build_element_summaries(result, score_drilldown, flags)
 
         if "json" in formats:
@@ -374,7 +377,7 @@ class ReportGenerator:
                      lane_status: dict | None = None,
                      reading: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.html.j2")
-        flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
+        flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics, result.scores)
         return template.render(
             reading=reading,
             surface=HtmlComponents(),
@@ -422,7 +425,7 @@ class ReportGenerator:
                          forward_signals: dict | None = None,
                          lane_status: dict | None = None) -> str:
         template = self.env.get_template("sqglp_report.md.j2")
-        flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics)
+        flags = flags_precomputed if flags_precomputed is not None else self._collect_flags(result.metrics, result.scores)
         return template.render(
             ticker=result.ticker,
             metadata=result.data.get("metadata", {}),
@@ -527,7 +530,10 @@ class ReportGenerator:
         rebuilt here.
         """
         from boundless100x.compute_engine.eligibility import effective_gates
-        from boundless100x.compute_engine.sector import SectorApplicability
+        from boundless100x.compute_engine.sector import (
+            SectorApplicability,
+            applicability_labels,
+        )
 
         engine = self._metric_registry()
         vocabulary = self._reading_vocabulary()
@@ -536,7 +542,10 @@ class ReportGenerator:
 
         readings = read_metrics(
             configs, result.metrics or {},
-            sector=metadata.get("sector"),
+            # Both labels, exactly as the scorer asked — a reading layer that
+            # resolved a narrower set would describe metrics as withheld that
+            # the composite had counted, or the reverse.
+            sector=applicability_labels(metadata),
             applicability=SectorApplicability(configs.keys()),
         )
 
@@ -1777,16 +1786,35 @@ class ReportGenerator:
                 }
         return display
 
-    def _collect_flags(self, metrics: dict[str, MetricResult]) -> list[dict]:
+    def _collect_flags(
+        self, metrics: dict[str, MetricResult], scores: dict | None = None
+    ) -> list[dict]:
         """Collect all flags from metrics and humanize them.
 
         Returns list of dicts: [{"label": "High-Quality Growth", "sentiment": "good", "raw": "growth_quality_high_quality"}, ...]
+
+        Flags from a metric the sector table withdrew are dropped, unless that
+        entry asked to keep them. **This list is built from raw metric results
+        rather than from the scored details**, so it does not inherit the
+        scorer's suppression and has to apply the same rule itself — which is
+        why the decision travels on `scores["flags_suppressed"]` rather than
+        being re-derived here. Left alone, JIOFIN's Strengths opened with
+        "Cash Cow — Strong Cash Conversion" on a company whose operating cash
+        flow was -₹15,439 Cr, because `cash_conversion` had been withdrawn
+        from the score while its flag went on being rendered.
         """
+        suppressed, unscorable = _flag_bearing_metrics(scores)
         flags = []
         seen = set()
         for mid, result in metrics.items():
+            if mid in suppressed:
+                continue
             if result.ok and result.flags:
                 for f in result.flags:
+                    # An artefact's flags are artefacts, except the one that
+                    # says so.
+                    if mid in unscorable and f not in UNSCORABLE_FLAGS:
+                        continue
                     if f in seen:
                         continue
                     seen.add(f)
@@ -1846,3 +1874,26 @@ class ReportGenerator:
 
         with open(path, "w") as f:
             json.dump(data, f, indent=2, default=default_serializer)
+
+
+def _flag_bearing_metrics(scores: dict | None) -> tuple[set, set]:
+    """(fully suppressed, value-derived-flags suppressed) metric ids.
+
+    Two reasons a computed metric's flags must not reach a reader, and they
+    need separating because the second keeps one flag back:
+
+      * **withdrawn** — the sector table says the metric measures nothing here,
+        so it says nothing here at all (unless its entry kept its flags);
+      * **not a reading** — the value is an artefact, so every flag DERIVED
+        from that value is too. "Attractive Trailing PEG" survived the first
+        pass of this fix and led JIOFIN's Strengths list off a PEG of 0.29x
+        that the same report had already refused to score. The flag saying WHY
+        it is an artefact is the one thing worth keeping.
+    """
+    suppressed = set((scores or {}).get("flags_suppressed") or ())
+    details = (scores or {}).get("details") or {}
+    unscorable = {
+        metric_id for metric_id, detail in details.items()
+        if detail.get("waived") == "not_a_reading"
+    }
+    return suppressed, unscorable

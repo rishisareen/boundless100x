@@ -315,7 +315,7 @@ class LLMOrchestrator:
             sector=sector,
             market_cap=f"{market_cap:,.0f}" if market_cap else "N/A",
             quality_metrics=build_quality_metrics_context(metrics, scores),
-            flags=build_flags_context(metrics),
+            flags=build_flags_context(metrics, scores),
             promoter_data=build_promoter_context(metrics),
             sector_context=sector_context or "No sector context available.",
             announcements=announcements_context or "No corporate filings were read.",
@@ -352,7 +352,7 @@ class LLMOrchestrator:
             sector=sector,
             scores_summary=build_scores_summary(scores),
             key_metrics=build_key_metrics_context(metrics, scores),
-            flags=build_flags_context(metrics),
+            flags=build_flags_context(metrics, scores),
             qg_quadrant=build_qg_quadrant_context(metrics),
             pass1_output=pass1_text[:2000],  # Truncate
             growth_quality_report=build_growth_decomposition_context(growth_decomposition),

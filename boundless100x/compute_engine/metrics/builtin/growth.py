@@ -14,6 +14,41 @@ from boundless100x.compute_engine.metrics.builtin._helpers import (
 )
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
+# Below this share of the ending value, a starting value is not a base a growth
+# rate can be measured from.
+#
+# 5% means the series grew twentyfold across the window. No operating business
+# compounds like that; what does is a company that was not trading at the start
+# of it. JIOFIN was demerged from Reliance in 2023 and its first year shows
+# revenue of ₹45 Cr against ₹3,521 Cr three years later — a 328% "CAGR" that is
+# a fact about the demerger date, not about the business.
+#
+# Deliberately a test on the BASE rather than on the resulting rate. Both would
+# catch this case, but only this one can say why, and R7 needs a reason a
+# reader can act on rather than "the number looked too big".
+NEGLIGIBLE_BASE_SHARE = 0.05
+NEGLIGIBLE_BASE_FLAG = "cagr_off_negligible_base"
+
+
+def _negligible_base(start: float, end: float) -> bool:
+    """Whether `start` is too small a base to compound from.
+
+    Only meaningful when both ends are positive: a series crossing zero has
+    no compound rate at all, and every caller here already refuses that case.
+    """
+    if start <= 0 or end <= 0:
+        return False
+    return start < NEGLIGIBLE_BASE_SHARE * end
+
+
+def _base_effect_reason(label: str, start: float, end: float, years: int) -> str:
+    """The sentence that reaches the reader, in place of a rate."""
+    return (
+        f"{label} grew from {start:,.0f} to {end:,.0f} over {years} year(s) — a "
+        f"base too small to compound from, so the rate this implies describes "
+        f"when the company started rather than how fast it grows"
+    )
+
 
 def _cagr_from_values(
     values: pd.Series, years: int | None = None, smooth: bool = True
@@ -83,12 +118,105 @@ def compute_cagr(data: dict, params: dict) -> MetricResult:
     if actual_years < 3:
         flags.append("very_short_history_unreliable")
 
+    # The value is kept and shown; what the flag withdraws is its vote. See
+    # UNSCORABLE_FLAGS in metrics/base.py — the scorer waives it and the
+    # eligibility gates refuse to read it.
+    window = values.tail((years or actual_years) + 1)
+    start, end = float(window.iloc[0]), float(window.iloc[-1])
+    if _negligible_base(start, end):
+        flags.append(NEGLIGIBLE_BASE_FLAG)
+        meta = {
+            **meta,
+            "base_effect_reason": _base_effect_reason(
+                field.replace("_", " ").upper(), start, end, actual_years
+            ),
+        }
+
     return MetricResult(
         value=float(cagr),
         raw_series=values.tolist(),
         flags=flags,
         metadata=meta,
     )
+
+
+# A share count rising this much faster than net worth is a re-denomination of
+# the existing equity, not new money arriving. See `_restated_share_counts`.
+_REDENOMINATION_RATIO = 1.5
+
+
+def _restated_share_counts(
+    equity_capital: pd.Series, net_worth: pd.Series, face_value: float
+) -> tuple[pd.Series, list[dict]]:
+    """Share counts restated onto the latest basis, plus the events applied.
+
+    **A bonus issue is not dilution and must not read as book-value
+    destruction.** It moves reserves into equity capital: net worth is
+    unchanged, the share count rises, and every holder receives shares in
+    proportion. Book value per share therefore falls by arithmetic while
+    nothing whatever has happened to the owner. Dividing an unadjusted net
+    worth by an unadjusted share count charges the holder for it.
+
+    That is not a corner case here: **13 of the 22 cached tickers** carry such
+    a break inside the five-year window, and four produced readings that were
+    simply wrong — JIOFIN -92.8%/yr, IGIL -87.9%, TARSONS -54.0%, IXIGO -46.4%,
+    each scored a flat zero for having issued bonus shares or been demerged.
+
+    The test is the share-count jump *relative to the net-worth jump*, which is
+    what separates the two events that both raise the count:
+
+      * **Re-denomination** (bonus, split, demerger allotment) — capital is
+        reshuffled or the register is restated, so the count leaps while net
+        worth barely moves. Earlier counts are scaled up to today's basis.
+      * **Genuine issuance** (IPO, QIP, warrants, preferential allotment) —
+        cash arrives, so net worth rises roughly in step. Left alone
+        deliberately: real dilution SHOULD lower book value per share, and
+        suppressing it would defeat the reason this metric is per share at all.
+
+    **Where this stops working, stated rather than discovered later.** The two
+    effects can arrive in the same year — TARSONS and IXIGO both restructured
+    their registers and raised money at IPO (share counts 58x and 925x against
+    net worth 2.0x and 11.4x) — and the ratio still separates them, because no
+    raise multiplies the count by 58 at a sane price. What it cannot separate
+    is a raise priced below roughly 40% of book, where the count genuinely
+    outruns the money by more than half again; such a raise is read as a
+    re-denomination and its dilution is forgiven. That case is rare, severe
+    when it happens, and visible in `equity_dilution`, which measures the same
+    event on its own terms. A guard on net worth was tried instead and was
+    worse: BSE's 2025 bonus landed in a year its net worth rose 51%, so any
+    threshold low enough to catch a deep-discount raise also misread that.
+
+    Returns `(restated_shares, events)`, where a non-empty `events` is what the
+    caller flags.
+    """
+    raw = equity_capital / face_value
+    factors = pd.Series(1.0, index=raw.index)
+    events: list[dict] = []
+
+    positions = list(range(1, len(raw)))
+    for i in positions:
+        prev_shares, curr_shares = float(raw.iloc[i - 1]), float(raw.iloc[i])
+        prev_nw, curr_nw = float(net_worth.iloc[i - 1]), float(net_worth.iloc[i])
+        if prev_shares <= 0 or curr_shares <= 0 or prev_nw <= 0 or curr_nw <= 0:
+            continue
+
+        share_ratio = curr_shares / prev_shares
+        worth_ratio = curr_nw / prev_nw
+        if share_ratio <= _REDENOMINATION_RATIO:
+            continue
+        if share_ratio / worth_ratio <= _REDENOMINATION_RATIO:
+            # Money came in roughly in proportion — real dilution, left alone.
+            continue
+
+        # Everything before this year is denominated in pre-event shares.
+        factors.iloc[:i] *= share_ratio
+        events.append({
+            "at_index": i,
+            "share_ratio": round(share_ratio, 3),
+            "net_worth_ratio": round(worth_ratio, 3),
+        })
+
+    return raw * factors, events
 
 
 def compute_book_value_cagr(data: dict, params: dict) -> MetricResult:
@@ -105,6 +233,10 @@ def compute_book_value_cagr(data: dict, params: dict) -> MetricResult:
     shares has grown nothing for the holder, and this registry's own dilution
     metric shows exactly that pattern is live: EDELWEISS diluted 17% in five
     years. Aggregate net worth would have scored that as growth.
+
+    Share counts are restated for bonus issues and splits first — see
+    `_restated_share_counts` for why that is not the same as forgiving
+    dilution.
     """
     years = params.get("years", 5)
     bs = _get_annual_rows(data["balance_sheet"], years + 1)
@@ -124,9 +256,31 @@ def compute_book_value_cagr(data: dict, params: dict) -> MetricResult:
     reserves = pd.to_numeric(bs["reserves"], errors="coerce")
     net_worth = (equity_capital + reserves)
 
-    # Shares outstanding move year to year, which is the whole point — a fixed
-    # latest-year count applied across the series would hide every issuance.
-    shares = equity_capital / float(face_value)
+    usable = equity_capital.notna() & reserves.notna()
+    equity_capital, net_worth = equity_capital[usable], net_worth[usable]
+    if len(net_worth) < 2:
+        return MetricResult(error="Insufficient book value history")
+
+    # A window containing a year of negative net worth has no compound rate.
+    # Refusing it is not fussiness: IGIL's reserves sit at -605 in Dec 2023
+    # between a positive opening and a positive close, and compounding across
+    # that reported -87.9%/yr — a number describing a balance-sheet
+    # restructuring, not a shrinking book. It also breaks the re-denomination
+    # test above, which needs a positive prior net worth to compare against.
+    if (net_worth <= 0).any():
+        negative_years = int((net_worth <= 0).sum())
+        return MetricResult(
+            error=(
+                f"net worth was zero or negative in {negative_years} of the "
+                f"{len(net_worth)} years shown, so there is no compound rate to "
+                f"measure — book value per share cannot compound through a "
+                f"deficit"
+            )
+        )
+
+    shares, events = _restated_share_counts(
+        equity_capital, net_worth, float(face_value)
+    )
     bvps = (net_worth / shares).replace([float("inf"), float("-inf")], pd.NA).dropna()
 
     if len(bvps) < 2:
@@ -144,10 +298,17 @@ def compute_book_value_cagr(data: dict, params: dict) -> MetricResult:
     actual_years = meta["years_actual"]
     if actual_years < years:
         flags.append(f"insufficient_history_{actual_years}yr_of_{years}yr")
+    if events:
+        flags.append("share_count_restated")
     if cagr < 0:
         flags.append("book_value_eroding")
 
-    meta = {**meta, "latest_bvps": float(bvps.iloc[-1]), "face_value": float(face_value)}
+    meta = {
+        **meta,
+        "latest_bvps": float(bvps.iloc[-1]),
+        "face_value": float(face_value),
+        "redenomination_events": events,
+    }
     return MetricResult(
         value=float(cagr),
         raw_series=[float(v) for v in bvps.tolist()],
@@ -776,8 +937,25 @@ def _synthesize_growth_quality(
 PEG_DENOMINATOR_LABEL = "P/E ÷ 5yr PAT CAGR"
 
 
-def _peg_verdict(pe_to_pat_cagr: float | None, quality_flag: str) -> str:
-    """One-sentence PEG verdict per the 100-bagger golden rule."""
+def _peg_verdict(
+    pe_to_pat_cagr: float | None, quality_flag: str, base_effect: str = ""
+) -> str:
+    """One-sentence PEG verdict per the 100-bagger golden rule.
+
+    `base_effect`, when set, is the reason the denominator is not a growth
+    rate, and it replaces the verdict entirely rather than qualifying it. This
+    line is the most quotable sentence the report produces — for JIOFIN it read
+    "0.29x is below 1.0 — the golden rule for 100-baggers... the valuation
+    appears justified and attractive" about a P/E of 78 divided by a CAGR
+    measured from a post-demerger base of ₹31 Cr. A caveat appended to that
+    would not have undone it.
+    """
+    if base_effect:
+        return (
+            f"No PEG verdict: {base_effect}. Dividing the P/E by that rate "
+            f"produces a low number for a company that may be expensive, so "
+            f"nothing about the valuation follows from it."
+        )
     if pe_to_pat_cagr is None:
         return (
             f"{PEG_DENOMINATOR_LABEL} cannot be computed (negative or zero "
@@ -935,12 +1113,28 @@ def compute_lever_decomposition_table(
         else None
     )
 
+    # The same base-effect test the scored PEG metrics apply, asked of this
+    # section's own denominator so the two cannot disagree about whether the
+    # growth rate is real.
+    pat_series = pd.to_numeric(df["pat"], errors="coerce").dropna() if "pat" in df.columns else pd.Series(dtype=float)
+    peg_base_effect = ""
+    if len(pat_series) >= 2:
+        window = pat_series.tail(6)
+        pat_start, pat_end = float(window.iloc[0]), float(window.iloc[-1])
+        if _negligible_base(pat_start, pat_end):
+            peg_base_effect = _base_effect_reason(
+                "PAT", pat_start, pat_end, len(window) - 1
+            )
+
     valuation_check = {
         "current_pe": current_pe,
         "pat_cagr_5yr": pat_cagr_5,
         "pe_to_pat_cagr_5yr": pe_to_pat_cagr_5yr,
         "peg_label": PEG_DENOMINATOR_LABEL,
-        "verdict": _peg_verdict(pe_to_pat_cagr_5yr, growth_synthesis["quality_flag"]),
+        "base_effect": peg_base_effect,
+        "verdict": _peg_verdict(
+            pe_to_pat_cagr_5yr, growth_synthesis["quality_flag"], peg_base_effect
+        ),
     }
 
     return {

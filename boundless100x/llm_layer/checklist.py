@@ -1,11 +1,49 @@
 """QGLP checklist — maps computed metrics to structured LLM context."""
 
-from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.base import UNSCORABLE_FLAGS, MetricResult
 from boundless100x.compute_engine.sector import (
     classify_sector,
     structure_caveat,
     study_findings,
 )
+
+
+# ── What the score did NOT count ──────────────────────────────────────────
+#
+# Two ways a computed figure can fail to reach a score, and the model needs to
+# be told which, because they call for different reasoning:
+#
+#   WITHDRAWN — the sector table says the metric measures nothing for a company
+#   of this kind. Shown, because the observation can still matter (4x leverage
+#   is 4x leverage), but never as a mark out of ten. Left unmarked, Pass 2 read
+#   JIOFIN's EV/EBITDA of 78.05x — a ratio the same run had already called
+#   meaningless for a lender — and spent a red flag on it.
+#
+#   NOT A READING — arithmetically correct and not evidence, e.g. a 269% CAGR
+#   measured from a post-demerger base of ₹31 Cr. The scorer waives these and
+#   the eligibility gates refuse them; the prompt has to say so too, or the
+#   model is the only layer still treating the number as a fact.
+
+
+def _withdrawn_metrics(scores: dict | None) -> dict[str, str]:
+    return dict((scores or {}).get("not_applicable") or {})
+
+
+def _unscorable_metrics(scores: dict | None) -> dict[str, str]:
+    details = (scores or {}).get("details") or {}
+    return {
+        metric_id: detail.get("waived", "")
+        for metric_id, detail in details.items()
+        if detail.get("waived") == "not_a_reading"
+    }
+
+
+def _score_status(metric_id: str, withdrawn: dict, unscorable: dict) -> str:
+    if metric_id in withdrawn:
+        return "  [WITHDRAWN — does not measure anything for this kind of company"
+    if metric_id in unscorable:
+        return "  [NOT A READING — excluded from the score and from the 100x gates"
+    return ""
 
 
 def build_quality_metrics_context(
@@ -14,6 +52,8 @@ def build_quality_metrics_context(
 ) -> str:
     """Format computed quality/growth/longevity metrics for LLM prompt."""
     lines = []
+    withdrawn = _withdrawn_metrics(scores)
+    unscorable = _unscorable_metrics(scores)
 
     metric_display = {
         "roce_5yr_avg": ("RoCE 5yr avg", "%"),
@@ -57,18 +97,37 @@ def build_quality_metrics_context(
             if isinstance(val, float):
                 val = round(val, 2)
             lines.append(f"- {label}: {val}{unit}")
-            if result.flags:
+            status = _score_status(metric_id, withdrawn, unscorable)
+            if status:
+                reason = withdrawn.get(metric_id, "")
+                lines.append(f"{status}{(': ' + reason) if reason else ''}]")
+            elif result.flags:
                 lines.append(f"  Flags: {', '.join(result.flags)}")
 
     return "\n".join(lines) if lines else "No computed quality metrics available."
 
 
-def build_flags_context(metrics: dict[str, MetricResult]) -> str:
-    """Extract all computed flags across metrics for LLM context."""
+def build_flags_context(
+    metrics: dict[str, MetricResult], scores: dict | None = None
+) -> str:
+    """Extract all computed flags across metrics for LLM context.
+
+    Flags from a withdrawn metric are dropped unless its table entry kept them
+    — the same rule the report's signal list applies, so the model and the
+    reader are not shown different evidence about the same company.
+    """
+    suppressed = set((scores or {}).get("flags_suppressed") or ())
+    unscorable = set(_unscorable_metrics(scores))
     all_flags = []
     for metric_id, result in metrics.items():
+        if metric_id in suppressed:
+            continue
         if result.ok and result.flags:
             for flag in result.flags:
+                # A flag derived from an artefact is an artefact; the flag
+                # naming the artefact is not.
+                if metric_id in unscorable and flag not in UNSCORABLE_FLAGS:
+                    continue
                 all_flags.append(f"[{metric_id}] {flag}")
 
     return "\n".join(all_flags) if all_flags else "No flags raised."
@@ -136,6 +195,8 @@ def build_key_metrics_context(
 ) -> str:
     """Build condensed key metrics context for Pass 2."""
     lines = []
+    withdrawn = _withdrawn_metrics(scores)
+    unscorable = _unscorable_metrics(scores)
 
     key_metrics = [
         ("roce_5yr_avg", "RoCE 5yr avg", "%"),
@@ -163,7 +224,13 @@ def build_key_metrics_context(
             val = result.value
             if isinstance(val, float):
                 val = round(val, 2)
-            lines.append(f"- {label}: {val}{unit}")
+            status = _score_status(metric_id, withdrawn, unscorable)
+            suffix = ""
+            if metric_id in withdrawn:
+                suffix = "   [WITHDRAWN — not scored; measures nothing for this kind of company]"
+            elif metric_id in unscorable:
+                suffix = "   [NOT A READING — an artefact of a tiny base, not scored and not gated]"
+            lines.append(f"- {label}: {val}{unit}{suffix}")
 
     return "\n".join(lines) if lines else "No key metrics available."
 

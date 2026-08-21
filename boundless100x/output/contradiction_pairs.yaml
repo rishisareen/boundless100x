@@ -104,6 +104,35 @@ pairs:
       — which points at the cash-flow series rather than at the price, and the
       outlier flags on the free-cash-flow metrics are where to look.
 
+  cheap_on_book_but_earning_below_cost_of_equity:
+    label: "Cheap against book value; the book barely earns"
+    sides:
+      - kind: metric
+        id: price_to_book
+        # Only the bottom band. At 1.5-5x ("moderate") a reader is not being
+        # told the shares are cheap, so a weak return there is a disappointing
+        # company rather than two readings in conflict.
+        when:
+          band_in: ["at or below book"]
+      - kind: metric
+        id: roe_5yr_avg
+        when:
+          band_in: ["weak"]
+    reason: >-
+      These shares cost about what the company's own net worth is carried at,
+      which reads as cheap — and the same net worth has been earning a return
+      below what equity costs. Both are answers to "is this good value", so
+      they cannot both be right. Price-to-book only means cheap if the book
+      earns: a business making 20% on its equity is worth several times what
+      that equity is carried at, and one making 2% is worth less than it,
+      because a rupee inside this company is compounding more slowly than the
+      same rupee elsewhere. Check which way the return is moving before
+      reading the multiple as a discount. A book that is starting to earn
+      makes this the interesting case; a book that has earned this little for
+      years usually means the carrying value is the optimistic number, and
+      what looks like a discount to assets is the market's estimate of what
+      those assets will actually produce.
+
 # ── Considered and deliberately NOT declared ──────────────────────────────
 #
 # A wrong pair makes a section longer and tells the reader to reconcile two

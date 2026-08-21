@@ -73,6 +73,12 @@ from tests.conftest import latest_scores_for
 
 # The one shipped pair, and the two readings it names.
 SHIPPED_PAIR = "cheap_on_dcf_but_entry_price_gate_failed"
+BOOK_PAIR = "cheap_on_book_but_earning_below_cost_of_equity"
+SHIPPED_PAIRS = [BOOK_PAIR, SHIPPED_PAIR]
+# Either side of `price_to_book`'s bottom band (1.5x) and `roe_5yr_avg`'s
+# "solid" line (15%), so each test states which corner it is standing in.
+CHEAP_BOOK, DEAR_BOOK = 1.16, 6.0        # -> "at or below book" / "rich"
+WEAK_ROE, SOLID_ROE = 0.91, 18.0         # -> "weak" / "solid"
 FAVOURABLE_DCF = 30.0        # -> "comfortable margin"
 UNFAVOURABLE_DCF = -50.0     # -> "above fair value"
 
@@ -156,6 +162,61 @@ def one_pair(sides, **overrides):
 
 
 # ── Firing and not firing ─────────────────────────────────────────────────
+
+
+class TestTheBookValuePairFires:
+    """P/B and RoE answer the same question — "is this good value" — and a book
+    priced at par that earns 0.91% is the case where they answer it opposite
+    ways. JIOFIN scored 83% on price-to-book while earning less than a tenth of
+    its cost of equity on that book, and nothing on the page reconciled them.
+    """
+
+    def _readings(self, metric_configs, pb, roe):
+        return {
+            "price_to_book": reading_for(metric_configs, "price_to_book", pb),
+            "roe_5yr_avg": reading_for(metric_configs, "roe_5yr_avg", roe),
+        }
+
+    def test_cheap_book_and_weak_return_contradict(self, pairs, metric_configs):
+        readings = self._readings(metric_configs, CHEAP_BOOK, WEAK_ROE)
+
+        outcome = pairs.evaluate("price_to_book", readings, {})
+
+        assert outcome["contradicts"] is True
+        assert outcome["reasons"] == [pairs.pairs[BOOK_PAIR]["reason"]]
+
+    def test_it_is_stated_in_the_return_section_as_well(self, pairs, metric_configs):
+        """R9: no roll-up. A reader in Quality — Business must be told too."""
+        readings = self._readings(metric_configs, CHEAP_BOOK, WEAK_ROE)
+
+        assert pairs.evaluate("roe_5yr_avg", readings, {})["contradicts"] is True
+
+    def test_a_cheap_book_that_actually_earns_does_not_fire(
+        self, pairs, metric_configs
+    ):
+        """The whole point of the pair — cheap AND earning is not a conflict,
+        it is the case an owner is looking for."""
+        readings = self._readings(metric_configs, CHEAP_BOOK, SOLID_ROE)
+
+        assert pairs.evaluate("price_to_book", readings, {})["contradicts"] is False
+
+    def test_a_weak_return_priced_richly_does_not_fire(self, pairs, metric_configs):
+        """Also not a contradiction: both readings say the same discouraging
+        thing, and the trigger exists for disagreement rather than for bad
+        news."""
+        readings = self._readings(metric_configs, DEAR_BOOK, WEAK_ROE)
+
+        assert pairs.evaluate("price_to_book", readings, {})["contradicts"] is False
+
+    def test_the_middle_band_is_deliberately_outside_the_pair(
+        self, pairs, metric_configs
+    ):
+        """1.5-5x reads "moderate", which does not tell a reader the shares are
+        cheap — so a weak return there is a disappointing company rather than
+        two readings in conflict."""
+        readings = self._readings(metric_configs, 2.66, WEAK_ROE)
+
+        assert pairs.evaluate("price_to_book", readings, {})["contradicts"] is False
 
 
 class TestTheDeclaredPairFires:
@@ -709,12 +770,12 @@ class TestShippedDeclaration:
 
         assert errors == []
 
-    def test_the_shipped_file_declares_the_one_surviving_instance(self, pairs):
-        """One entry, on purpose. KTD4 bounds coverage to what somebody wrote
-        down, and padding the list to justify the trigger would defeat the
-        reason it is curated rather than detected. If this count changes, the
+    def test_the_shipped_file_declares_exactly_the_curated_pairs(self, pairs):
+        """A short list, on purpose. KTD4 bounds coverage to what somebody
+        wrote down, and padding it to justify the trigger would defeat the
+        reason it is curated rather than detected. If this list changes, the
         new entry needs its own firing and non-firing tests above."""
-        assert list(pairs.pairs) == [SHIPPED_PAIR]
+        assert sorted(pairs.pairs) == sorted(SHIPPED_PAIRS)
 
     def test_every_declared_reason_reconciles_rather_than_labels(self, pairs):
         """Not a length check for its own sake: "these disagree" passes a

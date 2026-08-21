@@ -54,6 +54,13 @@ APPLICABILITY_VERDICTS = (APPLIES, DOES_NOT_APPLY, INDETERMINATE)
 # this table exists to prevent, arrived at by a spelling mistake.
 _SECTOR_ENTRY_KEYS = frozenset({"label", "not_applicable"})
 
+# Keys an individual exclusion may carry when written in its long form. The
+# short form — `metric_id: "reason"` — is equivalent to `{reason: "..."}` with
+# flags suppressed. Same allowlist reasoning as `_SECTOR_ENTRY_KEYS`: a
+# misspelled `keep_flag:` would silently suppress a warning somebody meant to
+# keep, and nothing at runtime would say so.
+_EXCLUSION_KEYS = frozenset({"reason", "keep_flags"})
+
 
 @lru_cache(maxsize=4)
 def load_sector_context(path: str | None = None) -> dict:
@@ -151,6 +158,22 @@ def group_structure(metadata: dict | None) -> dict:
             outcome["label"] = label
             return outcome
     return outcome
+
+
+def applicability_labels(metadata: dict | None) -> tuple[str, ...]:
+    """The labels an applicability lookup should be made against.
+
+    The broad `sector` breadcrumb and, when present, the narrower
+    `sector_industry`. Both describe the same company, so a rule written about
+    either applies — which is what lets an entry be keyed on "Investment
+    Company" when every such company's *sector* reads "Finance". One place
+    rather than at each call site, because the scorer and the reading layer
+    must ask the identical question or the report will describe a metric the
+    composite did not withhold.
+    """
+    meta = metadata or {}
+    labels = [meta.get("sector"), meta.get("sector_industry")]
+    return tuple(str(x) for x in labels if x is not None and str(x).strip())
 
 
 def structure_caveat(metadata: dict | None) -> str:
@@ -258,10 +281,33 @@ def validate_sector_applicability(
             )
             continue
 
-        for metric_id, reason in excluded.items():
+        for metric_id, declared in excluded.items():
             where = f"{sector}.not_applicable.{metric_id}"
             if metric_id not in known:
                 errors.append(f"{where}: unknown metric id {metric_id!r}")
+
+            # Two declaration forms. A bare string is the reason and suppresses
+            # the metric's flags; a mapping carries the same reason and may add
+            # `keep_flags: true`. Both are validated for the reason, because
+            # that string is what R7 puts in front of the reader either way.
+            if isinstance(declared, dict):
+                unknown_keys = sorted(set(declared) - _EXCLUSION_KEYS)
+                if unknown_keys:
+                    errors.append(
+                        f"{where}: unknown key(s) {', '.join(unknown_keys)} — "
+                        f"expected {', '.join(sorted(_EXCLUSION_KEYS))}"
+                    )
+                if "keep_flags" in declared and not isinstance(
+                    declared["keep_flags"], bool
+                ):
+                    errors.append(
+                        f"{where}.keep_flags must be true or false, not "
+                        f"{declared['keep_flags']!r}"
+                    )
+                reason = declared.get("reason")
+            else:
+                reason = declared
+
             if not isinstance(reason, str) or not reason.strip():
                 errors.append(
                     f"{where}: needs a reason a reader can act on, not "
@@ -315,31 +361,92 @@ class SectorApplicability:
         # rather than with `lru_cache`, which would keep `self` alive in a
         # module-level cache; keyed on the sector string, so two companies can
         # never share an answer that was not already identical by definition.
-        self._matches_cache: dict[str, list[str]] = {}
+        self._matches_cache: dict[tuple[str, ...], list[str]] = {}
 
-    def matching_sectors(self, sector: str | None) -> list[str]:
-        """Every declared sector key this company's sector falls under.
+    @staticmethod
+    def _labels(sector) -> tuple[str, ...]:
+        """Normalise one label or several into the tuple the matcher walks.
+
+        Callers pass a company's `sector` breadcrumb and, where it has one, its
+        narrower `sector_industry`. Both describe the same company and both may
+        carry rules, so both are matched and their exclusions merge — that is
+        what lets an entry be written about "Investment Company" when every
+        such company's *sector* reads "Finance".
+        """
+        if sector is None:
+            return ()
+        if isinstance(sector, str):
+            candidates = [sector]
+        else:
+            candidates = list(sector)
+        return tuple(
+            str(label) for label in candidates
+            if label is not None and str(label).strip()
+        )
+
+    def matching_sectors(self, sector) -> list[str]:
+        """Every declared sector key this company falls under.
 
         Shortest key first. Two keys can legitimately match one company — a
         future "Housing Finance" entry beside "Finance" is true of the same
-        housing financier — and both claims hold, so their exclusions merge.
-        Ordering by length means the narrower entry's wording wins where both
-        name the same metric, since it was written about this kind of company
-        specifically.
+        housing financier, and "Investment Company" is true of a lender that is
+        also a holding vehicle — and both claims hold, so their exclusions
+        merge. Ordering by length means the narrower entry's wording wins where
+        both name the same metric, since it was written about this kind of
+        company specifically.
         """
-        if not sector or not str(sector).strip():
+        labels = self._labels(sector)
+        if not labels:
             return []
 
-        key = str(sector)
-        if key not in self._matches_cache:
-            self._matches_cache[key] = sorted(
-                (declared for declared in self.table if _matches(key, declared)),
+        if labels not in self._matches_cache:
+            matched = {
+                declared
+                for declared in self.table
+                for label in labels
+                if _matches(label, declared)
+            }
+            self._matches_cache[labels] = sorted(
+                matched,
                 key=lambda declared: (len(_normalise(declared)), declared),
             )
         # A copy: the list is handed to callers and reaches `matched_sectors`
         # on every outcome, and a shared mutable would let one reader's edit
         # rewrite what the next one is told.
-        return list(self._matches_cache[key])
+        return list(self._matches_cache[labels])
+
+    @staticmethod
+    def _entry_reason(declared) -> str:
+        """The reason out of either declaration form. See `_SECTOR_ENTRY_KEYS`."""
+        if isinstance(declared, dict):
+            return str(declared.get("reason", ""))
+        return str(declared)
+
+    @staticmethod
+    def _entry_keeps_flags(declared) -> bool:
+        """Whether this metric's flags survive being declared inapplicable.
+
+        **Suppression is the default, and the asymmetry is the point.** A
+        metric that measures nothing here says nothing here — so
+        `cash_conversion`, withdrawn from a lender's score, must not go on
+        emitting `cash_cow` into the report's Strengths list. JIOFIN carried
+        exactly that: "Cash Cow — Strong Cash Conversion", top of the
+        strengths, on a company whose operating cash flow was -₹15,439 Cr.
+
+        The exception is a metric whose *reading* is sound and whose
+        *threshold* is not. Debt/equity of 4x is 4x however you score it, and
+        `debt_risk` is a real warning that a lender's owner still needs; only
+        the mark out of ten was calibrated for a manufacturer. Those entries
+        say `keep_flags: true` and have to argue for it.
+        """
+        return bool(declared.get("keep_flags")) if isinstance(declared, dict) else False
+
+    def _declarations(self, sector: str | None,
+                      matched: list[str] | None = None) -> dict:
+        merged: dict = {}
+        for key in (self.matching_sectors(sector) if matched is None else matched):
+            merged.update((self.table[key] or {}).get("not_applicable") or {})
+        return merged
 
     def not_applicable_metrics(self, sector: str | None,
                                matched: list[str] | None = None) -> dict[str, str]:
@@ -351,10 +458,19 @@ class SectorApplicability:
         `matched` lets a caller that has already resolved the sector pass it in
         rather than have it resolved twice in one call.
         """
-        merged: dict[str, str] = {}
-        for key in (self.matching_sectors(sector) if matched is None else matched):
-            merged.update((self.table[key] or {}).get("not_applicable") or {})
-        return merged
+        return {
+            metric_id: self._entry_reason(declared)
+            for metric_id, declared in self._declarations(sector, matched).items()
+        }
+
+    def flag_suppressed_metrics(self, sector: str | None,
+                                matched: list[str] | None = None) -> set[str]:
+        """Inapplicable metrics whose flags must not reach a reader either."""
+        return {
+            metric_id
+            for metric_id, declared in self._declarations(sector, matched).items()
+            if not self._entry_keeps_flags(declared)
+        }
 
     def evaluate(self, metric_id: str, sector: str | None) -> dict:
         """Whether `metric_id` measures anything for a company in `sector`.
@@ -384,7 +500,7 @@ class SectorApplicability:
             )
             return outcome
 
-        if not sector or not str(sector).strip():
+        if not self._labels(sector):
             outcome["reason"] = (
                 "No sector is recorded for this company, so whether its metrics "
                 "fit could not be judged — refetch to pick up the sector "
@@ -396,8 +512,9 @@ class SectorApplicability:
         outcome["matched_sectors"] = matched
         if not matched:
             outcome["reason"] = (
-                f"'{sector}' has not been reviewed against the metric set, so "
-                f"whether this metric measures anything here is unknown"
+                f"'{', '.join(self._labels(sector))}' has not been reviewed "
+                f"against the metric set, so whether this metric measures "
+                f"anything here is unknown"
             )
             return outcome
 

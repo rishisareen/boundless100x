@@ -8,6 +8,11 @@ from boundless100x.compute_engine.metrics.builtin._helpers import (
     detect_fcf_outliers,
     period_end_date,
 )
+from boundless100x.compute_engine.metrics.builtin.growth import (
+    NEGLIGIBLE_BASE_FLAG,
+    _base_effect_reason,
+    _negligible_base,
+)
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
 
 
@@ -157,10 +162,17 @@ def compute_peg(data: dict, params: dict) -> MetricResult:
     elif peg > 2.5:
         flags.append("expensive_peg")
 
+    metadata = {"pe": pe, "eps_cagr": eps_cagr}
+    if _negligible_base(start, end):
+        flags.append(NEGLIGIBLE_BASE_FLAG)
+        metadata["base_effect_reason"] = _base_effect_reason(
+            "EPS", start, end, actual_years
+        )
+
     return MetricResult(
         value=float(peg),
         flags=flags,
-        metadata={"pe": pe, "eps_cagr": eps_cagr},
+        metadata=metadata,
     )
 
 
@@ -194,10 +206,22 @@ def compute_trailing_peg(data: dict, params: dict) -> MetricResult:
     if tpeg < 1.0:
         flags.append("attractive_trailing_peg")
 
+    # A PEG is only as good as its denominator. JIOFIN divided a P/E of 78 by
+    # a 269% "CAGR" measured from a post-demerger base of ₹31 Cr and came out
+    # at 0.29x — the single heaviest metric in its Price element, and the one
+    # that carried its entry-price gate. The number is kept and shown; the flag
+    # is what stops it scoring and stops it gating (UNSCORABLE_FLAGS).
+    metadata = {"pe": pe, "pat_cagr": pat_cagr, "years": actual_years}
+    if _negligible_base(start, end):
+        flags.append(NEGLIGIBLE_BASE_FLAG)
+        metadata["base_effect_reason"] = _base_effect_reason(
+            "PAT", start, end, actual_years
+        )
+
     return MetricResult(
         value=float(tpeg),
         flags=flags,
-        metadata={"pe": pe, "pat_cagr": pat_cagr, "years": actual_years},
+        metadata=metadata,
     )
 
 

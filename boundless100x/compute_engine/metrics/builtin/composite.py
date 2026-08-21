@@ -7,6 +7,28 @@ from boundless100x.compute_engine.metrics.builtin.profitability import _get_annu
 from boundless100x.compute_engine.sector import group_structure, structure_caveat
 
 
+# Above this share of total assets, the balance sheet is a portfolio with a
+# business attached rather than the other way round. Half is a deliberately
+# unambitious line: an operating company parking surplus cash rarely approaches
+# it, and the cases this is written about sit far above — JIOFIN at 81%.
+_INVESTMENT_HEAVY = 0.50
+
+
+def _investment_share(balance_sheet) -> float | None:
+    """Investments as a share of total assets, or None if not readable."""
+    if balance_sheet is None or getattr(balance_sheet, "empty", True):
+        return None
+    if not {"investments", "total_assets"} <= set(balance_sheet.columns):
+        return None
+
+    rows = _get_annual_rows(balance_sheet, 1)
+    investments = pd.to_numeric(rows["investments"], errors="coerce").dropna()
+    assets = pd.to_numeric(rows["total_assets"], errors="coerce").dropna()
+    if investments.empty or assets.empty or float(assets.iloc[-1]) <= 0:
+        return None
+    return float(investments.iloc[-1]) / float(assets.iloc[-1])
+
+
 def compute_qg_quadrant(data: dict, params: dict) -> MetricResult:
     """Quality-Growth Matrix position.
 
@@ -64,8 +86,30 @@ def compute_qg_quadrant(data: dict, params: dict) -> MetricResult:
     # The corner is still computed and still shown; what travels with it is
     # the warning that its inputs were blended.
     flags = []
+    caveat = structure_caveat(data.get("metadata"))
     if group_structure(data.get("metadata")).get("is_group"):
         flags.append("consolidated_group_ratios")
+
+    # **How much of the balance sheet is somebody else's equity.** The single
+    # number that separates "this company allocates capital badly" from "this
+    # company is a holding vehicle and most of its return never touches the
+    # income statement". JIOFIN reads 81% — ₹133,089 Cr of investments against
+    # ₹163,467 Cr of assets, mostly a 6.1% stake in Reliance — and on that
+    # basis a 0.91% RoE is arithmetic rather than a verdict on management.
+    # Without it, a reader has the low returns and no way to explain them.
+    investment_share = _investment_share(data.get("balance_sheet"))
+    if investment_share is not None and investment_share >= _INVESTMENT_HEAVY:
+        flags.append("investment_heavy_balance_sheet")
+        caveat = (caveat + " " if caveat else "") + (
+            f"INVESTMENT-HEAVY: {investment_share:.0%} of total assets are "
+            f"investments in other companies rather than assets this one "
+            f"operates. A listed holding of that size returns through its own "
+            f"share price rather than through this company's profit, so return "
+            f"measures computed on the full equity base understate it by "
+            f"construction — read them as a statement about how hard the "
+            f"capital is being worked, not about the quality of the operating "
+            f"businesses, and value those separately."
+        )
 
     return MetricResult(
         value=quadrant,
@@ -75,6 +119,7 @@ def compute_qg_quadrant(data: dict, params: dict) -> MetricResult:
             "pat_cagr": pat_cagr,
             "quality_threshold": quality_threshold,
             "growth_threshold": growth_threshold,
-            "structure_caveat": structure_caveat(data.get("metadata")),
+            "investment_share": investment_share,
+            "structure_caveat": caveat,
         },
     )

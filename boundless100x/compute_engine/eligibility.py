@@ -13,6 +13,8 @@ config edit, matching the metric registry's own pattern.
 
 import logging
 
+from boundless100x.compute_engine.metrics.base import is_scorable
+
 logger = logging.getLogger(__name__)
 
 COMPARATORS = {
@@ -83,18 +85,29 @@ class EligibilityEvaluator:
     def __init__(self, gates: dict | None = None):
         self.gates = gates if gates is not None else DEFAULT_GATES
 
-    def evaluate(self, metrics: dict) -> dict:
+    def evaluate(self, metrics: dict, not_applicable: set | None = None) -> dict:
         """Return the verdict plus per-gate detail.
 
         A gate whose inputs are missing or errored is `indeterminate` — never a
         silent pass, since an unknown is not evidence of eligibility.
+
+        `not_applicable` names metrics the sector table declares meaningless
+        for this company. **Gates read metric results directly rather than
+        scores, so an exclusion does not reach them on its own** — and the
+        consequence was not theoretical: JIOFIN's entry-price gate read
+        `indeterminate` because `reverse_dcf_growth` was unavailable, and that
+        metric errors with "Negative average FCF" on *every* lender growing its
+        book, which is precisely why the table calls it meaningless. A gate
+        that can never resolve refuses a company permanently, the same failure
+        the reinvestment gate's `fallback_conditions` were added for.
         """
+        excluded = set(not_applicable or ())
         results: dict[str, dict] = {}
         failed: list[str] = []
         indeterminate: list[str] = []
 
         for gate_id, spec in self.gates.items():
-            detail = self._evaluate_gate(spec, metrics)
+            detail = self._evaluate_gate(spec, metrics, excluded)
             results[gate_id] = detail
             if detail["passed"] is False:
                 failed.append(gate_id)
@@ -116,10 +129,13 @@ class EligibilityEvaluator:
             "indeterminate": indeterminate,
         }
 
-    def _evaluate_gate(self, spec: dict, metrics: dict) -> dict:
+    def _evaluate_gate(
+        self, spec: dict, metrics: dict, excluded: set | None = None
+    ) -> dict:
         label = spec.get("label", "Gate")
         mode = spec.get("mode", "all")
         conditions = spec.get("conditions", []) or []
+        excluded = excluded or set()
 
         detail = {
             "label": label,
@@ -129,12 +145,15 @@ class EligibilityEvaluator:
             "conditions": [],
         }
 
-        # A veto flag disqualifies regardless of how the ratios read.
+        # A veto flag disqualifies regardless of how the ratios read — but only
+        # when it came from a metric that measures something here. A flag off a
+        # withdrawn reading is not evidence of anything.
         veto_flags = spec.get("veto_flags", []) or []
         for flag in veto_flags:
             carriers = [
                 mid for mid, result in metrics.items()
-                if getattr(result, "flags", None) and flag in result.flags
+                if mid not in excluded
+                and getattr(result, "flags", None) and flag in result.flags
             ]
             if carriers:
                 detail["passed"] = False
@@ -144,7 +163,15 @@ class EligibilityEvaluator:
         # No metric carried the veto — but that is only reassuring if the metric
         # that would have emitted it actually ran. A veto whose source errored
         # reads indeterminate, matching how missing conditions are handled.
-        veto_sources = spec.get("veto_sources", []) or []
+        #
+        # A source the sector table has withdrawn is a different case and does
+        # not count as unavailable: it was never going to be consulted, so its
+        # silence is not a gap. When EVERY source is withdrawn the veto simply
+        # does not apply to this kind of company, and the gate falls through to
+        # its conditions.
+        veto_sources = [
+            mid for mid in (spec.get("veto_sources", []) or []) if mid not in excluded
+        ]
         if veto_flags and veto_sources:
             unavailable = []
             for mid in veto_sources:
@@ -249,6 +276,17 @@ class EligibilityEvaluator:
             return outcome
         if not isinstance(result.value, (int, float)):
             outcome["detail"] = f"{metric_id} is not numeric"
+            return outcome
+        if not is_scorable(result):
+            # Arithmetically fine, not a reading — see UNSCORABLE_FLAGS. A
+            # figure the scorer refuses to score must not admit a company
+            # through a 100x gate: JIOFIN's trailing PEG of 0.29x, computed off
+            # a 269% CAGR from a post-demerger base of ₹31 Cr, would otherwise
+            # clear the entry-price gate on its own.
+            outcome["detail"] = (
+                f"{metric_id} is not a usable reading: "
+                f"{result.metadata.get('base_effect_reason', 'value is an artefact')}"
+            )
             return outcome
 
         compare = COMPARATORS.get(comparator)

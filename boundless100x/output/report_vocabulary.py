@@ -51,6 +51,10 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "bonus_split_adjusted": ("Bonus/Split Adjusted", "neutral"),
     "high_dilution": ("Significant Equity Dilution", "bad"),
     "book_value_eroding": ("Book Value Per Share Shrinking", "bad"),
+    "share_count_restated": ("Share Count Restated for Bonus/Split", "neutral"),
+    "cagr_off_negligible_base": (
+        "Growth Rate Off a Negligible Base — Not a Reading", "neutral"
+    ),
     "minimal_dilution": ("Minimal Equity Dilution", "good"),
     # Profitability
     "consistently_high_roce": ("Consistently High RoCE", "good"),
@@ -142,6 +146,9 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     # flag that renders under an SQGLP element implies it did.
     "consolidated_group_ratios": (
         "Consolidated Group — Blended Segment Ratios", "neutral"
+    ),
+    "investment_heavy_balance_sheet": (
+        "Investment-Heavy Balance Sheet", "neutral"
     ),
     # Forward signals (Phase 2, zero weight — see FORWARD_SIGNALS_ELEMENT)
     "rerating_headroom_favourable": ("Re-rating Headroom — Favourable", "good"),
@@ -250,6 +257,8 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "bonus_split_adjusted": "growth",
     "high_dilution": "growth",
     "book_value_eroding": "growth",
+    "share_count_restated": "growth",
+    "cagr_off_negligible_base": "growth",
     "minimal_dilution": "growth",
     # Quality Business (Profitability + Leverage + Efficiency)
     "consistently_high_roce": "quality_business",
@@ -322,11 +331,13 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     # default would have returned, so the registration is visible rather than
     # accidental — the default is what let it go unnoticed in FLAG_LABELS.
     "low_data_coverage": "composite",
+    "unscorable_readings": "composite",
     # See the note beside this flag's label. It lands here because
     # FORWARD_SIGNALS_ELEMENT is the bucket for "said something, scored
     # nothing" — the property that matters — rather than because a group
     # structure is a forward signal.
     "consolidated_group_ratios": FORWARD_SIGNALS_ELEMENT,
+    "investment_heavy_balance_sheet": FORWARD_SIGNALS_ELEMENT,
     # Forward signals (Phase 2, zero weight)
     "rerating_headroom_favourable": FORWARD_SIGNALS_ELEMENT,
     "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,

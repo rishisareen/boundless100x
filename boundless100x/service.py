@@ -18,7 +18,10 @@ from boundless100x.compute_engine.eligibility import (
 )
 from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
-from boundless100x.compute_engine.sector import SectorApplicability
+from boundless100x.compute_engine.sector import (
+    SectorApplicability,
+    applicability_labels,
+)
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer import forward_growth
@@ -253,13 +256,15 @@ class Boundless100xService:
             # indeterminate and scores everything — the old regime, and the
             # right default: an unknown sector must not be able to withdraw a
             # metric any more than it may excuse one.
-            sector = (result.data.get("metadata") or {}).get("sector")
+            metadata = result.data.get("metadata") or {}
+            sector = applicability_labels(metadata)
             result.scores = self.scorer.score(result.metrics, sector=sector)
             excluded = result.scores.get("not_applicable") or {}
             if excluded:
                 logger.info(
                     f"{ticker}: {len(excluded)} metric(s) not scored — they "
-                    f"measure nothing for {sector}: {', '.join(sorted(excluded))}"
+                    f"measure nothing for {' / '.join(sector) or 'this company'}: "
+                    f"{', '.join(sorted(excluded))}"
                 )
             logger.info(
                 f"SQGLP composite: {result.scores.get('composite', 'N/A')}/10"
@@ -270,7 +275,13 @@ class Boundless100xService:
 
         # Stage 3.6: 100x eligibility gates (conjunctive, separate from composite)
         try:
-            result.eligibility = self.eligibility.evaluate(result.metrics)
+            # The same exclusions the scorer applied. Gates read metric results
+            # rather than scores, so without this a gate can hinge on a reading
+            # the rest of the run has already called meaningless.
+            result.eligibility = self.eligibility.evaluate(
+                result.metrics,
+                not_applicable=set(result.scores.get("not_applicable") or {}),
+            )
             logger.info(f"100x eligibility: {result.eligibility['verdict']}")
         except Exception as e:
             result.errors.append(f"Eligibility evaluation failed: {e}")

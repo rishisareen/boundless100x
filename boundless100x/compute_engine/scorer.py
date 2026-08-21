@@ -21,7 +21,7 @@ the same penalty in a new costume.
 
 import logging
 
-from boundless100x.compute_engine.metrics.base import MetricResult
+from boundless100x.compute_engine.metrics.base import MetricResult, is_scorable
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,22 @@ class SQGLPScorer:
             )
             return {}
 
+    def _flag_suppressed(self, sector: str | None) -> set[str]:
+        """Inapplicable metrics whose flags must not reach a reader either."""
+        if self.applicability is None or not sector:
+            return set()
+        try:
+            return self.applicability.flag_suppressed_metrics(sector)
+        except Exception:  # pragma: no cover - defensive
+            return set()
+
+    @staticmethod
+    def _surviving_flags(metric_id, result, suppressed: set[str]) -> list:
+        """A withdrawn metric's flags, or none when the table suppresses them."""
+        if metric_id in suppressed:
+            return []
+        return list(getattr(result, "flags", None) or [])
+
     def _waived_for_history(self, results: dict) -> bool:
         """Whether short-window metrics should be excused for this company.
 
@@ -112,12 +128,39 @@ class SQGLPScorer:
 
         waive_history = self._waived_for_history(results)
         excluded = self._excluded_for_sector(sector)
+        suppressed = self._flag_suppressed(sector)
         # Only the exclusions that actually bit — a table entry for a metric
         # this registry never computed would otherwise be reported to the
         # reader as a metric withheld from them.
         applied_exclusions: dict[str, str] = {}
 
         for metric_id, result in results.items():
+            config = self.metrics_config.get(metric_id)
+
+            # **Inapplicability is checked before the error branch, and that
+            # order is the whole of it.** A metric this company was never going
+            # to be judged on does not become missing evidence by also failing
+            # to compute — and for a lender the two arrive together as a rule
+            # rather than a coincidence: `reverse_dcf_growth` errors with
+            # "Negative average FCF" on every lender growing its book, which is
+            # exactly why the table calls it meaningless. Checked the other way
+            # round, JIOFIN's Price coverage read 0.553 instead of 0.627, and a
+            # composite pushed under `low_coverage_threshold` that way has its
+            # displayed action capped.
+            if config is not None and metric_id in excluded:
+                applied_exclusions[metric_id] = excluded[metric_id]
+                entry = {
+                    "value": result.value if result.ok else None,
+                    "score": None,
+                    "weight": 0,
+                    "not_applicable": excluded[metric_id],
+                    "flags": self._surviving_flags(metric_id, result, suppressed),
+                }
+                if not result.ok:
+                    entry["error"] = result.error
+                details[metric_id] = entry
+                continue
+
             if not result.ok:
                 details[metric_id] = {
                     "value": None,
@@ -127,7 +170,6 @@ class SQGLPScorer:
                 }
                 continue
 
-            config = self.metrics_config.get(metric_id)
             if config is None:
                 continue
 
@@ -145,20 +187,21 @@ class SQGLPScorer:
                 }
                 continue
 
-            if metric_id in excluded:
-                # Computed, shown, flagged — just not scored. The value and its
-                # flags travel on, so `debt_risk` still reaches the report's
-                # signal list and the LLM context: what is withdrawn is the
-                # 0-10 judgement made against a threshold calibrated for a
-                # different kind of balance sheet, not the observation.
-                applied_exclusions[metric_id] = excluded[metric_id]
+            # Computed, and arithmetically correct, but not evidence — see
+            # UNSCORABLE_FLAGS. Waived like a short-window metric rather than
+            # scored, so the remaining weights renormalise and coverage records
+            # the gap: the evidence really is missing, unlike an inapplicable
+            # metric above.
+            if not is_scorable(result):
                 details[metric_id] = {
                     "value": result.value,
                     "score": None,
                     "weight": 0,
-                    "not_applicable": excluded[metric_id],
+                    "waived": "not_a_reading",
                     "flags": result.flags,
                 }
+                if "unscorable_readings" not in score_flags:
+                    score_flags.append("unscorable_readings")
                 continue
 
             if waive_history and any(f.startswith("short_window_") for f in result.flags):
@@ -226,6 +269,10 @@ class SQGLPScorer:
             # a reader comparing it against another company's is entitled to
             # know which questions were not asked here.
             "not_applicable": applied_exclusions,
+            # The subset whose flags were dropped too, so a surface rebuilding
+            # a signal list from raw metric results can apply the same rule
+            # rather than reaching its own conclusion.
+            "flags_suppressed": sorted(suppressed & set(applied_exclusions)),
             "sector": sector,
         }
 

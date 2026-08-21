@@ -97,23 +97,69 @@ sectors:
         the ordinary sense, and its receivables ARE its product, so the figure
         is a by-product of balance-sheet size rather than a discipline anyone
         manages.
-      debt_equity: >-
-        Borrowing many times equity is what a lender sells, and the level is
-        set by capital-adequacy rules rather than by appetite for risk. The
-        thresholds here are calibrated for a manufacturer, where 4x would be
-        distress; for an NBFC it is unremarkable and for a bank it would be
-        conservative. The figure and its high-debt warning are still shown and
-        still reach the model — what is withdrawn is a mark out of ten
-        awarded against the wrong yardstick.
-      interest_coverage: >-
-        Operating profit over interest paid. For a lender interest IS the
-        principal cost of doing business, not a charge left over after it, so
-        this ratio sits close to 1x by construction on a perfectly solvent
-        book — the same reading that means imminent default for a
-        manufacturer. Solvency for a lender is a capital-adequacy and
-        asset-quality question, which needs data this pipeline does not
-        fetch; the honest position is that the risk is unmeasured here rather
-        than measured by this.
+      # ── The two that KEEP their flags ─────────────────────────────────
+      # Everything above is excluded because the reading itself is broken, so
+      # its flags are withdrawn with its score (the default). These two are
+      # different in kind: the reading is sound and only the THRESHOLD was
+      # calibrated for a manufacturer. Four times leverage is four times
+      # leverage whatever we score it out of ten, and a lender's owner still
+      # needs to be told. Suppressing these would remove the only leverage
+      # warning a lender gets.
+      debt_equity:
+        keep_flags: true
+        reason: >-
+          Borrowing many times equity is what a lender sells, and the level is
+          set by capital-adequacy rules rather than by appetite for risk. The
+          thresholds here are calibrated for a manufacturer, where 4x would be
+          distress; for an NBFC it is unremarkable and for a bank it would be
+          conservative. The figure and its high-debt warning are still shown
+          and still reach the model — what is withdrawn is a mark out of ten
+          awarded against the wrong yardstick.
+      interest_coverage:
+        keep_flags: true
+        reason: >-
+          Operating profit over interest paid. For a lender interest IS the
+          principal cost of doing business, not a charge left over after it, so
+          this ratio sits close to 1x by construction on a perfectly solvent
+          book — the same reading that means imminent default for a
+          manufacturer. Solvency for a lender is a capital-adequacy and
+          asset-quality question, which needs data this pipeline does not
+          fetch; the honest position is that the risk is unmeasured here rather
+          than measured by this.
+
+  Investment Company:
+    label: "Holding vehicles whose assets are mostly other companies' equity"
+    # Matched on Screener's `sector_industry` breadcrumb rather than its
+    # `sector`, which reads "Finance" for JIOFIN — see `applicability_labels`.
+    # Both labels are looked up and their exclusions merge, so a company here
+    # inherits the lender rules above as well as these.
+    #
+    # **The distinguishing fact is that the return does not pass through the
+    # income statement.** JIOFIN carries ₹133,089 Cr of investments against
+    # ₹163,467 Cr of total assets — 81% — and 65% of its appraised value is a
+    # 6.1% stake in Reliance (Motilal Oswal SOTP, Apr 2026). A listed stake
+    # appreciates in the share price, not in PAT, so the P&L that survives is a
+    # dividend cheque against a very large equity base.
+    #
+    # Note what is NOT excluded, because it is the closer call: `roe_5yr_avg`,
+    # `roce_5yr_avg`, `roiic` and the two >15% counts all stay scored. A 0.91%
+    # RoE on ₹134,000 Cr of equity is a true and material statement — the
+    # equity is not being worked — and it is the central bear point on the
+    # company. Withdrawing it would have removed the finding rather than the
+    # distortion. What IS withdrawn below is the handful of ratios whose
+    # *denominator* is a treasury balance rather than a business.
+    not_applicable:
+      operating_margin_5yr: >-
+        Revenue for a holding vehicle is dividend and interest received on
+        investments, and the costs beneath it are a head office rather than a
+        cost of production. A margin computed on that says how few staff the
+        holding company employs, not how profitable anything it owns is —
+        JIOFIN reads 78.5% and owns no business earning near that.
+      dupont_margin: >-
+        Profit as a share of that same investment income, so it inherits the
+        same problem: it measures the head office's overhead against its
+        dividend cheque and tells a reader nothing about the businesses whose
+        earnings the holding actually represents.
 
   Industrial Products:
     label: "Manufacturers of physical goods"

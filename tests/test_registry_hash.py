@@ -193,8 +193,20 @@ class TestProvenanceIsNotSemantics:
 #     holding company's blended ratios from an operating business's. That
 #     metric carries weight 0.0, so this moved the FORWARD hash and not the
 #     scoring one — the split doing exactly what it exists for.
-SHIPPED_REGISTRY_HASH = "33deaf6ef9fb"
-SHIPPED_FORWARD_SIGNAL_HASH = "ab0824fb6710"
+#
+# Moved again by the JIOFIN round, and for the same kind of reason:
+#   * an "Investment Company" entry in the applicability table, reached through
+#     `sector_industry` now that both labels are looked up — scoring hash;
+#   * `keep_flags` on two Finance entries. That changes only which flags are
+#     rendered, not any score, but it lives inside the hashed table and there
+#     is no way to hash half a file. Recording a regime change that did not
+#     move a composite is the safe direction: it fragments a baseline, where
+#     the reverse would compare two rulers as one.
+#   * `balance_sheet` added to `quality_growth_quadrant`'s inputs, so it can
+#     read how much of the balance sheet is other companies' equity. Zero
+#     weight again, so again the FORWARD hash only.
+SHIPPED_REGISTRY_HASH = "0fad53dfd543"
+SHIPPED_FORWARD_SIGNAL_HASH = "0e49614eb54c"
 
 # The hash the service actually stamps onto score-history rows. It differs
 # from the pair above because `service.analyze()` constructs the engine with
@@ -205,7 +217,7 @@ SHIPPED_FORWARD_SIGNAL_HASH = "ab0824fb6710"
 # the regime a reader can actually see in `score_history.jsonl` is this one,
 # and a change that moved it while leaving the default alone would fragment
 # real history with every test still green.
-CONFIGURED_REGISTRY_HASH = "95fa358589e9"
+CONFIGURED_REGISTRY_HASH = "981cc6b347a2"
 
 
 def add_key(registry_dir, filename: str, metric_id: str, key: str, value):
