@@ -29,6 +29,96 @@ def compute_pe_ttm(data: dict, params: dict) -> MetricResult:
     return MetricResult(value=float(pe), flags=flags)
 
 
+def _net_worth(balance_sheet: pd.DataFrame) -> pd.Series | None:
+    """Equity capital + reserves — the book the shareholders own."""
+    required = ("equity_capital", "reserves")
+    if any(col not in balance_sheet.columns for col in required):
+        return None
+    parts = [pd.to_numeric(balance_sheet[col], errors="coerce") for col in required]
+    return (parts[0] + parts[1]).dropna()
+
+
+def compute_price_to_book(data: dict, params: dict) -> MetricResult:
+    """Price / book value per share.
+
+    The valuation metric a lender is actually judged on, and the one this
+    registry had no equivalent of. Every price metric here divided by a flow —
+    earnings, EBITDA, free cash flow — and for a financial the last two are
+    structurally broken while the first swings with the credit cycle. Book
+    value is the stock the business is run on, so P/B is the reading that
+    survives when the others do not.
+
+    Read against RoE, never alone: a bank earning 20% on equity is worth
+    several times book and one earning 8% is not, so the same 2x means
+    opposite things. That relationship is why this is banded rather than
+    scored sector-relative — the peer set that would make a percentile
+    meaningful is not fetched, and an unqualified percentile would call every
+    high-RoE franchise expensive.
+
+    Prefers Screener's own `Book Value` (per share, same basis as the quoted
+    price) and falls back to the balance sheet, which needs the share count
+    reconstructed from face value.
+    """
+    meta = data.get("metadata", {}) or {}
+    price = meta.get("Current Price")
+    if price is None or float(price) <= 0:
+        return MetricResult(error="No current price in metadata")
+    price = float(price)
+
+    book_per_share = meta.get("Book Value")
+    basis = "screener_book_value"
+
+    if book_per_share is None or float(book_per_share) <= 0:
+        # Reconstruct from the balance sheet. Screener reports equity capital
+        # at face value, so shares = equity_capital / face_value — the same
+        # derivation the dilution metric uses.
+        bs = data.get("balance_sheet")
+        face_value = meta.get("Face Value")
+        if bs is None or getattr(bs, "empty", True) or not face_value:
+            return MetricResult(
+                error="No book value in metadata and no balance sheet to derive one"
+            )
+        net_worth = _net_worth(_get_annual_rows(bs, 1))
+        equity_capital = pd.to_numeric(
+            _get_annual_rows(bs, 1)["equity_capital"], errors="coerce"
+        ).dropna()
+        if net_worth is None or net_worth.empty or equity_capital.empty:
+            return MetricResult(error="Cannot derive book value from balance sheet")
+        shares_cr = float(equity_capital.iloc[-1]) / float(face_value)
+        if shares_cr <= 0:
+            return MetricResult(error="Cannot derive share count for book value")
+        book_per_share = float(net_worth.iloc[-1]) / shares_cr
+        basis = "derived_from_balance_sheet"
+
+    book_per_share = float(book_per_share)
+    if book_per_share <= 0:
+        # Negative book is a real state (accumulated losses exceed capital)
+        # and P/B is undefined there rather than infinite — reporting it as a
+        # very large multiple would read as "expensive" when it means
+        # "insolvent on a book basis".
+        return MetricResult(
+            error="Book value is zero or negative — price/book undefined"
+        )
+
+    pb = price / book_per_share
+
+    flags = []
+    if pb < 1.0:
+        flags.append("below_book_value")
+    elif pb > 5.0:
+        flags.append("rich_price_to_book")
+
+    return MetricResult(
+        value=float(pb),
+        flags=flags,
+        metadata={
+            "price": price,
+            "book_value_per_share": book_per_share,
+            "book_value_basis": basis,
+        },
+    )
+
+
 def compute_peg(data: dict, params: dict) -> MetricResult:
     """PEG = P/E ÷ trailing 5yr EPS CAGR.
 

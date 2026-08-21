@@ -91,6 +91,71 @@ def compute_cagr(data: dict, params: dict) -> MetricResult:
     )
 
 
+def compute_book_value_cagr(data: dict, params: dict) -> MetricResult:
+    """CAGR of book value per share.
+
+    Growth in what the owners actually own, which for a lender is the growth
+    that matters: revenue is an interest spread that moves with rates, and PAT
+    can be produced for a year or two by releasing provisions or selling a
+    stake. Book value per share nets both of those out — it can only be grown
+    by earning and retaining, and it is reduced by the dilution that funds a
+    balance-sheet business.
+
+    **Per share, not the aggregate.** A lender that doubles its book by issuing
+    shares has grown nothing for the holder, and this registry's own dilution
+    metric shows exactly that pattern is live: EDELWEISS diluted 17% in five
+    years. Aggregate net worth would have scored that as growth.
+    """
+    years = params.get("years", 5)
+    bs = _get_annual_rows(data["balance_sheet"], years + 1)
+
+    required = ("equity_capital", "reserves")
+    if any(col not in bs.columns for col in required):
+        return MetricResult(error="Balance sheet lacks equity capital or reserves")
+
+    face_value = (data.get("metadata") or {}).get("Face Value")
+    if not face_value or float(face_value) <= 0:
+        return MetricResult(
+            error="No face value in metadata — share count cannot be derived, "
+                  "so book value per share is unavailable"
+        )
+
+    equity_capital = pd.to_numeric(bs["equity_capital"], errors="coerce")
+    reserves = pd.to_numeric(bs["reserves"], errors="coerce")
+    net_worth = (equity_capital + reserves)
+
+    # Shares outstanding move year to year, which is the whole point — a fixed
+    # latest-year count applied across the series would hide every issuance.
+    shares = equity_capital / float(face_value)
+    bvps = (net_worth / shares).replace([float("inf"), float("-inf")], pd.NA).dropna()
+
+    if len(bvps) < 2:
+        return MetricResult(error="Insufficient book value history")
+    if float(bvps.iloc[0]) <= 0 or float(bvps.iloc[-1]) <= 0:
+        return MetricResult(error="Non-positive book value — CAGR undefined")
+
+    cagr, meta = _cagr_from_values(
+        bvps, years=years, smooth=params.get("smooth_endpoints", True)
+    )
+    if cagr is None:
+        return MetricResult(error="Book value CAGR undefined")
+
+    flags = []
+    actual_years = meta["years_actual"]
+    if actual_years < years:
+        flags.append(f"insufficient_history_{actual_years}yr_of_{years}yr")
+    if cagr < 0:
+        flags.append("book_value_eroding")
+
+    meta = {**meta, "latest_bvps": float(bvps.iloc[-1]), "face_value": float(face_value)}
+    return MetricResult(
+        value=float(cagr),
+        raw_series=[float(v) for v in bvps.tolist()],
+        flags=flags,
+        metadata=meta,
+    )
+
+
 # A trailing-twelve-month figure is four quarters; comparing it against the
 # four before those needs eight, all adjacent.
 _TTM_QUARTERS = 4
@@ -702,35 +767,48 @@ def _synthesize_growth_quality(
     }
 
 
-def _peg_verdict(trailing_peg: float | None, quality_flag: str) -> str:
-    """One-sentence PEG verdict per the 100-bagger golden rule."""
-    if trailing_peg is None:
-        return "PEG cannot be computed (negative or zero earnings growth)."
+# What this section's PEG is divided by, stated once and rendered everywhere
+# the number is. It is **not** the scored `trailing_peg` metric: that one
+# divides by the 3yr PAT CAGR, this one by the 5yr. Both were labelled
+# "Trailing PEG" and both appeared in one report, at 1.04x and 0.72x — the
+# model reading it raised the discrepancy as a monitorable, which is the
+# report asking its own analyst to go and reconcile it.
+PEG_DENOMINATOR_LABEL = "P/E ÷ 5yr PAT CAGR"
 
-    if trailing_peg < 1.0:
+
+def _peg_verdict(pe_to_pat_cagr: float | None, quality_flag: str) -> str:
+    """One-sentence PEG verdict per the 100-bagger golden rule."""
+    if pe_to_pat_cagr is None:
+        return (
+            f"{PEG_DENOMINATOR_LABEL} cannot be computed (negative or zero "
+            f"earnings growth)."
+        )
+
+    if pe_to_pat_cagr < 1.0:
         if quality_flag in ("high_quality", "moderate"):
             return (
-                f"Trailing PEG of {trailing_peg:.2f}x is below 1.0 — "
+                f"{PEG_DENOMINATOR_LABEL} of {pe_to_pat_cagr:.2f}x is below 1.0 — "
                 f"the golden rule for 100-baggers. Combined with "
                 f"{quality_flag.replace('_', ' ')} earnings drivers, "
                 f"the valuation appears justified and attractive."
             )
         else:
             return (
-                f"Trailing PEG of {trailing_peg:.2f}x is below 1.0, but the "
-                f"growth quality is flagged as '{quality_flag.replace('_', ' ')}'. "
-                f"Low PEG driven by leveraged or unsustainable growth is a "
-                f"value trap signal — proceed with caution."
+                f"{PEG_DENOMINATOR_LABEL} of {pe_to_pat_cagr:.2f}x is below 1.0, "
+                f"but the growth quality is flagged as "
+                f"'{quality_flag.replace('_', ' ')}'. Low PEG driven by leveraged "
+                f"or unsustainable growth is a value trap signal — proceed with "
+                f"caution."
             )
-    elif trailing_peg < 2.0:
+    elif pe_to_pat_cagr < 2.0:
         return (
-            f"Trailing PEG of {trailing_peg:.2f}x is between 1.0-2.0 — "
-            f"fairly valued relative to growth. Not a screaming bargain "
+            f"{PEG_DENOMINATOR_LABEL} of {pe_to_pat_cagr:.2f}x is between 1.0-2.0 "
+            f"— fairly valued relative to growth. Not a screaming bargain "
             f"but acceptable if growth quality is high."
         )
     else:
         return (
-            f"Trailing PEG of {trailing_peg:.2f}x is above 2.0 — "
+            f"{PEG_DENOMINATOR_LABEL} of {pe_to_pat_cagr:.2f}x is above 2.0 — "
             f"the market is pricing in significantly higher growth "
             f"than recent history. Risk of valuation correction if "
             f"growth decelerates."
@@ -848,13 +926,21 @@ def compute_lever_decomposition_table(
         if meta_pe is not None and float(meta_pe) > 0:
             current_pe = float(meta_pe)
 
-    trailing_peg = (current_pe / pat_cagr_5) if (current_pe and pat_cagr_5 and pat_cagr_5 > 0) else None
+    # Keyed for what it divides by. The old key was `trailing_peg`, which is
+    # also the id of a *scored metric computed on a different window* — see
+    # PEG_DENOMINATOR_LABEL.
+    pe_to_pat_cagr_5yr = (
+        (current_pe / pat_cagr_5)
+        if (current_pe and pat_cagr_5 and pat_cagr_5 > 0)
+        else None
+    )
 
     valuation_check = {
         "current_pe": current_pe,
         "pat_cagr_5yr": pat_cagr_5,
-        "trailing_peg": trailing_peg,
-        "verdict": _peg_verdict(trailing_peg, growth_synthesis["quality_flag"]),
+        "pe_to_pat_cagr_5yr": pe_to_pat_cagr_5yr,
+        "peg_label": PEG_DENOMINATOR_LABEL,
+        "verdict": _peg_verdict(pe_to_pat_cagr_5yr, growth_synthesis["quality_flag"]),
     }
 
     return {

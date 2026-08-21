@@ -51,6 +51,11 @@ DEFAULT_GATES = {
         "conditions": [
             {"metric": "roiic", "comparator": "gte", "threshold": 15.0}
         ],
+        # Consulted ONLY when every primary condition above reads
+        # indeterminate. See `_evaluate_gate`.
+        "fallback_conditions": [
+            {"metric": "roe_5yr_avg", "comparator": "gte", "threshold": 15.0}
+        ],
     },
 }
 
@@ -165,23 +170,62 @@ class EligibilityEvaluator:
             detail["reason"] = f"{label} has no conditions declared"
             return detail
 
-        if mode == "any":
-            if any(v is True for v in verdicts):
-                detail["passed"] = True
-            elif any(v is None for v in verdicts):
-                detail["passed"] = None
-            else:
-                detail["passed"] = False
-        else:
-            if any(v is False for v in verdicts):
-                detail["passed"] = False
-            elif any(v is None for v in verdicts):
-                detail["passed"] = None
-            else:
-                detail["passed"] = True
+        # A second-best measure, consulted ONLY when the primary one could not
+        # be read at all — never when it read and disappointed.
+        #
+        # The case this exists for: `roiic` is undefined whenever the capital
+        # base shrinks, which for a lender in run-off is not a data gap but a
+        # permanent state. EDELWEISS therefore read `indeterminate` on this
+        # gate in every run it will ever have, and an indeterminate verdict
+        # caps the displayed action forever — a company can be refused for
+        # good on a question the pipeline is structurally unable to ask. A
+        # determinate "does not earn enough on equity to multiply a
+        # hundredfold" is both truer and actionable.
+        #
+        # The narrowness is the safety. Firing only on all-indeterminate means
+        # this can never overturn a primary condition that actually failed,
+        # and can never let a company through on the softer of two tests when
+        # the harder one was available: for every company whose ROIIC computes,
+        # this branch is dead code.
+        if all(v is None for v in verdicts):
+            fallback_spec = spec.get("fallback_conditions", []) or []
+            fallback = [
+                self._evaluate_condition(condition, metrics)
+                for condition in fallback_spec
+            ]
+            fallback_verdicts = [o["passed"] for o in fallback]
+            if fallback_verdicts and not all(v is None for v in fallback_verdicts):
+                detail["conditions"] = outcomes + fallback
+                detail["fallback_used"] = True
+                passed = self._combine(fallback_verdicts, mode)
+                detail["passed"] = passed
+                primary = ", ".join(
+                    o.get("detail", "") for o in outcomes if o.get("detail")
+                )
+                detail["reason"] = (
+                    f"{self._summarise(label, passed, fallback, mode)} "
+                    f"(fallback measure — {primary})"
+                )
+                return detail
 
+        detail["passed"] = self._combine(verdicts, mode)
         detail["reason"] = self._summarise(label, detail["passed"], outcomes, mode)
         return detail
+
+    @staticmethod
+    def _combine(verdicts: list, mode: str):
+        """Fold per-condition verdicts into one, three-valued throughout."""
+        if mode == "any":
+            if any(v is True for v in verdicts):
+                return True
+            if any(v is None for v in verdicts):
+                return None
+            return False
+        if any(v is False for v in verdicts):
+            return False
+        if any(v is None for v in verdicts):
+            return None
+        return True
 
     def _evaluate_condition(self, condition: dict, metrics: dict) -> dict:
         metric_id = condition.get("metric")

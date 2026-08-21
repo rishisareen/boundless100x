@@ -4,6 +4,7 @@ import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
+from boundless100x.compute_engine.sector import group_structure, structure_caveat
 
 
 def compute_qg_quadrant(data: dict, params: dict) -> MetricResult:
@@ -55,12 +56,25 @@ def compute_qg_quadrant(data: dict, params: dict) -> MetricResult:
     else:
         quadrant = "wealth_destroyer"
 
+    # A quadrant is a claim about one business, and a holding company is not
+    # one business. Both inputs here are consolidated: EDELWEISS blends a
+    # lending book in deliberate run-off with fee businesses compounding at
+    # 27-63%, lands at 2.6% revenue growth and 11.8% RoCE, and is filed as a
+    # Growth Trap — a verdict describing an average that no segment resembles.
+    # The corner is still computed and still shown; what travels with it is
+    # the warning that its inputs were blended.
+    flags = []
+    if group_structure(data.get("metadata")).get("is_group"):
+        flags.append("consolidated_group_ratios")
+
     return MetricResult(
         value=quadrant,
+        flags=flags,
         metadata={
             "avg_roce": avg_roce,
             "pat_cagr": pat_cagr,
             "quality_threshold": quality_threshold,
             "growth_threshold": growth_threshold,
+            "structure_caveat": structure_caveat(data.get("metadata")),
         },
     )

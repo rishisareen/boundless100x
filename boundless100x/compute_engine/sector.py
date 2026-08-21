@@ -105,6 +105,76 @@ def classify_sector(sector: str | None, context: dict | None = None) -> str:
     return UNKNOWN
 
 
+# ── Group structure ───────────────────────────────────────────────────────
+#
+# Screener's `sector_industry` breadcrumb, already fetched and stored on every
+# metadata.json, names a holding company outright. Nothing read it, so a
+# conglomerate's consolidated ratios were interpreted as one business's.
+#
+# The reading this most distorts is growth. EDELWEISS consolidates a lending
+# book being deliberately run down (₹18,000 Cr to ₹600 Cr) with fee businesses
+# compounding 27-63%; blended, that is 2.6% revenue CAGR, and the model called
+# it a Growth Trap with negative real growth. Both halves of the blend are
+# real and the average describes neither.
+#
+# Matched as substrings on a lowercased breadcrumb rather than through
+# `_matches` above: that function answers "is this company in sector X", where
+# whole-phrase matching stops `IT` hitting `Securities`. This asks a different
+# question — does the industry label contain a structural word — and
+# `Holding Company` appears inside longer labels.
+_STRUCTURE_MARKERS = (
+    ("holding company", "a holding company"),
+    ("conglomerate", "a conglomerate"),
+    ("diversified", "a diversified group"),
+    ("investment company", "an investment company"),
+)
+
+
+def group_structure(metadata: dict | None) -> dict:
+    """Whether this company's reported figures blend distinct businesses.
+
+    Returns `{"is_group": bool, "label": str, "industry": str | None}`.
+    False for an unlabelled company, which is a statement about the label
+    rather than about the company — plenty of conglomerates are filed under an
+    operating industry, and this cannot see those.
+    """
+    meta = metadata or {}
+    industry = meta.get("sector_industry")
+    outcome = {"is_group": False, "label": "", "industry": industry}
+    if not industry or not str(industry).strip():
+        return outcome
+
+    lowered = _normalise(str(industry))
+    for marker, label in _STRUCTURE_MARKERS:
+        if marker in lowered:
+            outcome["is_group"] = True
+            outcome["label"] = label
+            return outcome
+    return outcome
+
+
+def structure_caveat(metadata: dict | None) -> str:
+    """The sentence a reader needs before trusting a consolidated ratio.
+
+    Empty when the company is not labelled as a group, so callers can append
+    it unconditionally.
+    """
+    structure = group_structure(metadata)
+    if not structure["is_group"]:
+        return ""
+    return (
+        f"GROUP STRUCTURE: Screener files this company under "
+        f"'{structure['industry']}', so it is {structure['label']} and every "
+        f"figure below is a consolidation of businesses that may be growing "
+        f"at very different rates and earning very different returns. A "
+        f"blended revenue or margin here describes no individual business, "
+        f"and a segment being wound down deliberately will read as "
+        f"stagnation. Treat consolidated growth and quality readings as a "
+        f"starting question rather than a finding, and look for the segment "
+        f"disclosures before concluding the company is not growing."
+    )
+
+
 def study_findings(context: dict | None = None) -> dict:
     """The business-type and leadership findings that sit alongside the lists."""
     raw = (context or load_sector_context()).get("raw", {})

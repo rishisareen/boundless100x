@@ -11,12 +11,14 @@ import yaml
 
 from boundless100x.action_policy import resolve_for_result
 from boundless100x.data_fetcher.suite import DataFetcherSuite
+from boundless100x.data_fetcher.fetch_announcements import build_announcements_context
 from boundless100x.compute_engine.eligibility import (
     EligibilityEvaluator,
     effective_gates,
 )
 from boundless100x.compute_engine.engine import ComputeEngine
 from boundless100x.compute_engine.scorer import SQGLPScorer
+from boundless100x.compute_engine.sector import SectorApplicability
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin.growth import compute_lever_decomposition_table
 from boundless100x.llm_layer import forward_growth
@@ -123,10 +125,28 @@ class Boundless100xService:
         # Resolved through the same helper the registry hash uses, so the
         # regime recorded in score history is always the regime enforced here.
         self.eligibility = EligibilityEvaluator(effective_gates(self.engine.gates))
+        # The applicability table now withdraws metrics from a composite, so a
+        # typo in it is a scoring error rather than a display one and stops the
+        # run the same way a bad registry does. The report layer keeps its own
+        # independent instance behind `_reading_or_none` and its own degrade
+        # path: a table that fails here never reaches that layer at all.
+        try:
+            applicability = SectorApplicability(self.engine.metrics.keys())
+        except ValueError as e:
+            raise RegistryValidationError(
+                f"{e} — each was logged as a SECTOR APPLICABILITY ERROR naming "
+                f"the sector, the metric and what was wrong. This table decides "
+                f"which metrics are excluded from a company's score, so a "
+                f"malformed entry would silently change every composite it "
+                f"touches; fix compute_engine/sector_applicability.yaml and run "
+                f"again."
+            ) from e
+
         self.scorer = SQGLPScorer(
             self.engine.metrics,
             self.engine.element_weights,
             history_waiver_mcap=self.engine.master.get("history_waiver_mcap"),
+            applicability=applicability,
         )
 
         # LLM orchestrator — constructed only when the configured provider's
@@ -228,7 +248,19 @@ class Boundless100xService:
         # Stage 3: SQGLP Scoring
         logger.info(f"[Stage 3] Scoring {ticker}")
         try:
-            result.scores = self.scorer.score(result.metrics)
+            # The sector decides which metrics are meaningless here. A ticker
+            # fetched before the breadcrumb fix carries no sector, which reads
+            # indeterminate and scores everything — the old regime, and the
+            # right default: an unknown sector must not be able to withdraw a
+            # metric any more than it may excuse one.
+            sector = (result.data.get("metadata") or {}).get("sector")
+            result.scores = self.scorer.score(result.metrics, sector=sector)
+            excluded = result.scores.get("not_applicable") or {}
+            if excluded:
+                logger.info(
+                    f"{ticker}: {len(excluded)} metric(s) not scored — they "
+                    f"measure nothing for {sector}: {', '.join(sorted(excluded))}"
+                )
             logger.info(
                 f"SQGLP composite: {result.scores.get('composite', 'N/A')}/10"
             )
@@ -279,6 +311,12 @@ class Boundless100xService:
                     growth_decomposition=result.growth_decomposition,
                     # Explanatory context only — the guard is Stage 4.5 below.
                     eligibility=result.eligibility,
+                    # Rendered here rather than in the orchestrator so the
+                    # seam stays one-directional: `llm_layer` is handed text,
+                    # never a DataFrame it would have to know the shape of.
+                    announcements_context=build_announcements_context(
+                        result.data.get("announcements")
+                    ),
                 )
 
                 usage = result.llm_analysis.get("usage", {})

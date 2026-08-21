@@ -28,6 +28,13 @@ Sector: {sector}
 ## 100x Eligibility (deterministic — already decided, not yours to revise)
 {eligibility_context}
 
+## Recent Corporate Filings (BSE)
+Every metric above was computed from accounts that may be more than a year
+old. This is the only section that is not. Where a filing bears on the thesis,
+say so explicitly and date it — and if a filing supersedes what a ratio
+implies, the filing is the newer fact.
+{announcements}
+
 ## Instructions
 
 Synthesize an investment thesis weighing:

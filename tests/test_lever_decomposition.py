@@ -49,16 +49,29 @@ class TestValuationCheckResolves:
 
         assert check["current_pe"] == 42.0
 
-    def test_trailing_peg_is_computed_rather_than_abandoned(self):
+    def test_pe_to_pat_cagr_is_computed_rather_than_abandoned(self):
         data = make_data()
         data["metadata"]["Stock P/E"] = 40.0
 
         check = compute_lever_decomposition_table(data)["valuation_check"]
 
-        assert check["trailing_peg"] is not None
-        assert check["trailing_peg"] == pytest.approx(
+        assert check["pe_to_pat_cagr_5yr"] is not None
+        assert check["pe_to_pat_cagr_5yr"] == pytest.approx(
             40.0 / check["pat_cagr_5yr"], rel=1e-6
         )
+
+    def test_the_peg_here_is_named_apart_from_the_scored_trailing_peg(self):
+        """Two PEGs on two windows; one report showed both as "Trailing PEG".
+
+        This section divides by the 5yr PAT CAGR, the scored `trailing_peg`
+        metric by the 3yr. They printed 0.72x and 1.04x under one label and
+        the model reading them raised the discrepancy as a monitorable.
+        """
+        check = compute_lever_decomposition_table(make_data())["valuation_check"]
+
+        assert "trailing_peg" not in check
+        assert "5yr" in check["peg_label"]
+        assert check["peg_label"] in check["verdict"]
 
     def test_verdict_is_a_real_verdict(self):
         data = make_data()
@@ -76,7 +89,7 @@ class TestValuationCheckResolves:
         check = compute_lever_decomposition_table(data)["valuation_check"]
 
         assert check["current_pe"] is None
-        assert check["trailing_peg"] is None
+        assert check["pe_to_pat_cagr_5yr"] is None
 
 
 class TestMetricAndTableAgree:
@@ -193,7 +206,7 @@ class TestReportAndModelSeeTheSameTable:
             "lever_table": [],
             "growth_synthesis": {"quality_flag": "high_quality", "narrative": "from service"},
             "valuation_check": {"current_pe": 33.0, "pat_cagr_5yr": 22.0,
-                                "trailing_peg": 1.5, "verdict": "fair"},
+                                "pe_to_pat_cagr_5yr": 1.5, "verdict": "fair"},
         }
         result.growth_decomposition = sentinel
 

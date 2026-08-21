@@ -19,9 +19,20 @@ element section gained a one-line reading and a `<details>` around its metric
 rows — and again when that reading layer's own presentation was polished (a
 duplicated score number, stacked identical headlines, an overflowing table).
 Both were deliberate, whole-report changes; the golden's job here is the lane
-section, and it still holds it. `pre_lane_section_report.md` has **not** moved
-and must not: the reading layer landed in the dashboard and nowhere else, so a
-diff there means something leaked.
+section, and it still holds it. A third regeneration added four metrics to the
+registry (`roa_5yr_avg`, `roe_consistency`, `price_to_book`,
+`book_value_cagr_5yr`), each of which appears as one more row and one more
+disclosure body.
+
+`pre_lane_section_report.md` **has now moved, once**, and the distinction
+matters. The rule it was under — the reading layer landed in the dashboard and
+nowhere else, so a diff here means something leaked — still stands, and this
+was not that. The Markdown report's own "Valuation Reality Check" divides the
+P/E by the 5yr PAT CAGR and labelled the result "Trailing PEG Ratio", which is
+also the name of a *scored metric computed on the 3yr window*; one report
+printed the two at 0.72x and 1.04x under one label and the model reading it
+raised the discrepancy as a monitorable. The relabel is a fix to the legacy
+report, not a leak into it. Any *other* diff here is still a leak.
 
 "Unchanged" is a claim about *untracked* reports and about the rest of a
 tracked one. A tracked entry in either lane gains the section — a core entry

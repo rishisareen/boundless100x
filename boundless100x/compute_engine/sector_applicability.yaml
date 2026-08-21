@@ -63,6 +63,57 @@ sectors:
         its -100% floor before reaching any judgement about the business. When
         the lending flows happen to net out positive it swings just as far the
         other way, for reasons equally unrelated to what the company is worth.
+      reverse_dcf_growth: >-
+        Solves for the growth rate that would justify today's price using the
+        same free-cash-flow chain, so it inherits the same inversion. On a
+        lender it reports what the market must believe about a cash-flow line
+        that measures loan-book movement, which is not a belief anyone holds.
+      ev_ebitda: >-
+        Enterprise value adds debt to the price on the reasoning that a buyer
+        must repay it, and EBITDA is struck before interest on the reasoning
+        that interest is a financing choice. For a lender both halves are
+        wrong at once: the borrowings are the raw material rather than an
+        obligation to clear, and interest is the main cost of goods. The
+        ratio pairs an inflated numerator with a denominator that has not
+        paid for anything yet.
+      cash_conversion: >-
+        Compares operating cash flow with operating profit, and for a lender
+        that cash flow is dominated by money going out on new loans and coming
+        back on repayments. The ratio tracks the direction the loan book moved
+        in, not whether the profits were real.
+      capital_reinvestment_rate: >-
+        Measures new capital put to work as a share of operating profit. For a
+        lender the capital deployed is the loan book itself, which this does
+        not look at, so a company funding record lending reads as returning
+        capital to owners.
+      reinvestment_rate: >-
+        Capital expenditure against depreciation. A lender owns branches and
+        computers, not plant, so the depreciation base is tiny and the ratio
+        swings wildly on ordinary office spending — it says nothing about
+        whether the business is being reinvested in.
+      working_capital_days_trend: >-
+        Working capital is the gap between money tied up in stock and
+        customers and money owed to suppliers. A lender has none of those in
+        the ordinary sense, and its receivables ARE its product, so the figure
+        is a by-product of balance-sheet size rather than a discipline anyone
+        manages.
+      debt_equity: >-
+        Borrowing many times equity is what a lender sells, and the level is
+        set by capital-adequacy rules rather than by appetite for risk. The
+        thresholds here are calibrated for a manufacturer, where 4x would be
+        distress; for an NBFC it is unremarkable and for a bank it would be
+        conservative. The figure and its high-debt warning are still shown and
+        still reach the model — what is withdrawn is a mark out of ten
+        awarded against the wrong yardstick.
+      interest_coverage: >-
+        Operating profit over interest paid. For a lender interest IS the
+        principal cost of doing business, not a charge left over after it, so
+        this ratio sits close to 1x by construction on a perfectly solvent
+        book — the same reading that means imminent default for a
+        manufacturer. Solvency for a lender is a capital-adequacy and
+        asset-quality question, which needs data this pipeline does not
+        fetch; the honest position is that the risk is unmeasured here rather
+        than measured by this.
 
   Industrial Products:
     label: "Manufacturers of physical goods"
@@ -84,22 +135,46 @@ sectors:
 # A wrong `does_not_apply` suppresses a real quality signal and leaves no
 # trace, which is a worse failure than an indeterminate nobody acts on. So the
 # bar for adding an entry is evidence from the metric's implementation, not
-# intuition about the industry. Three cases cleared the intuition bar and not
-# the evidence one:
+# intuition about the industry.
 #
-#   Finance / cash_conversion — CFO carries the same lending flows that break
-#   FCF yield, and the readings are visibly broken (JIOFIN 981%, PFC errors
-#   outright). But EDELWEISS reads 87% and earns a `cash_cow` flag off it, so
-#   excluding this removes a *favourable* misreading — a different judgement
-#   from the five above, and one nobody has reviewed against a company where
-#   cash conversion would have been the signal that mattered.
+#   Finance / roce_5yr_avg, roce_consistency, cap_proxy — the closest call in
+#   this file, and the answer is no. RoCE divides by equity PLUS borrowings,
+#   so for a lender the denominator is the funded book and the reading sits
+#   structurally in the low teens however good the business is: EDELWEISS
+#   scores nought years above 15% and that is nearer a description of the
+#   sector than a finding about the company. But miscalibrated is not the same
+#   as meaningless, and the distinction is the whole bar here. Unlike the FCF
+#   chain, RoCE does not INVERT for a lender — it still orders one lender
+#   against another the right way round, and Screener computes and publishes
+#   it for NBFCs rather than suppressing it. Excluding all three would also
+#   have left Longevity resting on 35% of its declared weight, which
+#   `low_data_coverage` would then have converted straight back into a capped
+#   action. The answer to a miscalibrated bar is a second bar that fits:
+#   `roe_consistency` was added beside `roce_consistency` for exactly this,
+#   asking the same durability question on the return a balance-sheet business
+#   is actually judged by.
 #
-#   Finance / working_capital_days_trend — reads -457 days for EDELWEISS and
-#   errors for PFC. Whether "working capital" means anything for a
-#   balance-sheet business is a case that needs arguing rather than asserting.
+#   Finance / the reverse-DCF VETO on the price eligibility gate — distinct
+#   from the metric, which IS excluded above. `registry.yaml` names
+#   `reverse_dcf_growth` as a `veto_source`, and gates read the metric results
+#   directly rather than the scores, so the exclusion does not reach them: a
+#   lender can still be vetoed on `reverse_dcf_overpriced`, computed off the
+#   same chain this file calls meaningless. Left alone deliberately — the
+#   veto's failure direction is to refuse a company, and a gate that is too
+#   strict for the wrong reason is a smaller harm than one silently loosened.
+#   Worth revisiting when a lender is actually vetoed by it.
 #
 #   Capital Markets (BSE, CAMS, CDSL, KFINTECH) — exchanges, depositories and
 #   registrars carry large investment and client-float balances that depress
 #   asset turnover, but their cash flows are genuinely free cash flow and
 #   nothing in their statements inverts the way a lender's does. Unreviewed is
 #   the honest answer, and unreviewed reads indeterminate.
+#
+# Two entries moved OUT of this section when the table started reaching the
+# scorer. `cash_conversion` was kept on the reasoning that excluding it would
+# remove a *favourable* misreading (EDELWEISS reads 87% and earns a `cash_cow`
+# flag) — but the file's own rule two paragraphs up is that readings are
+# excluded because they are meaningless, not because they are unflattering,
+# and a false `cash_cow` on a lender whose book value per share compounded at
+# -9.9% is the more dangerous direction of the two. `working_capital_days_trend`
+# was kept pending an argument; the argument is now written beside the entry.

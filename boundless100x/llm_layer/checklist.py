@@ -1,7 +1,11 @@
 """QGLP checklist — maps computed metrics to structured LLM context."""
 
 from boundless100x.compute_engine.metrics.base import MetricResult
-from boundless100x.compute_engine.sector import classify_sector, study_findings
+from boundless100x.compute_engine.sector import (
+    classify_sector,
+    structure_caveat,
+    study_findings,
+)
 
 
 def build_quality_metrics_context(
@@ -41,7 +45,7 @@ def build_quality_metrics_context(
         "earnings_yield_spread": ("Earnings Yield Spread", "%"),
         "market_cap": ("Market Cap", "₹Cr"),
         "institutional_holding": ("Institutional Holding", "%"),
-        "promoter_holding_trend": ("Promoter Holding Δ (3yr)", "pp"),
+        "promoter_holding_trend": ("Promoter Holding (latest)", "%"),
         "promoter_pledge": ("Promoter Pledge", "%"),
         "equity_dilution": ("Equity Dilution (5yr)", "%"),
     }
@@ -76,10 +80,19 @@ def build_promoter_context(metrics: dict[str, MetricResult]) -> str:
 
     promoter = metrics.get("promoter_holding_trend")
     if promoter and promoter.ok:
-        lines.append(f"Promoter holding change (3yr): {promoter.value:.2f} pp")
-        if promoter.metadata:
-            lines.append(f"  Latest: {promoter.metadata.get('latest_holding', 'N/A')}%")
-            lines.append(f"  3yr ago: {promoter.metadata.get('earliest_holding', 'N/A')}%")
+        # `value` is the latest **level**, never the change — see
+        # compute_promoter_trend. Labelling it as a delta told the model that
+        # promoters had bought 32pp of Edelweiss, which is what a
+        # reclassification looks like when the level is read as a change.
+        meta = promoter.metadata or {}
+        lines.append(f"Promoter holding (latest quarter): {promoter.value:.2f}%")
+        change = meta.get("change_pp")
+        if change is not None:
+            quarters = meta.get("quarters_used")
+            window = f" over {quarters} quarters" if quarters else ""
+            earliest = meta.get("earliest_pct")
+            since = f", from {earliest:.2f}%" if isinstance(earliest, (int, float)) else ""
+            lines.append(f"  Change{window}: {change:+.2f} pp{since}")
 
     pledge = metrics.get("promoter_pledge")
     if pledge and pledge.ok:
@@ -139,7 +152,7 @@ def build_key_metrics_context(
         ("fcf_yield", "FCF Yield", "%"),
         ("roce_consistency", "RoCE >15% years", "yrs"),
         ("reinvestment_rate", "Reinvestment Rate", "%"),
-        ("promoter_holding_trend", "Promoter Δ 3yr", "pp"),
+        ("promoter_holding_trend", "Promoter Holding (latest)", "%"),
         ("operating_leverage", "Op Leverage", "x"),
         ("market_cap", "Market Cap", "₹Cr"),
     ]
@@ -171,13 +184,23 @@ def build_qg_quadrant_context(metrics: dict[str, MetricResult]) -> str:
     label = quadrant_labels.get(qg.value, qg.value)
     meta = qg.metadata or {}
 
-    return (
+    rendered = (
         f"Quality-Growth Matrix: {label}\n"
         f"  Avg RoCE: {meta.get('avg_roce', 'N/A'):.1f}% "
         f"(threshold: {meta.get('quality_threshold', 15)}%)\n"
         f"  PAT CAGR: {meta.get('pat_cagr', 'N/A'):.1f}% "
         f"(threshold: {meta.get('growth_threshold', 15)}%)"
     )
+
+    # Pass 2 receives no sector context of its own, and the quadrant is the
+    # single reading a group structure most distorts — so the caveat travels
+    # here, attached to the claim it qualifies rather than filed somewhere the
+    # model has to connect it back.
+    caveat = meta.get("structure_caveat")
+    if caveat:
+        rendered += f"\n\n{caveat}"
+
+    return rendered
 
 
 def build_growth_decomposition_context(growth_decomposition: dict | None) -> str:
@@ -215,11 +238,17 @@ def build_growth_decomposition_context(growth_decomposition: dict | None) -> str
     # Valuation Check
     vc = growth_decomposition.get("valuation_check", {})
     pe = vc.get("current_pe")
-    peg = vc.get("trailing_peg")
+    # Named by its denominator, because the scored `trailing_peg` metric in
+    # `key_metrics` above divides by a different window and the model was
+    # shown both under one name.
+    peg = vc.get("pe_to_pat_cagr_5yr")
+    peg_label = vc.get("peg_label") or "P/E / 5yr PAT CAGR"
     verdict = vc.get("verdict", "")
     lines.append("\nValuation Reality Check:")
     lines.append(f"  Current P/E: {pe:.1f}x" if pe is not None else "  Current P/E: N/A")
-    lines.append(f"  Trailing PEG: {peg:.2f}x" if peg is not None else "  Trailing PEG: N/A")
+    lines.append(
+        f"  {peg_label}: {peg:.2f}x" if peg is not None else f"  {peg_label}: N/A"
+    )
     if verdict:
         lines.append(f"  Verdict: {verdict}")
 
@@ -310,5 +339,13 @@ def build_sector_context(metadata: dict | None) -> str:
         lines.append(
             "Treat sector as unverified — do not infer a tailwind the data does not support."
         )
+
+    # Pass 1 reads the annual report, which is where segment disclosures
+    # actually live — so it is the pass best placed to act on this, provided
+    # it is told to look.
+    caveat = structure_caveat(meta)
+    if caveat:
+        lines.append("")
+        lines.append(caveat)
 
     return "\n".join(lines)

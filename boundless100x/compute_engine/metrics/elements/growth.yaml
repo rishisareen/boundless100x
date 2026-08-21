@@ -21,6 +21,31 @@ metrics:
       bands: [[25, "rapid"], [12, "steady"]]
       low_label: "slow"
 
+  book_value_cagr_5yr:
+    # Growth that cannot be manufactured. Revenue is an interest spread for a
+    # lender and moves with rates; PAT can be produced for a year by releasing
+    # provisions or selling a stake. Book value per share can only be grown by
+    # earning and retaining — and it is REDUCED by the share issuance that
+    # funds a balance-sheet business, which is why this is per share and not
+    # the aggregate net worth.
+    name: "Book Value / Share CAGR (5yr)"
+    module: "builtin.growth"
+    function: "compute_book_value_cagr"
+    inputs: ["balance_sheet", "metadata"]
+    params: { years: 5 }
+    scoring: { thresholds: [0, 5, 10, 15, 20, 25], direction: "higher_is_better", weight: 0.10 }
+    display: { format: "{:.1f}%", section: "growth_decomposition", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        How fast the company compounded what shareholders actually own, after
+        any dilution. The cleanest single growth number for a financial, and a
+        useful check anywhere: earnings that grow while book value does not
+        were not retained.
+      bands: [[20, "rapid"], [10, "steady"]]
+      low_label: "slow"
+
   pat_cagr_5yr:
     name: "PAT CAGR (5yr)"
     module: "builtin.growth"

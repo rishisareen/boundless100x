@@ -137,9 +137,9 @@ Generated: <generated>
 |--------|-------|
 | Current P/E Ratio | 30.0x |
 | 5-Year PAT CAGR | 25.0% |
-| Trailing PEG Ratio | 1.20x |
+| P/E ÷ 5yr PAT CAGR | 1.20x |
 
-**Verdict:** Trailing PEG of 1.20x is between 1.0-2.0 — fairly valued relative to growth. Not a screaming bargain but acceptable if growth quality is high.
+**Verdict:** P/E ÷ 5yr PAT CAGR of 1.20x is between 1.0-2.0 — fairly valued relative to growth. Not a screaming bargain but acceptable if growth quality is high.
 
 
 ---

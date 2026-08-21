@@ -50,11 +50,13 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "very_short_history_unreliable": ("Very Short History — Unreliable", "bad"),
     "bonus_split_adjusted": ("Bonus/Split Adjusted", "neutral"),
     "high_dilution": ("Significant Equity Dilution", "bad"),
+    "book_value_eroding": ("Book Value Per Share Shrinking", "bad"),
     "minimal_dilution": ("Minimal Equity Dilution", "good"),
     # Profitability
     "consistently_high_roce": ("Consistently High RoCE", "good"),
     "exceptional_roce": ("Exceptional RoCE (>25%)", "good"),
     "improving_roce": ("Improving RoCE Trend", "good"),
+    "thin_asset_returns": ("Thin Return on Assets (<1%)", "bad"),
     "declining_roce": ("Declining RoCE Trend", "bad"),
     "high_operating_margin": ("High Operating Margin", "good"),
     "improving_margins": ("Improving Margins", "good"),
@@ -68,6 +70,8 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "attractively_valued_peg": ("Attractively Valued (PEG < 1)", "good"),
     "expensive_peg": ("Expensive PEG (>2.5x)", "bad"),
     "attractive_trailing_peg": ("Attractive Trailing PEG", "good"),
+    "below_book_value": ("Trading Below Book Value", "good"),
+    "rich_price_to_book": ("Rich Price / Book (>5x)", "bad"),
     "pe_above_historical_75th": ("PE Above 75th Percentile — Expensive", "bad"),
     "pe_below_historical_25th": ("PE Below 25th Percentile — Cheap", "good"),
     "pe_band_legacy_price_basis": ("P/E Band Built on Adjusted Prices — Refetch to Correct", "neutral"),
@@ -100,6 +104,7 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
     "promoter_reducing_stake": ("Promoter Reducing Stake", "bad"),
     "promoter_pledge_red_flag": ("Promoter Pledge — Red Flag", "bad"),
     # Longevity
+    "consistently_high_roe": ("Consistently High RoE", "good"),
     "wide_moat_cap": ("Wide Moat (Market Cap Proxy)", "good"),
     "moderate_moat_cap": ("Moderate Moat (Market Cap Proxy)", "neutral"),
     "highly_stable_margins": ("Highly Stable Margins", "good"),
@@ -131,6 +136,13 @@ FLAG_LABELS: dict[str, tuple[str, str]] = {
         )
         for year in range(1, 13)
     },
+    # Structural caveat on a zero-weight metric. Not forward-looking, but it
+    # obeys the same rule and for the same reason: `quality_growth_quadrant`
+    # carries weight 0.0, so nothing this flag says moved the composite, and a
+    # flag that renders under an SQGLP element implies it did.
+    "consolidated_group_ratios": (
+        "Consolidated Group — Blended Segment Ratios", "neutral"
+    ),
     # Forward signals (Phase 2, zero weight — see FORWARD_SIGNALS_ELEMENT)
     "rerating_headroom_favourable": ("Re-rating Headroom — Favourable", "good"),
     "rerating_headroom_stretched": ("Re-rating Headroom — Stretched", "bad"),
@@ -164,6 +176,7 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
     "roiic": ("quality_business", "ROIIC (Incremental Capital)"),
     "capital_reinvestment_rate": ("quality_business", "Capital Reinvestment Rate"),
     "roe_5yr_avg": ("quality_business", "ROE 5yr Avg"),
+    "roa_5yr_avg": ("quality_business", "RoA 5yr Avg"),
     "operating_margin_5yr": ("quality_business", "OPM 5yr Avg"),
     "dupont_margin": ("quality_business", "DuPont: Net Margin"),
     "dupont_turnover": ("quality_business", "DuPont: Asset Turnover"),
@@ -190,11 +203,13 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
     "growth_quality_grade": ("growth", "Growth Quality Grade"),
     "revenue_growth_consistency": ("growth", "Revenue Growth Consistency"),
     "revenue_cagr_3yr": ("growth", "Revenue CAGR 3yr"),
+    "book_value_cagr_5yr": ("growth", "Book Value/Share CAGR 5yr"),
     "ebit_cagr_5yr": ("growth", "EBIT CAGR 5yr"),
     "ebit_cagr_3yr": ("growth", "EBIT CAGR 3yr"),
     "price_lever_signal": ("growth", "Real Revenue Growth (unscored)"),
     # Longevity
     "roce_consistency": ("longevity", "RoCE >15% Years"),
+    "roe_consistency": ("longevity", "RoE >15% Years"),
     "cap_proxy": ("longevity", "CAP Proxy"),
     "revenue_growth_streak": ("longevity", "Growth Streak"),
     "gross_margin_stability": ("longevity", "Margin Stability"),
@@ -203,6 +218,7 @@ METRIC_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
     "fcf_consistency": ("longevity", "FCF+ Years"),
     # Price
     "pe_ttm": ("price", "PE TTM"),
+    "price_to_book": ("price", "Price / Book"),
     "peg_ratio": ("price", "PEG Ratio"),
     "trailing_peg": ("price", "Trailing PEG"),
     "ev_ebitda": ("price", "EV/EBITDA"),
@@ -233,11 +249,13 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "very_short_history_unreliable": "growth",
     "bonus_split_adjusted": "growth",
     "high_dilution": "growth",
+    "book_value_eroding": "growth",
     "minimal_dilution": "growth",
     # Quality Business (Profitability + Leverage + Efficiency)
     "consistently_high_roce": "quality_business",
     "exceptional_roce": "quality_business",
     "improving_roce": "quality_business",
+    "thin_asset_returns": "quality_business",
     "declining_roce": "quality_business",
     "high_operating_margin": "quality_business",
     "improving_margins": "quality_business",
@@ -257,6 +275,8 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "attractively_valued_peg": "price",
     "expensive_peg": "price",
     "attractive_trailing_peg": "price",
+    "below_book_value": "price",
+    "rich_price_to_book": "price",
     "pe_above_historical_75th": "price",
     "pe_below_historical_25th": "price",
     "dcf_undervalued": "price",
@@ -281,6 +301,7 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     "promoter_reducing_stake": "quality_management",
     "promoter_pledge_red_flag": "quality_management",
     # Longevity
+    "consistently_high_roe": "longevity",
     "wide_moat_cap": "longevity",
     "moderate_moat_cap": "longevity",
     "highly_stable_margins": "longevity",
@@ -301,6 +322,11 @@ FLAG_ELEMENT_MAP: dict[str, str] = {
     # default would have returned, so the registration is visible rather than
     # accidental — the default is what let it go unnoticed in FLAG_LABELS.
     "low_data_coverage": "composite",
+    # See the note beside this flag's label. It lands here because
+    # FORWARD_SIGNALS_ELEMENT is the bucket for "said something, scored
+    # nothing" — the property that matters — rather than because a group
+    # structure is a forward signal.
+    "consolidated_group_ratios": FORWARD_SIGNALS_ELEMENT,
     # Forward signals (Phase 2, zero weight)
     "rerating_headroom_favourable": FORWARD_SIGNALS_ELEMENT,
     "rerating_headroom_stretched": FORWARD_SIGNALS_ELEMENT,

@@ -405,3 +405,84 @@ class TestForwardSignalHashDoesNotPartitionMomentum:
         assert sorted(r["config_hash"] for r in momentum["regimes"]) == [
             "regime-one", "regime-two"
         ]
+
+
+class TestTheHeadlineComesFromTheCurrentRegime:
+    """Which regime supplies the reading, not just which rows may be diffed.
+
+    Refusing to bridge regimes inside a step was only half the rule. The
+    freshest step in the log can still belong to a RETIRED regime — that is
+    precisely the state of every ticker on the first run after a scoring
+    change, which writes one row under the new hash and so cannot form a step.
+    The report then printed today's composite above a delta computed with the
+    previous ruler, with nothing on the page saying they differed.
+    """
+
+    def test_a_retired_regimes_pair_never_supplies_the_headline(self):
+        """The regression, in its exact shape.
+
+        Two runs under the old regime, then one under the new one on the same
+        day as the second — a `--no-llm` run followed by a real one, after a
+        registry change.
+        """
+        rows = (
+            rows_at(["2026-08-07", "2026-08-21"], [4.20, 4.16], config_hash="old")
+            + rows_at(["2026-08-21"], [3.54], config_hash="new")
+        )
+
+        result = trajectory.compute_momentum("TEST", rows=rows)
+
+        assert result["status"] == trajectory.INSUFFICIENT_HISTORY
+        assert result["latest"] is None
+        # The retired regime's numbers are kept — they were real observations,
+        # and losing them would be a different failure.
+        assert any(r["steps"] for r in result["regimes"] if r["config_hash"] == "old")
+
+    def test_the_reason_names_the_regime_change_rather_than_thin_history(self):
+        """"No reading" has two causes and they call for opposite responses.
+
+        A company nobody has scored twice needs another run. A company whose
+        ruler changed has plenty of history that simply cannot be compared —
+        and a reader who saw a trajectory last week needs to be able to tell
+        which happened.
+        """
+        rows = (
+            rows_at(["2026-08-07", "2026-08-21"], [4.20, 4.16], config_hash="old")
+            + rows_at(["2026-08-21"], [3.54], config_hash="new")
+        )
+
+        reason = trajectory.compute_momentum("TEST", rows=rows)["reason"]
+
+        assert "regime changed" in reason
+        assert "new" in reason
+        assert "different ruler" in reason
+
+    def test_a_second_run_under_the_new_regime_restores_the_reading(self):
+        """The baseline restarts; it does not disappear."""
+        rows = (
+            rows_at(["2026-08-07", "2026-08-21"], [4.20, 4.16], config_hash="old")
+            + rows_at(["2026-08-21", "2026-09-04"], [3.54, 3.80], config_hash="new")
+        )
+
+        result = trajectory.compute_momentum("TEST", rows=rows)
+
+        assert result["status"] == trajectory.OK
+        assert result["latest"]["config_hash"] == "new"
+        assert result["latest"]["composite_from"] == 3.54
+        assert result["latest"]["composite_to"] == 3.80
+
+    def test_an_older_current_regime_still_wins_over_a_newer_retired_one(self):
+        """Recency of the STEP is not the test; membership of the current
+        regime is. A regime reverted to (a threshold rolled back, so the hash
+        returns to a previous value) has its own older rows, and those are the
+        comparable ones."""
+        rows = (
+            rows_at(["2026-01-01", "2026-02-01"], [5.0, 5.5], config_hash="live")
+            + rows_at(["2026-06-01", "2026-07-01"], [9.0, 9.9], config_hash="retired")
+            + rows_at(["2026-08-01"], [5.7], config_hash="live")
+        )
+
+        result = trajectory.compute_momentum("TEST", rows=rows)
+
+        assert result["latest"]["config_hash"] == "live"
+        assert result["latest"]["composite_to"] == 5.7

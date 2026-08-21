@@ -8,7 +8,9 @@ metrics:
     name: "Quality-Growth Matrix Position"
     module: "builtin.composite"
     function: "compute_qg_quadrant"
-    inputs: ["financials", "ratios"]
+    # `metadata` carries the industry breadcrumb this reads to tell a single
+    # operating business from a holding company whose ratios are a blend.
+    inputs: ["financials", "ratios", "metadata"]
     params:
       quality_threshold: 15
       growth_threshold: 15

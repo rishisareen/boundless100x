@@ -179,8 +179,22 @@ class TestProvenanceIsNotSemantics:
 # before it becomes uncomparable to every row after, permanently, because the
 # log is append-only. Update them only alongside a deliberate weight, gate,
 # threshold, macro or metric-definition change — never to make a red test green.
-SHIPPED_REGISTRY_HASH = "8e3c4115e9cf"
-SHIPPED_FORWARD_SIGNAL_HASH = "f693039de714"
+# Last moved deliberately, all three together, by the lender-scoring change:
+#   * four metrics added to the registry (`roa_5yr_avg`, `roe_consistency`,
+#     `price_to_book`, `book_value_cagr_5yr`) — scored, so scoring hash;
+#   * a `fallback_conditions` clause on the reinvestment eligibility gate;
+#   * `sector_applicability.yaml` entering the scoring hash for the first time,
+#     because the scorer now reads it. It was display data while only the
+#     report read it and was correctly absent; the moment an entry in it could
+#     withdraw a metric from a composite, a table edit became a regime change
+#     — and one that would otherwise have been recorded under the unchanged
+#     hash of the regime it replaced;
+#   * `metadata` added to `quality_growth_quadrant`'s inputs so it can tell a
+#     holding company's blended ratios from an operating business's. That
+#     metric carries weight 0.0, so this moved the FORWARD hash and not the
+#     scoring one — the split doing exactly what it exists for.
+SHIPPED_REGISTRY_HASH = "33deaf6ef9fb"
+SHIPPED_FORWARD_SIGNAL_HASH = "ab0824fb6710"
 
 # The hash the service actually stamps onto score-history rows. It differs
 # from the pair above because `service.analyze()` constructs the engine with
@@ -191,7 +205,7 @@ SHIPPED_FORWARD_SIGNAL_HASH = "f693039de714"
 # the regime a reader can actually see in `score_history.jsonl` is this one,
 # and a change that moved it while leaving the default alone would fragment
 # real history with every test still green.
-CONFIGURED_REGISTRY_HASH = "1d9f30d09df3"
+CONFIGURED_REGISTRY_HASH = "95fa358589e9"
 
 
 def add_key(registry_dir, filename: str, metric_id: str, key: str, value):
@@ -397,3 +411,76 @@ class TestForwardSignalRegimeIsSeparate:
     def test_the_two_hashes_are_not_the_same_digest(self):
         engine = ComputeEngine()
         assert engine.registry_hash != engine.forward_signal_hash
+
+
+class TestTheApplicabilityTableIsScoringRegime:
+    """`sector_applicability.yaml` decides which metrics reach a composite.
+
+    It spent its first life as display data — only the report read it, and a
+    metric it called meaningless was annotated as such while still being
+    scored. Hash-exempt was correct then, for the same reason `presentation:`
+    is exempt: nothing about how a number is *described* can change it.
+
+    Wiring it into the scorer inverted that. An entry now withdraws a metric
+    from an element mean and from the coverage denominator, so adding one line
+    to that file changes every lender's score — and score history is
+    append-only, so a change recorded under the previous regime's hash could
+    never be told apart afterwards.
+    """
+
+    def _table_with(self, extra_metric: str) -> dict:
+        return {
+            "Finance": {
+                "label": "Lenders",
+                "not_applicable": {
+                    extra_metric: "Reads meaninglessly for a lending balance sheet.",
+                },
+            }
+        }
+
+    def test_an_added_exclusion_moves_the_scoring_hash(self, monkeypatch):
+        """The property the whole entry exists for."""
+        from boundless100x.compute_engine import engine as engine_module
+
+        before = ComputeEngine().registry_hash
+        monkeypatch.setattr(
+            engine_module, "load_sector_applicability",
+            lambda *a, **k: self._table_with("roce_5yr_avg"),
+        )
+
+        assert ComputeEngine().registry_hash != before
+
+    def test_an_added_exclusion_leaves_the_forward_signal_hash(self, monkeypatch):
+        """The split reads in both directions.
+
+        A zero-weight metric never reaches an element mean, so excluding one
+        from a sector cannot move a score and must not reset any ticker's
+        momentum baseline — Phase 5 needs that trajectory evidence intact
+        while it calibrates the forward signals.
+        """
+        from boundless100x.compute_engine import engine as engine_module
+
+        before = ComputeEngine().forward_signal_hash
+        monkeypatch.setattr(
+            engine_module, "load_sector_applicability",
+            lambda *a, **k: self._table_with("roce_5yr_avg"),
+        )
+
+        assert ComputeEngine().forward_signal_hash == before
+
+    def test_the_shipped_table_actually_reaches_the_hash(self, monkeypatch):
+        """Guards the wiring, not just the intent.
+
+        Without this, `load_sector_applicability` silently returning `{}` —
+        a moved file, a renamed key — would leave the hash stable and every
+        assertion above still green, while the scorer quietly stopped
+        excluding anything.
+        """
+        from boundless100x.compute_engine import engine as engine_module
+
+        before = ComputeEngine().registry_hash
+        monkeypatch.setattr(
+            engine_module, "load_sector_applicability", lambda *a, **k: {}
+        )
+
+        assert ComputeEngine().registry_hash != before

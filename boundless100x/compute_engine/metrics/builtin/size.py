@@ -261,7 +261,19 @@ def compute_promoter_trend(data: dict, params: dict) -> MetricResult:
         value=latest,
         raw_series=promoter.tolist(),
         flags=flags,
-        metadata={"change_pp": change, "quarters_used": len(promoter)},
+        # `value` is the **level**; the change is here. Both endpoints travel
+        # with it because a consumer that has only the delta cannot state what
+        # it was measured between, and one that has only `value` cannot tell a
+        # stable promoter from one who halved their stake. `checklist.py` read
+        # two key names nothing ever wrote and rendered "N/A" beside a delta it
+        # had mislabelled as the level — the LLM then spent a red flag and a
+        # monitorable working out that the resulting +32pp was an artifact.
+        metadata={
+            "change_pp": change,
+            "latest_pct": latest,
+            "earliest_pct": earliest,
+            "quarters_used": len(promoter),
+        },
     )
 
 

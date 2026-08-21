@@ -25,6 +25,30 @@ metrics:
       bands: [[25, "exceptional"], [15, "solid"]]
       low_label: "weak"
 
+  roa_5yr_avg:
+    # The return measure that survives a lending balance sheet. RoCE is
+    # diluted by the borrowings that fund a lender and RoE is inflated by
+    # them; this divides by everything the company owns and is comparable
+    # across both kinds of business. Thresholds span the two: 1.5% is a fair
+    # NBFC and a failing manufacturer, which is why the bands say so rather
+    # than pretending one line fits.
+    name: "RoA (5yr Avg)"
+    module: "builtin.profitability"
+    function: "compute_roa_avg"
+    inputs: ["financials", "balance_sheet"]
+    params: { years: 5 }
+    scoring: { thresholds: [0.5, 1.5, 3.0, 6.0, 10.0, 15.0], direction: "higher_is_better", weight: 0.10 }
+    display: { format: "{:.2f}%", section: "quality_scorecard", peer_compare: true }
+    presentation:
+      unit: "percent"
+      direction: "higher_is_better"
+      meaning: >-
+        What the business earns on everything it owns, borrowed money
+        included. Read beside the equity multiplier: a thin return here and a
+        respectable RoE means the returns are made with leverage, not margin.
+      bands: [[6.0, "strong"], [1.5, "thin — normal for a lender"]]
+      low_label: "very thin"
+
   roiic:
     name: "ROIIC (Return on Incremental Capital)"
     module: "builtin.profitability"

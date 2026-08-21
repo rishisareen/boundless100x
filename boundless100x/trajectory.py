@@ -160,14 +160,38 @@ def compute_momentum(
     which resolves same-day re-runs before anything is diffed.
 
     Returns `{ticker, status, reason, latest, regimes}`. `latest` is the
-    freshest *organic* step and is what a report headline should show; it is
-    None whenever `status` is `insufficient_history`.
+    freshest organic step **from the regime the newest row was scored under**,
+    and is what a report headline should show; it is None whenever `status` is
+    `insufficient_history`.
     """
     if rows is None:
         rows = score_history.load_history(ticker, path=path)
 
+    usable = _usable(rows)
+
+    # The regime the company is scored under *now* — the one a reader is
+    # looking at today's composite from.
+    #
+    # This used to be "whichever organic step ends latest", which is a
+    # different question and gives a different answer on exactly the run that
+    # matters: the first one after a regime change. That run writes a single
+    # row under the new hash, which cannot form a step, so the freshest step
+    # in the log still belongs to the RETIRED regime — and a report then
+    # printed today's composite of 3.54 above a trajectory reading
+    # "4.20 -> 4.16", two numbers off two different rulers with nothing saying
+    # so. Bridging regimes inside a step was already refused; this is the same
+    # error one level up, committed by the choice of which step to show.
+    #
+    # Ties on date are broken by log order, and the log is append-only, so the
+    # last usable row is the newest. `_usable` sorts by date with a stable
+    # sort, which preserves that.
+    current_regime = None
+    for when, row in usable:
+        if not bool(row.get("synthetic")):
+            current_regime = (row.get("config_hash"), False)
+
     partitions: dict[tuple, list[tuple[date, dict]]] = {}
-    for when, row in _usable(rows):
+    for when, row in usable:
         key = (row.get("config_hash"), bool(row.get("synthetic")))
         partitions.setdefault(key, []).append((when, row))
 
@@ -191,27 +215,29 @@ def compute_momentum(
         })
     regimes.sort(key=lambda r: (r["synthetic"], r["to_date"]))
 
-    # The headline is organic only. A backfilled pair may well be the most
-    # recent thing in the log, but it describes a reconstruction rather than
-    # something that was observed.
-    organic_steps = [
+    # The headline is organic only, and only from the current regime. A
+    # backfilled pair may well be the most recent thing in the log, but it
+    # describes a reconstruction rather than something that was observed; a
+    # retired regime's pair describes a company measured with a different
+    # ruler. Both are kept in `regimes` and neither may be the headline.
+    current_steps = [
         step
         for regime in regimes
-        if not regime["synthetic"]
+        if (regime["config_hash"], regime["synthetic"]) == current_regime
         for step in regime["steps"]
     ]
-    latest = max(organic_steps, key=lambda s: s["to_date"]) if organic_steps else None
+    latest = max(current_steps, key=lambda s: s["to_date"]) if current_steps else None
 
     return {
         "ticker": ticker,
         "status": OK if latest else INSUFFICIENT_HISTORY,
-        "reason": "" if latest else _no_reading_reason(regimes),
+        "reason": "" if latest else _no_reading_reason(regimes, current_regime),
         "latest": latest,
         "regimes": regimes,
     }
 
 
-def _no_reading_reason(regimes: list[dict]) -> str:
+def _no_reading_reason(regimes: list[dict], current_regime=None) -> str:
     """Why there is no momentum figure — never left to the reader to guess."""
     if not regimes:
         return (
@@ -224,6 +250,30 @@ def _no_reading_reason(regimes: list[dict]) -> str:
             "is not an observation, so it never supplies a momentum reading"
         )
     organic = [r for r in regimes if not r["synthetic"]]
+
+    # The specific, common case: earlier regimes DO have readings, and naming
+    # that is the difference between "this company has never been measured"
+    # and "the ruler changed, so the baseline restarted here". Without it, a
+    # reader who saw a trajectory last week and none this week has no way to
+    # tell a scoring change from a broken pipeline.
+    retired_with_steps = [
+        r for r in organic
+        if (r["config_hash"], r["synthetic"]) != current_regime and r["steps"]
+    ]
+    if current_regime and retired_with_steps:
+        current_rows = sum(
+            r["rows"] for r in organic
+            if (r["config_hash"], r["synthetic"]) == current_regime
+        )
+        return (
+            f"the scoring regime changed: only {current_rows} run(s) have been "
+            f"scored under the current one ({current_regime[0]}), and two are "
+            f"needed to measure a change. Earlier runs under "
+            f"{len(retired_with_steps)} retired regime(s) are kept but cannot "
+            f"be compared with today's score — they were produced by a "
+            f"different ruler"
+        )
+
     return (
         f"not enough history yet: {sum(r['rows'] for r in organic)} scored run(s) "
         f"across {len(organic)} scoring regime(s), and two runs under one regime "

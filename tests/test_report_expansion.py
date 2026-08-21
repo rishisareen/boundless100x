@@ -745,13 +745,64 @@ LENDER = "Finance"                    # reviewed, five metrics excluded
 MANUFACTURER = "Industrial Products"  # reviewed, nothing excluded
 UNREVIEWED = "Power"                  # in no entry at all — indeterminate
 
-# Metrics picked for their weight share rather than their meaning. `roiic`
-# carries exactly 0.10 of Quality — Business, which is R6's boundary stated in
-# the registry rather than restated in a test; `dupont_equity_multiplier`
-# carries 0.03, comfortably under it.
-AT_THE_BAR = "roiic"
-UNDER_THE_BAR = "dupont_equity_multiplier"
+# Metrics picked for their weight share rather than their meaning: one heavy
+# enough that a zero on it fires R6's trigger, one far too light to.
+#
+# **Derived, not written down**, for the reason
+# `test_the_weight_share_is_of_the_elements_declared_total` states in its own
+# docstring: an element gaining a metric moves every share in it. These were
+# hardcoded to `roiic` at exactly 0.10 of a Quality — Business that summed to
+# exactly 1.0, and adding `roa_5yr_avg` to the element moved `roiic` to 9.1%
+# — every test below then read as a claim about the trigger when it was a
+# claim about that coincidence. The exact-boundary case that assumption also
+# used to cover is now tested directly, on a registry built to have one, in
+# `TestTheZeroScoreTrigger`.
 BAR_ELEMENT = "quality_business"
+
+
+def _pick_bar_metrics() -> tuple[str, str]:
+    """(heaviest-under-the-bar, lightest-at-or-above-it) within BAR_ELEMENT."""
+    metrics = ComputeEngine().metrics
+    shares = {}
+    total = sum(
+        (c.get("scoring") or {}).get("weight", 0) or 0
+        for c in metrics.values()
+        if c["element"] == BAR_ELEMENT
+    )
+    for metric_id, config in metrics.items():
+        if config["element"] != BAR_ELEMENT:
+            continue
+        weight = (config.get("scoring") or {}).get("weight", 0) or 0
+        if weight > 0:
+            shares[metric_id] = weight / total
+
+    at = min(
+        (m for m, s in shares.items() if s >= MIN_WEIGHT_SHARE),
+        key=lambda m: (shares[m], m),
+    )
+    under = max(
+        (m for m, s in shares.items() if s < MIN_WEIGHT_SHARE),
+        key=lambda m: (-shares[m], m),
+    )
+    return at, under
+
+
+AT_THE_BAR, UNDER_THE_BAR = _pick_bar_metrics()
+
+
+def lender_exclusions_in(element: str) -> set[str]:
+    """The metrics the shipped table withdraws from a lender, in one element.
+
+    Read off the table for the same reason the bar metrics above are derived:
+    these tests are about whether the mismatch trigger fires and names what it
+    withdrew, not about the size of the table on the day they were written.
+    """
+    metrics = ComputeEngine().metrics
+    excluded = SectorApplicability(set(metrics)).not_applicable_metrics(LENDER)
+    return {
+        metric_id for metric_id in excluded
+        if metrics[metric_id]["element"] == element
+    }
 
 
 # ── Builders ──────────────────────────────────────────────────────────────
@@ -1078,11 +1129,8 @@ class TestTheSubjectDoesNotVoteOnItself:
 
 
 class TestTheZeroScoreTrigger:
-    def test_a_zero_at_exactly_ten_percent_of_the_elements_weight_fires(
-        self, tmp_path, decide
-    ):
-        """R6's boundary, read off the registry rather than restated here:
-        `roiic` carries 0.10 of Quality — Business exactly."""
+    def test_a_zero_at_or_above_the_weight_bar_fires(self, tmp_path, decide):
+        """The lightest metric in the element that still clears R6's bar."""
         corpus = corpus_where(tmp_path / "c", AT_THE_BAR, zero=1, comparable=7)
 
         section = decide(corpus, element=BAR_ELEMENT, scored={AT_THE_BAR: 0.0})
@@ -1091,13 +1139,51 @@ class TestTheZeroScoreTrigger:
         assert section.fired_triggers == (ZERO_SCORE_GAP,)
 
     def test_a_zero_below_the_weight_bar_does_not_fire(self, tmp_path, decide):
-        """`dupont_equity_multiplier` is 3% of the element. A zero there cannot
+        """The heaviest metric that still misses the bar. A zero there cannot
         have moved the score enough to need explaining."""
         corpus = corpus_where(tmp_path / "c", UNDER_THE_BAR, zero=1, comparable=7)
 
         section = decide(corpus, element=BAR_ELEMENT, scored={UNDER_THE_BAR: 0.0})
 
         assert not section.expand
+
+    def test_the_bar_is_inclusive_at_exactly_the_share(self, tmp_path, pairs):
+        """`>=` not `>`, tested on a registry built to sit on the boundary.
+
+        No shipped metric lands on exactly MIN_WEIGHT_SHARE of its element and
+        none is obliged to — the shares move whenever an element gains a
+        metric. So the inclusivity of the comparison is pinned here, against
+        two metrics weighted to put one of them exactly on the line, rather
+        than resting on a coincidence in the shipped weights that a later
+        registry edit would silently retire.
+        """
+        configs = {
+            "on_the_line": {
+                "element": BAR_ELEMENT,
+                "name": "On The Line",
+                "scoring": {"weight": MIN_WEIGHT_SHARE},
+            },
+            "the_rest": {
+                "element": BAR_ELEMENT,
+                "name": "The Rest",
+                "scoring": {"weight": 1.0 - MIN_WEIGHT_SHARE},
+            },
+        }
+        decider = ExpansionDecider(
+            configs, pairs,
+            corpus_where(tmp_path / "c", "on_the_line", zero=1, comparable=7),
+        )
+
+        assert decider.weight_share("on_the_line") == pytest.approx(MIN_WEIGHT_SHARE)
+
+        section = decider.evaluate(
+            read_metrics(configs, {"on_the_line": 1.0, "the_rest": 1.0}),
+            scores_for({"on_the_line": 0.0}),
+            elements=[BAR_ELEMENT],
+        )[BAR_ELEMENT]
+
+        assert section.expand
+        assert ZERO_SCORE_GAP in section.fired_triggers
 
     def test_the_weight_share_is_of_the_elements_declared_total(
         self, engine, metric_configs, pairs
@@ -1127,7 +1213,11 @@ class TestTheZeroScoreTrigger:
             differs += weight != pytest.approx(weight / total)
 
         assert differs, "no element's declared weights sum to anything but 1.0"
-        assert decider.weight_share(AT_THE_BAR) == pytest.approx(MIN_WEIGHT_SHARE)
+        # The fixture self-check: whatever `_pick_bar_metrics` chose really
+        # does straddle the bar, so every test using them is testing the
+        # trigger rather than an assumption about the shipped weights.
+        assert decider.weight_share(AT_THE_BAR) >= MIN_WEIGHT_SHARE
+        assert decider.weight_share(UNDER_THE_BAR) < MIN_WEIGHT_SHARE
 
     def test_a_metric_that_errored_is_not_a_zero(self, tmp_path, decide):
         """R18's exclusion. A `None` score is a gap in the evidence, which the
@@ -1286,9 +1376,12 @@ class TestTheSectionLevelOr:
     ):
         """R7 names every trigger that fired, not the first one.
 
-        Longevity for a lender is the clean two-metric case: `fcf_consistency`
-        is excluded by the sector table, and `roce_consistency` carries 19% of
-        the element, so a zero there clears R6's bar on its own.
+        Longevity for a lender trips both at once: the sector table excludes
+        some of its metrics, and `roce_consistency` carries enough of the
+        element that a zero there clears R6's bar on its own. The excluded set
+        is read off the table rather than listed here — it grew from one metric
+        to two when the table started reaching the scorer, and a list written
+        down would have made that read as a broken trigger.
         """
         corpus = corpus_where(
             tmp_path / "c", "roce_consistency", zero=0, comparable=7
@@ -1300,12 +1393,16 @@ class TestTheSectionLevelOr:
             scored={"roce_consistency": 0.0},
         )
 
-        assert len(section.reasons) == 2
         assert set(section.fired_triggers) == {SECTOR_MISMATCH, ZERO_SCORE_GAP}
-        assert sorted(r.metric_name for r in section.reasons) == [
-            "FCF Positive Count (10yr)",
-            "RoCE > 15% Count (10yr)",
-        ]
+
+        mismatched = {
+            r.metric_id for r in section.reasons if r.trigger == SECTOR_MISMATCH
+        }
+        zeroed = {r.metric_id for r in section.reasons if r.trigger == ZERO_SCORE_GAP}
+
+        assert mismatched == lender_exclusions_in("longevity")
+        assert zeroed == {"roce_consistency"}
+        assert len(section.reasons) == len(mismatched) + 1
 
     def test_a_finding_reached_by_several_sections_is_stated_in_each(
         self, tmp_path, decide
@@ -1323,7 +1420,8 @@ class TestTheSectionLevelOr:
         assert [e for e, rs in mismatched.items() if rs] == [
             "longevity", "price", "quality_business"
         ]
-        assert len(mismatched["quality_business"]) == 3
+        for element, reasons in mismatched.items():
+            assert {r.metric_id for r in reasons} == lender_exclusions_in(element), element
 
     def test_no_cap_limits_how_many_sections_expand(self, tmp_path, decide):
         """KD5. The length is the verdict, so nothing here budgets it."""
@@ -1399,11 +1497,14 @@ class TestAE1QualityBusinessNamesTheSectorMismatch:
 
         assert section.expand
         assert section.fired_triggers == (SECTOR_MISMATCH,)
-        assert sorted(r.metric_name for r in section.reasons) == [
-            "DuPont: Asset Turnover",
-            "DuPont: Equity Multiplier",
-            "FCF Yield",
-        ]
+        # The three PFC figures this case is built from are named, along with
+        # every other Quality — Business reading the table withdraws from a
+        # lender. Asserting the set rather than those three keeps the case
+        # about the trigger rather than about how many entries the table held
+        # on the day it was written.
+        named = {r.metric_id for r in section.reasons}
+        assert named == lender_exclusions_in(BAR_ELEMENT)
+        assert {"dupont_turnover", "dupont_equity_multiplier", "fcf_yield"} <= named
 
     def test_ae1_each_reason_explains_what_a_lender_is_instead(
         self, tmp_path, decide
@@ -1516,7 +1617,15 @@ class TestAE5NothingFiresAndEverySectionCollapses:
         section = decide(corpus, sector=MANUFACTURER, element=BAR_ELEMENT)
 
         assert not section.expand
-        assert len(section.metrics) == 13
+        # Every metric in the element, counted off the registry. A literal here
+        # asserts the size of the element rather than the completeness of the
+        # decision, and goes red for the one change it should not care about —
+        # the element gaining a metric.
+        assert {d.metric_id for d in section.metrics} == {
+            metric_id
+            for metric_id, config in ComputeEngine().metrics.items()
+            if config["element"] == BAR_ELEMENT
+        }
 
 
 class TestAE8ACorpusBelowTheMinimum:

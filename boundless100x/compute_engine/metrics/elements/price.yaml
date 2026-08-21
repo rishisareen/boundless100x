@@ -32,6 +32,34 @@ metrics:
         them every time. Read it beside `pe_vs_historical`, which does band
         the company against itself.
 
+  price_to_book:
+    # Every other metric in this element divides the price by a FLOW —
+    # earnings, EBITDA, free cash flow. For a lender the latter two are
+    # structurally broken (see sector_applicability.yaml) and the first swings
+    # with the credit cycle, which left a whole sector with no valuation
+    # reading that meant anything. This divides by a stock instead.
+    name: "Price / Book Value"
+    module: "builtin.valuation"
+    function: "compute_price_to_book"
+    inputs: ["metadata"]
+    scoring: { thresholds: [8.0, 5.0, 3.5, 2.5, 1.5, 1.0], direction: "lower_is_better", weight: 0.12 }
+    display: { format: "{:.2f}x", section: "valuation_analysis", peer_compare: true }
+    presentation:
+      unit: "multiple"
+      direction: "lower_is_better"
+      meaning: >-
+        What the market pays for each rupee of the company's own net worth.
+        Only meaningful next to RoE — a business earning 20% on equity is
+        worth several times its book and one earning 8% is not, so the same
+        multiple is cheap in one case and dear in the other.
+      # Banded rather than left to a sector percentile, unlike `pe_ttm` and
+      # `ev_ebitda`: those declare no bands because the peer set decides, and
+      # the peer set is not fetched. Here the absolute number still carries a
+      # reading — below book is a statement about the market's view of the
+      # assets regardless of industry — so a band is better than a shrug.
+      bands: [[5.0, "rich"], [1.5, "moderate"]]
+      low_label: "at or below book"
+
   peg_ratio:
     # Trailing PEG on a 5yr EPS CAGR window — no forward estimate feeds this.
     # See compute_peg's docstring; distinct from trailing_peg only by window

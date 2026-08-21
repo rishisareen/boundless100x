@@ -81,10 +81,21 @@ llm:
                                 # so `estimated_cost_usd_max` rises with it.
   enabled: true
   skip_pass1_if_no_ar: true
-  pass1_ar_char_budget: 3000  # Annual-report chars Pass 1 may read. This is
-                              # the binding cap downstream of the per-section
-                              # caps in annual_reports.sections — raise it to
-                              # let more MD&A reach the prompt.
+  pass1_ar_char_budget: 24000 # Annual-report chars Pass 1 may read, and the
+                              # LAST of two truncations, not the only one:
+                              # `annual_reports.max_text_chars` cuts the
+                              # combined string first. Raising this alone does
+                              # nothing once it exceeds that — both moved
+                              # together, and both belong in any future change.
+                              #
+                              # At 3000 this was about one page for a company
+                              # with six business lines. ~24000 chars is
+                              # roughly 6-8K input tokens against a pass that
+                              # already writes 5K output ones, so the cost is
+                              # small and the qualitative read stops depending
+                              # on the model recognising the company by name —
+                              # which is exactly the dependency that fails on
+                              # the obscure smallcaps a 100x search is for.
   # ── Forward-growth extraction (Stage 1.5) ──
   # A structured-extraction task, not a judgement one, so it carries its own
   # model rather than tracking Pass 1 and 2. `--deep` still moves it to Opus.
@@ -110,6 +121,23 @@ llm:
                                     # FY2024: 4 of the 5 `outlook` mentions in
                                     # a 12,000-char MD&A slice sat past 6,000.
 
+# ── Corporate Announcements ──
+# BSE's filing feed — the only source in this pipeline that postdates the
+# annual report. Everything else is periodic and the newest annual report can
+# be over a year old, which is how a company whose subsidiary had a
+# SEBI-cleared IPO in flight was analysed as though the listing were still
+# hypothetical.
+#
+# Filings reach the LLM passes as context and NOTHING ELSE — no metric reads
+# them, no gate consults them, no score moves on them. A subject line is text a
+# company wrote about itself; it says a document exists, not that a thing is
+# true.
+announcements:
+  enabled: true
+  lookback_days: 365      # The window in which "what has happened since the
+                          # last annual report" is answerable. Longer mostly
+                          # returns filings the retained reports already cover.
+
 # ── Annual Reports ──
 annual_reports:
   enabled: true
@@ -117,13 +145,33 @@ annual_reports:
                           # report's guidance against the next year's delivery
   max_pages: 30           # Fallback window: first N pages, used when a
                           # section cannot be located
-  max_text_chars: 5000    # Cap on the combined single-string AR text
+  max_text_chars: 26000   # Cap on the combined single-string AR text — the
+                          # FIRST of the two truncations Pass 1's text passes
+                          # through, and for a long time the binding one while
+                          # llm.pass1_ar_char_budget carried the comment saying
+                          # it was. At 5000 it discarded three quarters of the
+                          # located sections below before the budget downstream
+                          # was consulted at all, so Pass 1 read roughly one
+                          # page of a multi-segment conglomerate's report and
+                          # its qualitative depth came from what the model
+                          # already knew about a famous company rather than
+                          # from the filing. Sized to pass the sum of the
+                          # section caps below (12000+6000+8000), so the
+                          # located sections now arrive whole.
   scan_pages: 150         # How deep to search for section headings. MD&A
                           # commonly starts past page 100; a 30-page search
                           # finds the chairman's letter and little else.
-  sections:               # Per-section character caps. Keep every cap >=
-                          # max_text_chars, or the all-fallback combined
-                          # string stops matching pre-section behaviour.
+  sections:               # Per-section character caps.
+                          #
+                          # The all-fallback string (no section located; every
+                          # slot holds the same first-N-pages text, and
+                          # `combined_text` returns the LONGEST slot) is capped
+                          # by the largest cap here, so keeping that >= the
+                          # old 5000 is what preserved pre-section behaviour.
+                          # max_text_chars now sits above it deliberately: it
+                          # has to clear the SUM for the found-sections case,
+                          # and in the fallback case the largest cap still
+                          # binds, which is the same text as before.
     mdna: 12000
     chairman: 6000
     governance: 8000

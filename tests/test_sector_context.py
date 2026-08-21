@@ -34,13 +34,36 @@ RAW_DATA_DIR = (
     Path(__file__).parent.parent / "boundless100x" / "data_fetcher" / "raw_data"
 )
 
-# The five the plan names, by their registry ids.
+# Every metric the shipped table withdraws from a lender's score, by registry
+# id. This started as the five the original plan named — all cash-flow-chain
+# and DuPont readings that INVERT for a lender. It grew when the table started
+# reaching the scorer rather than only the report: at that point an entry
+# stopped being a footnote beside a number and became the difference between a
+# metric counting and not counting, and eight more readings that were merely
+# annotated as meaningless had to actually stop being scored.
 LENDER_EXCLUSIONS = {
+    # The original five — the free-cash-flow chain and the two DuPont terms
+    # whose denominators are a lender's product rather than its plant.
     "dupont_turnover",
     "dupont_equity_multiplier",
     "fcf_yield",
     "fcf_consistency",
     "dcf_margin_of_safety",
+    # Same broken chain, reached by two more routes.
+    "reverse_dcf_growth",
+    "ev_ebitda",
+    "cash_conversion",
+    # Capital deployed by a lender IS the loan book, which none of these look
+    # at — so a company funding record lending reads as returning capital.
+    "capital_reinvestment_rate",
+    "reinvestment_rate",
+    "working_capital_days_trend",
+    # Calibrated for a manufacturer, where 4x leverage and 1.2x interest cover
+    # mean distress. For an NBFC they are the business model. The values and
+    # their flags still render and still reach the model; only the mark out of
+    # ten is withdrawn.
+    "debt_equity",
+    "interest_coverage",
 }
 
 
@@ -321,8 +344,36 @@ class TestApplicabilityValidation:
 
 
 class TestShippedApplicabilityTable:
-    def test_finance_excludes_exactly_the_five_lender_metrics(self, applicability):
+    def test_finance_excludes_exactly_the_declared_lender_metrics(self, applicability):
         assert set(applicability.not_applicable_metrics("Finance")) == LENDER_EXCLUSIONS
+
+    def test_no_lender_exclusion_empties_an_element(self, applicability):
+        """The exclusions must not amount to refusing to judge a lender.
+
+        Every excluded metric leaves both sides of the coverage ratio, so an
+        element that lost all of its weight would score `None` and drop out of
+        the composite entirely — a company silently judged on five elements
+        while its peers were judged on six. Quality — Business and Longevity
+        are the two the lender exclusions cut deepest, and the replacements
+        added beside them (`roa_5yr_avg`, `roe_consistency`, `price_to_book`,
+        `book_value_cagr_5yr`) exist to keep this true.
+        """
+        metrics = ComputeEngine().metrics
+        excluded = set(applicability.not_applicable_metrics("Finance"))
+
+        remaining: dict[str, float] = {}
+        for metric_id, config in metrics.items():
+            weight = (config.get("scoring") or {}).get("weight", 0) or 0
+            if weight <= 0 or metric_id in excluded:
+                continue
+            remaining[config["element"]] = remaining.get(config["element"], 0) + weight
+
+        for element in ("quality_business", "longevity", "price", "growth",
+                        "size", "quality_management"):
+            assert remaining.get(element, 0) >= 0.5, (
+                f"{element} keeps only {remaining.get(element, 0):.2f} of its "
+                f"declared weight for a lender"
+            )
 
     def test_the_three_cached_lenders_resolve_all_five(self, applicability):
         """Read off the real cached metadata, not a fixture — the plan's

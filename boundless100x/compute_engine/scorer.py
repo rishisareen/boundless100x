@@ -1,4 +1,23 @@
-"""SQGLP Scorer — maps metric values to 0-10 element scores and a weighted composite."""
+"""SQGLP Scorer — maps metric values to 0-10 element scores and a weighted composite.
+
+**A metric that measures nothing for this kind of company does not score it.**
+`sector_applicability.yaml` has always declared which metrics are meaningless
+for which sector, but for its first life only the *report* read it: the reader
+was told that a lender's DCF margin means nothing while the composite that
+lender was ranked on had already banked it. The distortion ran both ways at
+once — EDELWEISS took a perfect 1.0 on `dcf_margin_of_safety` and a perfect 0.0
+on `dupont_turnover`, one flattering and one damning, both computed off series
+that inverted for the same reason. That is the failure the table was written to
+prevent, arrived at one layer below where it was fixed.
+
+The exclusion is **not** the same event as a metric that errored, and the two
+must not share an outcome. A missing metric leaves the score thinner and
+`_coverage` says so, because the evidence was wanted and could not be got. An
+inapplicable one was never evidence here at all, so it leaves the denominator
+entirely: counting it as absent would drive every lender under
+`low_coverage_threshold` and cap its action for the crime of being a lender —
+the same penalty in a new costume.
+"""
 
 import logging
 
@@ -12,7 +31,8 @@ class SQGLPScorer:
 
     def __init__(self, metrics_config: dict, element_weights: dict,
                  history_waiver_mcap: float | None = None,
-                 low_coverage_threshold: float = 0.85):
+                 low_coverage_threshold: float = 0.85,
+                 applicability=None):
         self.metrics_config = metrics_config
         self.element_weights = element_weights
         # Below this share of declared weight, the composite is flagged as
@@ -22,6 +42,31 @@ class SQGLPScorer:
         # Below this market cap, metrics capped by a short observation window
         # are treated as missing rather than scored low. See _waived_for_history.
         self.history_waiver_mcap = history_waiver_mcap
+        # A `SectorApplicability`, or None to score every metric everywhere.
+        # None is the old behaviour and stays the default so a caller
+        # constructing a scorer directly — the backtest, tests — is not
+        # silently given a different regime than it asked for. The service
+        # passes one.
+        self.applicability = applicability
+
+    def _excluded_for_sector(self, sector: str | None) -> dict[str, str]:
+        """Metric id -> the table's own sentence saying why it does not apply.
+
+        Empty for an unreviewed sector, which is the common case and is NOT a
+        claim that everything applies — see `SectorApplicability`. Empty is
+        also what a missing table gives, so scoring degrades to the
+        pre-applicability regime rather than to no scoring at all.
+        """
+        if self.applicability is None or not sector:
+            return {}
+        try:
+            return self.applicability.not_applicable_metrics(sector)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                f"Sector applicability lookup failed for {sector!r}: {exc} — "
+                f"scoring every metric"
+            )
+            return {}
 
     def _waived_for_history(self, results: dict) -> bool:
         """Whether short-window metrics should be excused for this company.
@@ -44,14 +89,20 @@ class SQGLPScorer:
 
         return mcap.value < self.history_waiver_mcap
 
-    def score(self, results: dict[str, MetricResult]) -> dict:
+    def score(self, results: dict[str, MetricResult], sector: str | None = None) -> dict:
         """Compute SQGLP scores.
+
+        `sector` is the company's Screener breadcrumb sector. Supplied, any
+        metric the applicability table declares meaningless for that sector is
+        excluded from its element and from the coverage denominator. Omitted,
+        every metric scores — the pre-applicability regime.
 
         Returns:
             {
                 "elements": {"size": 7.2, "quality_business": 8.1, ...},
                 "composite": 7.6,
-                "details": {metric_id: {"value": X, "score": Y, "weight": Z}, ...}
+                "details": {metric_id: {"value": X, "score": Y, "weight": Z}, ...},
+                "not_applicable": {metric_id: reason, ...},
             }
         """
         element_weighted_scores: dict[str, float] = {}
@@ -60,6 +111,11 @@ class SQGLPScorer:
         score_flags: list[str] = []
 
         waive_history = self._waived_for_history(results)
+        excluded = self._excluded_for_sector(sector)
+        # Only the exclusions that actually bit — a table entry for a metric
+        # this registry never computed would otherwise be reported to the
+        # reader as a metric withheld from them.
+        applied_exclusions: dict[str, str] = {}
 
         for metric_id, result in results.items():
             if not result.ok:
@@ -85,6 +141,22 @@ class SQGLPScorer:
                     "value": result.value,
                     "score": None,
                     "weight": 0,
+                    "flags": result.flags,
+                }
+                continue
+
+            if metric_id in excluded:
+                # Computed, shown, flagged — just not scored. The value and its
+                # flags travel on, so `debt_risk` still reaches the report's
+                # signal list and the LLM context: what is withdrawn is the
+                # 0-10 judgement made against a threshold calibrated for a
+                # different kind of balance sheet, not the observation.
+                applied_exclusions[metric_id] = excluded[metric_id]
+                details[metric_id] = {
+                    "value": result.value,
+                    "score": None,
+                    "weight": 0,
+                    "not_applicable": excluded[metric_id],
                     "flags": result.flags,
                 }
                 continue
@@ -125,7 +197,7 @@ class SQGLPScorer:
             else:
                 elements[el] = None
 
-        coverage = self._coverage(element_total_weights, details)
+        coverage = self._coverage(element_total_weights, details, applied_exclusions)
         if coverage["composite"] < self.low_coverage_threshold:
             score_flags.append("low_data_coverage")
 
@@ -148,25 +220,52 @@ class SQGLPScorer:
             "details": details,
             "flags": score_flags,
             "coverage": coverage,
+            # What this company was NOT judged on, and the table's reason for
+            # each. Rendered rather than merely honoured: a composite that
+            # quietly stopped counting five metrics is a different number, and
+            # a reader comparing it against another company's is entitled to
+            # know which questions were not asked here.
+            "not_applicable": applied_exclusions,
+            "sector": sector,
         }
 
-    def _declared_weights(self) -> dict[str, float]:
-        """Total weight each element would carry if every metric computed."""
+    def _declared_weights(
+        self, excluded: dict[str, str] | None = None
+    ) -> dict[str, float]:
+        """Total weight each element would carry if every metric computed.
+
+        `excluded` metrics are struck from the total rather than counted as
+        unmet: they are not evidence this company was missing, they are
+        questions that do not apply to it.
+        """
+        skip = excluded or {}
         declared: dict[str, float] = {}
-        for config in self.metrics_config.values():
+        for metric_id, config in self.metrics_config.items():
+            if metric_id in skip:
+                continue
             weight = config.get("scoring", {}).get("weight", 0) or 0
             if weight > 0:
                 declared[config["element"]] = declared.get(config["element"], 0) + weight
         return declared
 
-    def _coverage(self, scored_weights: dict, details: dict) -> dict:
+    def _coverage(
+        self, scored_weights: dict, details: dict,
+        excluded: dict[str, str] | None = None,
+    ) -> dict:
         """How much of the declared evidence actually reached the score.
 
         A renormalised composite reads like a full one, so the share of weight
         behind it has to travel with it. Both errored and deliberately waived
         metrics count as absent — the score is thinner either way.
+
+        Sector-inapplicable metrics are the exception, and leave *both* sides
+        of the ratio. Counting them as absent would report a lender as thinly
+        evidenced for the whole of a metric set that was never about lenders,
+        and `low_data_coverage` caps the displayed action — so the penalty
+        removed from the score would have come straight back as a penalty on
+        the recommendation.
         """
-        declared = self._declared_weights()
+        declared = self._declared_weights(excluded)
 
         by_element = {}
         for element in self.element_weights:
@@ -185,9 +284,15 @@ class SQGLPScorer:
         return {
             "composite": round(weighted / total_weight, 3) if total_weight else 0.0,
             "elements": by_element,
+            # Evidence that was wanted and not got. A sector-inapplicable
+            # metric is not listed: it left the denominator too, so reporting
+            # it here would describe the score as short of something it was
+            # never measured against.
             "unscored": sorted(
                 mid for mid, d in details.items()
-                if d.get("score") is None and self.metrics_config.get(mid, {})
+                if d.get("score") is None
+                and "not_applicable" not in d
+                and self.metrics_config.get(mid, {})
                 .get("scoring", {}).get("weight", 0)
             ),
         }

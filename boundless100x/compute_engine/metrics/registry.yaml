@@ -48,6 +48,17 @@ eligibility_gates:
     rationale: "Compounding requires new capital to earn, not just sit."
     conditions:
       - { metric: roiic, comparator: gte, threshold: 15.0 }
+    # Consulted ONLY when every condition above reads indeterminate, never to
+    # soften one that read and failed. ROIIC is undefined whenever the capital
+    # base shrinks, which for a lender in run-off is a permanent state rather
+    # than a data gap — so this gate returned `indeterminate` for EDELWEISS in
+    # every run it would ever have, and an indeterminate verdict caps the
+    # displayed action forever. A company was being refused for good on a
+    # question the pipeline could not ask it. RoE over five years asks the
+    # same thing one step further back: not what the newest rupee earned, but
+    # whether the equity base earns enough to multiply at all.
+    fallback_conditions:
+      - { metric: roe_5yr_avg, comparator: gte, threshold: 15.0 }
 
 # Short-history metrics stop being penalised below this market cap. Deliberately
 # NOT the size gate's ceiling: that asks "could this still 100x?", this asks

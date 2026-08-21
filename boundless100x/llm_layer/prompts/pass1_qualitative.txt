@@ -16,6 +16,9 @@ Market Cap: ₹{market_cap} Cr
 ## Sector Context
 {sector_context}
 
+## Recent Corporate Filings (BSE) — NEWER than the annual report below
+{announcements}
+
 ## Annual Report / Management Commentary
 {annual_report_text}
 

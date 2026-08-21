@@ -237,6 +237,7 @@ class LLMOrchestrator:
         sector_context: str = "",
         growth_decomposition: dict | None = None,
         eligibility: dict | None = None,
+        announcements_context: str = "",
     ) -> dict:
         """Run the full 2-pass LLM analysis.
 
@@ -264,6 +265,7 @@ class LLMOrchestrator:
                 scores=scores,
                 annual_report_text=annual_report_text or "No annual report available.",
                 sector_context=sector_context,
+                announcements_context=announcements_context,
             )
         else:
             logger.info("[LLM Pass 1] Skipped (no annual report)")
@@ -283,6 +285,7 @@ class LLMOrchestrator:
             pass1_output=results["pass1"],
             growth_decomposition=growth_decomposition,
             eligibility=eligibility,
+            announcements_context=announcements_context,
         )
 
         # Summarize usage
@@ -302,6 +305,7 @@ class LLMOrchestrator:
         scores: dict,
         annual_report_text: str,
         sector_context: str,
+        announcements_context: str = "",
     ) -> dict:
         template = self._load_template("pass1_qualitative.txt")
 
@@ -314,6 +318,7 @@ class LLMOrchestrator:
             flags=build_flags_context(metrics),
             promoter_data=build_promoter_context(metrics),
             sector_context=sector_context or "No sector context available.",
+            announcements=announcements_context or "No corporate filings were read.",
             annual_report_text=annual_report_text[: self.pass1_ar_char_budget],
         )
 
@@ -331,6 +336,7 @@ class LLMOrchestrator:
         pass1_output: dict,
         growth_decomposition: dict | None = None,
         eligibility: dict | None = None,
+        announcements_context: str = "",
     ) -> dict:
         template = self._load_template("pass2_synthesis.txt")
 
@@ -351,6 +357,9 @@ class LLMOrchestrator:
             pass1_output=pass1_text[:2000],  # Truncate
             growth_quality_report=build_growth_decomposition_context(growth_decomposition),
             eligibility_context=build_eligibility_context(eligibility),
+            # The only input here that postdates the accounts every other
+            # figure in this prompt was computed from.
+            announcements=announcements_context or "No corporate filings were read.",
             # The closed list of checkpoint ids. Asked for an id without a
             # menu, a model invents plausible ones — sending the vocabulary is
             # what makes structured monitorables possible at all.

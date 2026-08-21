@@ -198,6 +198,60 @@ def compute_roce_avg(data: dict, params: dict) -> MetricResult:
     )
 
 
+def compute_roa_avg(data: dict, params: dict) -> MetricResult:
+    """Average return on assets over N years = PAT / total assets.
+
+    The one return measure that reads the same way for a lender and a
+    manufacturer, which is why it is here. RoCE divides by capital employed
+    and RoE by equity alone, so for a balance-sheet business the first is
+    diluted by the borrowings that *are* its raw material and the second is
+    inflated by them — a 9.4% RoE on a 9.5x equity multiple and a 1.6% RoA are
+    the same fact reported three ways, and only the third says plainly how
+    thin the spread is.
+
+    Closing assets rather than the opening/closing average, matching
+    `compute_roe_avg` beside it: two return metrics that disagreed about which
+    denominator they meant would not be comparable to each other, and the
+    company's own trend is what either is read for.
+    """
+    years = params.get("years", 5)
+    fin = _get_annual_rows(data["financials"], years)
+    bs = _get_annual_rows(data["balance_sheet"], years)
+
+    pat = pd.to_numeric(fin["pat"], errors="coerce").dropna()
+    if "total_assets" not in bs.columns:
+        return MetricResult(error="Balance sheet carries no total_assets column")
+    assets = pd.to_numeric(bs["total_assets"], errors="coerce").dropna()
+
+    n = min(len(pat), len(assets))
+    if n < 3:
+        return MetricResult(error="Insufficient data for RoA")
+
+    series = [
+        float(p / a * 100)
+        for p, a in zip(pat.tail(n).values, assets.tail(n).values)
+        if a and a > 0
+    ]
+    if len(series) < 3:
+        return MetricResult(error="Insufficient valid RoA data points")
+
+    avg = float(np.mean(series))
+
+    # Banded against a *lending* balance sheet deliberately: 1.5% is a
+    # respectable RoA for an NBFC and a catastrophe for a manufacturer, and
+    # the flag exists to mark the thin-spread case that leverage then hides.
+    flags = []
+    if avg < 1.0:
+        flags.append("thin_asset_returns")
+
+    return MetricResult(
+        value=avg,
+        raw_series=series,
+        flags=flags,
+        metadata={"years_used": len(series)},
+    )
+
+
 def compute_roe_avg(data: dict, params: dict) -> MetricResult:
     """Average RoE over N years = PAT / (Equity Capital + Reserves)."""
     years = params.get("years", 5)

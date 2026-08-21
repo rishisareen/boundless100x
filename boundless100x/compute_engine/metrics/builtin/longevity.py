@@ -51,6 +51,66 @@ def compute_threshold_consistency(data: dict, params: dict) -> MetricResult:
     )
 
 
+def compute_roe_consistency(data: dict, params: dict) -> MetricResult:
+    """Count years where RoE cleared a threshold.
+
+    `compute_threshold_consistency`'s sibling on the return measure a
+    balance-sheet business is actually judged by. It cannot reuse that
+    function: RoCE arrives pre-computed in Screener's `ratios` table and RoE
+    does not, so the series has to be built from PAT over net worth here.
+
+    The point of having both is that they disagree in a way that is
+    informative rather than noisy. RoCE divides by equity **plus borrowings**,
+    so for a lender it reports the spread on the whole funded book and sits
+    structurally in the low teens no matter how good the business is — nought
+    years above 15% is close to a definition of the sector, not a finding
+    about the company. RoE asks what the owners earned, which is the question,
+    and a lender that cannot clear 15% on equity while running 4x leverage has
+    genuinely not earned its cost of capital.
+    """
+    years = params.get("years", 10)
+    threshold = params.get("threshold", 15)
+
+    fin = _get_annual_rows(data["financials"], years)
+    bs = _get_annual_rows(data["balance_sheet"], years)
+
+    required = ("equity_capital", "reserves")
+    if any(col not in bs.columns for col in required):
+        return MetricResult(error="Balance sheet lacks equity capital or reserves")
+
+    pat = pd.to_numeric(fin["pat"], errors="coerce").dropna()
+    equity = (
+        pd.to_numeric(bs["equity_capital"], errors="coerce")
+        + pd.to_numeric(bs["reserves"], errors="coerce")
+    ).dropna()
+
+    n = min(len(pat), len(equity))
+    if n < 3:
+        return MetricResult(error="Insufficient data for RoE consistency")
+
+    series = [
+        float(p / e * 100)
+        for p, e in zip(pat.tail(n).values, equity.tail(n).values)
+        if e and e > 0
+    ]
+    if len(series) < 3:
+        return MetricResult(error="Insufficient valid RoE data points")
+
+    count = int(sum(1 for v in series if v > threshold))
+    total = len(series)
+
+    flags = _short_window_flags(total, years)
+    if count >= 8 and total >= 10:
+        flags.append("consistently_high_roe")
+
+    return MetricResult(
+        value=float(count),
+        raw_series=series,
+        flags=flags,
+        metadata={"total_years": total, "threshold": threshold},
+    )
+
+
 def compute_cap_proxy(data: dict, params: dict) -> MetricResult:
     """CAP Proxy = max consecutive years where RoCE > threshold."""
     roce_threshold = params.get("roce_threshold", 12)

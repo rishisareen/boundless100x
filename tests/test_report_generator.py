@@ -11,15 +11,26 @@ quietly stopped rendering, a number that gained a digit, a label that lost a
 word all pass every test in this file that names something specific. Only a
 whole-document comparison sees them.
 
-The two goldens are now asymmetric, on purpose. **The Markdown golden is still
-frozen**: the reading layer landed in the dashboard and nowhere else, so a
-change to `pre_report_clarity_report.md` means something leaked. **The HTML
-golden moves whenever the reading layer's own presentation changes** — once
-when it was folded in, again when its first pass turned out to need polish
-(one number shown twice per section in two colours, three identical headlines
-stacked, a table clipped at its own edge) — and each re-baseline is what
-proves nothing was *lost* doing it: the section, chart and chip counts are
+The two goldens are asymmetric, on purpose. **The HTML golden moves whenever
+the reading layer's own presentation changes** — once when it was folded in,
+again when its first pass turned out to need polish (one number shown twice per
+section in two colours, three identical headlines stacked, a table clipped at
+its own edge), and again when four metrics were added to the registry
+(`roa_5yr_avg`, `roe_consistency`, `price_to_book`, `book_value_cagr_5yr`),
+each arriving as one more row and one more disclosure body. Each re-baseline is
+what proves nothing was *lost* doing it: the section, chart and chip counts are
 checked against the previous golden before the new one is written, every time.
+
+**The Markdown golden stays frozen against the reading layer** — that landed in
+the dashboard and nowhere else, so a reading-layer diff in
+`pre_report_clarity_report.md` means something leaked. It has moved exactly
+once, for a change of its own: the Markdown report's "Valuation Reality Check"
+divides P/E by the 5yr PAT CAGR and used to label the result "Trailing PEG
+Ratio", which is also the name of a scored metric computed on the *3yr* window.
+One report printed 0.72x and 1.04x under that one label and the model reading
+it raised the discrepancy as a monitorable — a report asking its own analyst to
+go and reconcile it. Fixing the legacy report is allowed; leaking into it is
+not.
 
 Regenerating the goldens is a deliberate act, never a way to make a red test
 green. When a change to either report *is* intended:
@@ -748,6 +759,21 @@ class TestTheLegacyReportIsFrozen:
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def lender_exclusions_in(element: str) -> set[str]:
+    """Metrics the shipped table withdraws from a lender, within one element.
+
+    Derived rather than listed for the reason the table itself gives: it is
+    hand-maintained and grows, and a test that counted its entries would go red
+    for an edit to a YAML file it is not about.
+    """
+    from boundless100x.compute_engine.engine import ComputeEngine
+    from boundless100x.compute_engine.sector import SectorApplicability
+
+    metrics = ComputeEngine().metrics
+    excluded = SectorApplicability(set(metrics)).not_applicable_metrics("Finance")
+    return {m for m in excluded if metrics[m]["element"] == element}
+
+
 def lender_result():
     """The golden fixture, moved into the sector that makes it interesting.
 
@@ -1037,8 +1063,13 @@ class TestASectionIsAsLongAsItHasSomethingToSay:
             assert '<table class="reading-table">' in markup, section.title
 
     def test_an_expanded_section_names_every_reason_it_expanded(self, tmp_path):
-        """AE1: the three lender readings, stated before the table that scores
-        all three at zero."""
+        """AE1: every withdrawn lender reading stated before the table.
+
+        "Every reason" is the property, so the count is read off the
+        applicability table rather than written down — it was three when the
+        table only annotated the report, and grew when the same table started
+        deciding what the scorer counts.
+        """
         result = lender_result()
         context = ReportGenerator(output_dir=str(tmp_path))._reading_context(result)
         html = render_dashboard(tmp_path, result)
@@ -1054,7 +1085,9 @@ class TestASectionIsAsLongAsItHasSomethingToSay:
 
         assert quality.expanded
         assert is_open(markup)
-        assert len(mismatches) == 3, mismatches
+        assert len(mismatches) == len(lender_exclusions_in("quality_business")), (
+            mismatches
+        )
         for reason in mismatches:
             assert reason in text
         assert markup.index("does not measure anything") < markup.index(

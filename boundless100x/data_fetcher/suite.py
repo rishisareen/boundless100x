@@ -9,6 +9,10 @@ from boundless100x.data_fetcher.fetch_financials import FinancialsFetcher
 from boundless100x.data_fetcher.fetch_price_volume import PriceVolumeFetcher
 from boundless100x.data_fetcher.fetch_shareholding import ShareholdingFetcher
 from boundless100x.data_fetcher.fetch_corporate_actions import CorporateActionsFetcher
+from boundless100x.data_fetcher.fetch_announcements import (
+    DEFAULT_LOOKBACK_DAYS,
+    AnnouncementsFetcher,
+)
 from boundless100x.data_fetcher.fetch_analyst_coverage import AnalystCoverageFetcher
 from boundless100x.data_fetcher.download_annual_reports import (
     AnnualReportDownloader,
@@ -42,6 +46,7 @@ class DataFetcherSuite:
         self.price_volume = PriceVolumeFetcher(**common_kwargs)
         self.shareholding_bse = ShareholdingFetcher(**common_kwargs)
         self.corporate_actions = CorporateActionsFetcher(**common_kwargs)
+        self.announcements = AnnouncementsFetcher(**common_kwargs)
         self.analyst_coverage = AnalystCoverageFetcher(**common_kwargs)
         self.annual_reports = AnnualReportDownloader(**common_kwargs)
         # Screener no longer carries the scrip code; BSE's own list does.
@@ -50,6 +55,10 @@ class DataFetcherSuite:
         self.analysis_years = config.get("analysis_period", {}).get("financials_years", 10)
         self.price_years = config.get("analysis_period", {}).get("price_history_years", 10)
         self.sh_quarters = config.get("analysis_period", {}).get("shareholding_quarters", 20)
+
+        ann_config = config.get("announcements", {}) or {}
+        self.ann_enabled = ann_config.get("enabled", True)
+        self.ann_lookback_days = ann_config.get("lookback_days", DEFAULT_LOOKBACK_DAYS)
 
         # Annual report config
         ar_config = config.get("annual_reports", {})
@@ -212,6 +221,28 @@ class DataFetcherSuite:
         except Exception as e:
             logger.warning(f"Corporate actions fetch failed: {e}")
             data["corporate_actions"] = pd.DataFrame()
+
+        # Corporate filings — the only source here that postdates the annual
+        # report. An empty frame and a failed fetch are deliberately NOT
+        # distinguished in `data`, because `build_announcements_context`
+        # renders both as "treat recent events as unknown": a company that
+        # filed nothing material and a feed that could not be read are the
+        # same state of knowledge for a reader, and claiming otherwise would
+        # let a network error read as a quiet year.
+        if self.ann_enabled:
+            try:
+                data["announcements"] = self.announcements.fetch(
+                    bse_code,
+                    lookback_days=self.ann_lookback_days,
+                    output_dir=self.raw_data_dir,
+                )
+                logger.info(
+                    f"Announcements: {len(data['announcements'])} material "
+                    f"filings in the last {self.ann_lookback_days} days"
+                )
+            except Exception as e:
+                logger.warning(f"Announcements fetch failed for {ticker}: {e}")
+                data["announcements"] = pd.DataFrame()
 
         # Annual report download + text extraction
         if self.ar_enabled:

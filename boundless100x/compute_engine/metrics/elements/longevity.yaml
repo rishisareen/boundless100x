@@ -21,6 +21,31 @@ metrics:
       bands: [[8, "durable"], [6, "intermittent"]]
       low_label: "rare"
 
+  roe_consistency:
+    # The sibling of `roce_consistency` above, on the return a balance-sheet
+    # business is actually judged by. Both are kept and both are scored: they
+    # disagree informatively. RoCE includes borrowings in its denominator, so
+    # a perfectly sound lender reads nought years above 15% and that says more
+    # about the sector than the company; RoE asks what the owners earned,
+    # where a lender failing to clear 15% on 4x leverage has genuinely not
+    # earned its cost of capital.
+    name: "RoE > 15% Count (10yr)"
+    module: "builtin.longevity"
+    function: "compute_roe_consistency"
+    inputs: ["financials", "balance_sheet"]
+    params: { years: 10, threshold: 15 }
+    scoring: { thresholds: [3, 5, 6, 7, 8, 9], direction: "higher_is_better", weight: 0.20 }
+    display: { format: "{}/10 years", section: "longevity_assessment", peer_compare: true }
+    presentation:
+      unit: "years"
+      direction: "higher_is_better"
+      meaning: >-
+        In how many of the last ten years the company earned more than 15% on
+        shareholders' money. The durability test for a business whose assets
+        are financial rather than industrial.
+      bands: [[8, "durable"], [6, "intermittent"]]
+      low_label: "rare"
+
   cap_proxy:
     name: "CAP Proxy (Consecutive yrs RoCE > CoE)"
     module: "builtin.longevity"

@@ -12,6 +12,7 @@ from boundless100x import forward_growth_schema
 from boundless100x.compute_engine.eligibility import effective_gates
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.validator import validate_registry
+from boundless100x.compute_engine.sector import load_sector_applicability
 
 logger = logging.getLogger(__name__)
 
@@ -157,18 +158,31 @@ class ComputeEngine:
         """Hash the loaded registry, not the YAML bytes.
 
         Hashing the assembled state means custom-metric drop-ins are covered
-        and cosmetic YAML reformatting is not. Four inputs, each of which can
+        and cosmetic YAML reformatting is not. Five inputs, each of which can
         change a score: the whole master file (element weights, declared
         gates, history waiver, anything added later), the *effective* gates
         (so a run governed by the code-level defaults is not recorded as an
-        empty config), the definitions of the *scored* metrics, and the macro
-        assumptions that reach every metric as parameter defaults.
+        empty config), the definitions of the *scored* metrics, the macro
+        assumptions that reach every metric as parameter defaults, and the
+        sector applicability table.
+
+        **The applicability table earned its place here by changing job.** It
+        was display data while only the report read it, and display data is
+        hash-exempt by the same rule that keeps `presentation:` out (see
+        `HASH_EXEMPT_KEYS`). Now the scorer consults it, so adding one line to
+        it withdraws a metric from a composite — a regime change in every
+        sense that matters, and one that would otherwise have been recorded
+        under the *unchanged* hash of the regime it replaced. Momentum groups
+        on this hash, and score history is append-only: a silent change here
+        would have produced diffs across two scoring regimes with nothing
+        anywhere able to tell them apart.
         """
         return self._digest({
             "master": self.master,
             "effective_gates": effective_gates(self.gates),
             "metrics": self._metric_definitions(scored=True),
             "macro": self.macro,
+            "sector_applicability": load_sector_applicability(),
         })
 
     def _compute_forward_signal_hash(self) -> str:
