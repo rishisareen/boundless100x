@@ -205,7 +205,14 @@ class TestProvenanceIsNotSemantics:
 #   * `balance_sheet` added to `quality_growth_quadrant`'s inputs, so it can
 #     read how much of the balance sheet is other companies' equity. Zero
 #     weight again, so again the FORWARD hash only.
-SHIPPED_REGISTRY_HASH = "0fad53dfd543"
+#
+# And again by the CAPLIPOINT round, entirely through `inputs` on SCORED
+# metrics: `balance_sheet` was added to the five free-cash-flow readings
+# (DCF, reverse DCF, FCF yield, FCF consistency, reinvestment rate) so each
+# can net treasury deployment out of the investing line. The forward hash is
+# unmoved this time, which is the split behaving: nothing zero-weight
+# changed.
+SHIPPED_REGISTRY_HASH = "c98eeaa8e0ac"
 SHIPPED_FORWARD_SIGNAL_HASH = "0e49614eb54c"
 
 # The hash the service actually stamps onto score-history rows. It differs
@@ -217,7 +224,7 @@ SHIPPED_FORWARD_SIGNAL_HASH = "0e49614eb54c"
 # the regime a reader can actually see in `score_history.jsonl` is this one,
 # and a change that moved it while leaving the default alone would fragment
 # real history with every test still green.
-CONFIGURED_REGISTRY_HASH = "981cc6b347a2"
+CONFIGURED_REGISTRY_HASH = "349cffeaaa38"
 
 
 def add_key(registry_dir, filename: str, metric_id: str, key: str, value):

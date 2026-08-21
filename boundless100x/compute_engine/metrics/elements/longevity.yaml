@@ -108,7 +108,7 @@ metrics:
     name: "Reinvestment Rate (Capex/Depreciation)"
     module: "builtin.longevity"
     function: "compute_reinvestment_rate"
-    inputs: ["financials", "cashflow"]
+    inputs: ["financials", "cashflow", "balance_sheet"]
     scoring: { thresholds: [0.5, 0.8, 1.0, 1.5, 2.0, 3.0], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{:.1f}x", section: "longevity_assessment", peer_compare: true }
     presentation:
@@ -126,7 +126,7 @@ metrics:
     name: "FCF Positive Count (10yr)"
     module: "builtin.longevity"
     function: "compute_fcf_consistency"
-    inputs: ["cashflow"]
+    inputs: ["cashflow", "balance_sheet"]
     params: { years: 10 }
     scoring: { thresholds: [3, 5, 6, 7, 8, 9], direction: "higher_is_better", weight: 0.15 }
     display: { format: "{}/10 years", section: "longevity_assessment", peer_compare: true }

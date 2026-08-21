@@ -100,16 +100,51 @@ def _matches(sector: str, listed: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(listed_n)}s?(?!\w)", sector_n) is not None
 
 
-def classify_sector(sector: str | None, context: dict | None = None) -> str:
-    """Map a sector name onto its study bucket, or `unknown` when unlisted."""
-    if not sector or not str(sector).strip():
+def classify_sector(sector, context: dict | None = None) -> str:
+    """Map a sector name onto its study bucket, or `unknown` when unlisted.
+
+    Accepts one label or several. **Screener gives three and the study's list
+    matches whichever it happens to match**, so asking with only the middle one
+    loses companies the study plainly covers: Caplin Point's `sector` reads
+    "Pharmaceuticals & Biotechnology", which whole-phrase matching cannot find
+    in either "Healthcare" (the strong-tailwind entry) or "Pharma" (the
+    moderate one) — while its `sector_broad` is literally "Healthcare" and was
+    never consulted. It scored `unknown` for want of being asked.
+
+    Most specific first. The buckets are checked in order for EACH label, so a
+    narrower label that lands in `moderate_tailwind` is not overridden by a
+    broader one in `strong_tailwind` — a pharma company is a pharma company
+    before it is healthcare.
+    """
+    labels = [
+        str(label) for label in
+        ([sector] if isinstance(sector, str) or sector is None else list(sector))
+        if label is not None and str(label).strip()
+    ]
+    if not labels:
         return UNKNOWN
 
     ctx = context or load_sector_context()
-    for bucket in (STRONG, MODERATE, NON_CONSIDERATION):
-        if any(_matches(str(sector), listed) for listed in ctx.get(bucket, [])):
-            return bucket
+    for label in labels:
+        for bucket in (STRONG, MODERATE, NON_CONSIDERATION):
+            if any(_matches(label, listed) for listed in ctx.get(bucket, [])):
+                return bucket
     return UNKNOWN
+
+
+def study_labels(metadata: dict | None) -> tuple[str, ...]:
+    """The labels `classify_sector` should be asked with, most specific first.
+
+    Industry, then sector, then the broad group — so the narrowest description
+    that the study actually lists decides the bucket.
+    """
+    meta = metadata or {}
+    labels = [
+        meta.get("sector_industry"),
+        meta.get("sector"),
+        meta.get("sector_broad"),
+    ]
+    return tuple(str(x) for x in labels if x is not None and str(x).strip())
 
 
 # ── Group structure ───────────────────────────────────────────────────────

@@ -1,14 +1,41 @@
 """Profitability metrics: RoCE, RoE, OPM, DuPont decomposition, cash conversion."""
 
+import re
+
 import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
-from boundless100x.compute_engine.metrics.builtin._helpers import smoothed_endpoints
+from boundless100x.compute_engine.metrics.builtin._helpers import (
+    TREASURY_ADJUSTED_FLAG,
+    smoothed_endpoints,
+    treasury_flows,
+)
+
+
+# A Screener column for a shortened accounting period carries its length as a
+# suffix on the label — `Mar 20169m` is a nine-month stub, not the year 20169.
+# Companies emit one whenever they change financial year end, which Caplin
+# Point did (June to March), and the row looks like a full year to every filter
+# that only checks the leading month.
+STUB_PERIOD_LABEL = re.compile(r"\d+\s*m\s*$", re.IGNORECASE)
+
+
+def stub_period_labels(df: pd.DataFrame) -> list[str]:
+    """Labels in `df` that name a shortened accounting period.
+
+    Exposed so a surface can say a period was dropped rather than leaving a
+    reader to notice a missing year — `_get_annual_rows` removes them, and a
+    silent removal of real reported data is worse than a stated one.
+    """
+    if "year" not in df.columns:
+        return []
+    labels = df["year"].astype(str)
+    return sorted(set(labels[labels.str.contains(STUB_PERIOD_LABEL, na=False)]))
 
 
 def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
-    """Get the last N annual rows, excluding TTM and interim periods.
+    """Get the last N annual rows, excluding TTM, interim and stub periods.
 
     Screener appends a part-year column to the balance sheet — every cached
     balance sheet here ends with one (`Sep 2025` for a March-year company).
@@ -16,6 +43,13 @@ def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
     silently pairs half a year of balance sheet against a full year of P&L.
     Annual rows are those sharing the frame's dominant period label, so this
     holds for companies whose financial year does not end in March.
+
+    **A transition stub is dropped too, and the month filter cannot catch it.**
+    A company moving its year end files one shortened period whose label starts
+    with the new month and so survives every check above: Caplin Point's
+    `Mar 20169m` is nine months of trading that a ten-year window counted as a
+    year, depressing every CAGR that reached back to it and printing "169m" as
+    a column heading in the report's own snapshot table.
     """
     if "year" not in df.columns:
         return df.tail(years)
@@ -25,6 +59,12 @@ def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
     if annual.empty:
         return annual
 
+    stub = annual["year"].astype(str).str.contains(STUB_PERIOD_LABEL, na=False)
+    if not stub.all():
+        # Guarded: a frame that is somehow all stubs keeps them, because
+        # returning nothing would read as "no data" rather than "no full year".
+        annual = annual[~stub]
+
     months = annual["year"].astype(str).str.extract(r"^([A-Za-z]{3})", expand=False)
     if months.notna().any():
         annual = annual[months == months.mode().iloc[0]]
@@ -32,13 +72,35 @@ def _get_annual_rows(df: pd.DataFrame, years: int) -> pd.DataFrame:
     return annual.tail(years)
 
 
-def _capital_employed(balance_sheet: pd.DataFrame) -> pd.Series | None:
-    """Equity + reserves + borrowings, the capital the business is run on."""
+def _capital_employed(
+    balance_sheet: pd.DataFrame, exclude_treasury: bool = False
+) -> pd.Series | None:
+    """Equity + reserves + borrowings, the capital the business is run on.
+
+    `exclude_treasury` nets off financial investments, which answers a
+    different and narrower question: what capital is *working* in the
+    business. **That is the right denominator for a return on INCREMENTAL
+    capital**, because retained profit sitting in a mutual fund has not been
+    deployed and cannot yet have earned anything.
+
+    Caplin Point is the case. It grew capital employed by ₹1,878 Cr over five
+    years, of which roughly ₹848 Cr became financial investments, and returned
+    ROIIC of 14.86% against a 15.0 gate — failed by 0.14 of a percentage point
+    for holding cash. On operating capital the same company earns far more,
+    and the honest reading of an undeployed balance is a question about
+    capital allocation rather than about the quality of what was reinvested.
+    """
     required = ("equity_capital", "reserves", "borrowings")
     if any(col not in balance_sheet.columns for col in required):
         return None
     parts = [pd.to_numeric(balance_sheet[col], errors="coerce") for col in required]
-    return sum(parts[1:], parts[0]).dropna()
+    capital = sum(parts[1:], parts[0])
+
+    if exclude_treasury and "investments" in balance_sheet.columns:
+        investments = pd.to_numeric(balance_sheet["investments"], errors="coerce")
+        capital = capital - investments.fillna(0.0)
+
+    return capital.dropna()
 
 
 def _nopat_series(financials: pd.DataFrame) -> pd.Series | None:
@@ -65,7 +127,9 @@ def compute_roiic(data: dict, params: dict) -> MetricResult:
     years = params.get("years", 5)
     high_threshold = float(params.get("high_roiic_pct", 20.0))
 
-    capital = _capital_employed(_get_annual_rows(data["balance_sheet"], years + 1))
+    rows = _get_annual_rows(data["balance_sheet"], years + 1)
+    capital = _capital_employed(rows, exclude_treasury=True)
+    reported_capital = _capital_employed(rows)
     if capital is None:
         return MetricResult(error="Balance sheet lacks equity/reserves/borrowings for ROIIC")
 
@@ -107,6 +171,19 @@ def compute_roiic(data: dict, params: dict) -> MetricResult:
     elif roiic >= high_threshold:
         flags.append("high_roiic_compounder")
 
+    # How much of the retained capital never reached the business. Carried
+    # rather than hidden: a company earning well on what it deployed while
+    # parking the rest is a different proposition from one earning well on
+    # everything, and only this number tells the two apart.
+    undeployed = None
+    if reported_capital is not None and len(reported_capital) == len(capital):
+        rep_start, rep_end, _ = smoothed_endpoints(reported_capital)
+        delta_reported = rep_end - rep_start
+        if delta_reported > 0:
+            undeployed = round((delta_reported - delta_capital) / delta_reported * 100, 1)
+            if undeployed >= 25:
+                flags.append("capital_partly_undeployed")
+
     return MetricResult(
         value=float(roiic),
         raw_series=capital.tolist(),
@@ -114,6 +191,8 @@ def compute_roiic(data: dict, params: dict) -> MetricResult:
         metadata={
             "delta_nopat": float(delta_nopat),
             "delta_capital": float(delta_capital),
+            "capital_basis": "operating (net of financial investments)",
+            "undeployed_share_pct": undeployed,
             "years_used": len(capital) - 1,
             "endpoint_mode": "smoothed" if smoothed else "single",
         },
@@ -428,7 +507,15 @@ def compute_fcf_yield(data: dict, params: dict) -> MetricResult:
     if pd.isna(cfo) or pd.isna(cfi):
         return MetricResult(error="Missing CFO/CFI data")
 
-    fcf = cfo + cfi  # CFI is typically negative
+    # Money swept into deposits and funds is not capex — see
+    # `operating_free_cash_flow`. Caplin Point's latest year read -0.3% on an
+    # investing line of which ₹269 Cr was treasury.
+    treasury = treasury_flows(
+        _get_annual_rows(data.get("balance_sheet", pd.DataFrame()), 3)
+    )
+    parked = float(treasury.get(str(cf["year"].iloc[-1]), 0.0)) if "year" in cf.columns else 0.0
+
+    fcf = cfo + cfi + parked  # CFI is typically negative
 
     mcap = meta.get("Market Cap")
     if mcap is None or mcap == 0:
@@ -441,13 +528,22 @@ def compute_fcf_yield(data: dict, params: dict) -> MetricResult:
     fin = _get_annual_rows(data["financials"], 1)
     if not fin.empty and "depreciation" in fin.columns:
         dep = pd.to_numeric(fin["depreciation"], errors="coerce").iloc[-1]
-        if not pd.isna(dep) and dep > 0 and abs(float(cfi)) > 5 * float(dep):
+        # Judged on the investing line net of treasury, or every cash-rich
+        # company reads as acquisition-hungry for buying mutual funds.
+        if not pd.isna(dep) and dep > 0 and abs(float(cfi) + parked) > 5 * float(dep):
             flags.append("cfi_dominated_by_acquisitions")
+    if parked > 0:
+        flags.append(TREASURY_ADJUSTED_FLAG)
 
     return MetricResult(
         value=yield_pct,
         flags=flags,
-        metadata={"cfo": float(cfo), "cfi": float(cfi), "fcf": float(fcf)},
+        metadata={
+            "cfo": float(cfo),
+            "cfi": float(cfi),
+            "treasury_added_back": parked,
+            "fcf": float(fcf),
+        },
     )
 
 

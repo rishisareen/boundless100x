@@ -1,10 +1,13 @@
 """QGLP checklist — maps computed metrics to structured LLM context."""
 
+from functools import lru_cache
+
 from boundless100x.compute_engine.metrics.base import UNSCORABLE_FLAGS, MetricResult
 from boundless100x.compute_engine.sector import (
     classify_sector,
     structure_caveat,
     study_findings,
+    study_labels,
 )
 
 
@@ -46,6 +49,73 @@ def _score_status(metric_id: str, withdrawn: dict, unscorable: dict) -> str:
     return ""
 
 
+# ── Labels and units come from the registry, never from a list here ───────
+#
+# **Every metric already declares its own name and unit**, in the YAML the
+# engine validates at startup. A second copy in this module is a copy that
+# drifts, and it drifted three times before this was written — each time
+# putting a confident, wrong sentence into the model's context:
+#
+#   * `promoter_holding_trend` was labelled "Promoter Holding Δ (3yr) pp" while
+#     the metric returns the LEVEL, so Pass 2 was told promoters had bought
+#     32pp of Edelweiss and spent a red flag disproving it;
+#   * `cash_conversion` was labelled "Cash Conversion (CFO/PAT)" while the
+#     metric computes OCF/EBITDA. Caplin Point's thesis therefore led with
+#     "CFO/PAT of 61.5% — two-fifths of reported profit has not converted",
+#     set a kill-trigger at "CFO/PAT below 70%", and printed a table on the
+#     same page showing CFO/PAT at 80% for two straight years;
+#   * `reinvestment_rate` was labelled "%" while the metric returns a multiple,
+#     so the model reported "heavy_reinvestment attached to a 6.35% rate" as an
+#     internal contradiction that did not exist.
+#
+# The registry is the single statement of what a metric is called and what it
+# is denominated in; this reads it rather than restating it.
+
+_UNIT_SUFFIX = {
+    "percent": "%",
+    "percentage_points": "pp",
+    "multiple": "x",
+    "inr_crore": " Cr",
+    "years": " yrs",
+    "days": " days",
+    "count": "",
+    "percentile": "th percentile",
+    "category": "",
+}
+
+
+@lru_cache(maxsize=1)
+def _registry_display() -> dict[str, tuple[str, str]]:
+    """metric id -> (declared name, unit suffix), read off the metric registry.
+
+    Cached because it constructs a `ComputeEngine`, and the registry cannot
+    change inside a run. Degrades to an empty map rather than raising: a
+    prompt built with fallback labels is worse than one built from the
+    registry and far better than no analysis at all.
+    """
+    try:
+        from boundless100x.compute_engine.engine import ComputeEngine
+
+        engine = ComputeEngine()
+    except Exception:  # pragma: no cover - defensive
+        return {}
+
+    display = {}
+    for metric_id, config in engine.metrics.items():
+        presentation = config.get("presentation") or {}
+        unit = _UNIT_SUFFIX.get(presentation.get("unit", ""), "")
+        display[metric_id] = (config.get("name", metric_id), unit)
+    return display
+
+
+def _label_for(metric_id: str) -> tuple[str, str]:
+    """The declared name and unit, or a readable fallback for an unknown id."""
+    known = _registry_display().get(metric_id)
+    if known:
+        return known
+    return metric_id.replace("_", " ").title(), ""
+
+
 def build_quality_metrics_context(
     metrics: dict[str, MetricResult],
     scores: dict,
@@ -55,42 +125,23 @@ def build_quality_metrics_context(
     withdrawn = _withdrawn_metrics(scores)
     unscorable = _unscorable_metrics(scores)
 
-    metric_display = {
-        "roce_5yr_avg": ("RoCE 5yr avg", "%"),
-        "roe_5yr_avg": ("ROE 5yr avg", "%"),
-        "operating_margin_5yr": ("OPM 5yr avg", "%"),
-        "dupont_margin": ("DuPont: Net Margin", "%"),
-        "dupont_turnover": ("DuPont: Asset Turnover", "x"),
-        "dupont_equity_multiplier": ("DuPont: Equity Multiplier", "x"),
-        "cash_conversion": ("Cash Conversion (CFO/PAT)", "%"),
-        "fcf_yield": ("FCF Yield", "%"),
-        "debt_equity": ("Debt/Equity", "x"),
-        "interest_coverage": ("Interest Coverage", "x"),
-        "revenue_cagr_5yr": ("Revenue CAGR 5yr", "%"),
-        "pat_cagr_5yr": ("PAT CAGR 5yr", "%"),
-        "pat_cagr_3yr": ("PAT CAGR 3yr", "%"),
-        "eps_cagr_5yr": ("EPS CAGR 5yr", "%"),
-        "operating_leverage": ("Operating Leverage", "x"),
-        "financial_leverage_ratio": ("Financial Leverage", "x"),
-        "revenue_growth_consistency": ("Revenue Growth StdDev", "%"),
-        "roce_consistency": ("RoCE Consistency (yrs >15%)", "yrs"),
-        "revenue_growth_streak": ("Revenue Growth Streak", "yrs"),
-        "gross_margin_stability": ("Margin Stability (StdDev)", "%"),
-        "reinvestment_rate": ("Reinvestment Rate", "%"),
-        "fcf_consistency": ("FCF Positive Years", "yrs"),
-        "pe_ttm": ("PE TTM", "x"),
-        "peg_ratio": ("PEG Ratio", "x"),
-        "trailing_peg": ("Trailing PEG (3yr)", "x"),
-        "ev_ebitda": ("EV/EBITDA", "x"),
-        "earnings_yield_spread": ("Earnings Yield Spread", "%"),
-        "market_cap": ("Market Cap", "₹Cr"),
-        "institutional_holding": ("Institutional Holding", "%"),
-        "promoter_holding_trend": ("Promoter Holding (latest)", "%"),
-        "promoter_pledge": ("Promoter Pledge", "%"),
-        "equity_dilution": ("Equity Dilution (5yr)", "%"),
-    }
+    # Ids only — the label and unit come from each metric's own declaration.
+    metric_ids = [
+        "roce_5yr_avg", "roe_5yr_avg", "roa_5yr_avg", "operating_margin_5yr",
+        "dupont_margin", "dupont_turnover", "dupont_equity_multiplier",
+        "cash_conversion", "fcf_yield", "debt_equity", "interest_coverage",
+        "revenue_cagr_5yr", "pat_cagr_5yr", "pat_cagr_3yr", "eps_cagr_5yr",
+        "book_value_cagr_5yr", "operating_leverage", "financial_leverage_ratio",
+        "revenue_growth_consistency", "roce_consistency", "roe_consistency",
+        "revenue_growth_streak", "gross_margin_stability", "reinvestment_rate",
+        "fcf_consistency", "pe_ttm", "peg_ratio", "trailing_peg",
+        "price_to_book", "ev_ebitda", "earnings_yield_vs_gsec", "market_cap",
+        "institutional_holding", "promoter_holding_trend", "promoter_pledge",
+        "equity_dilution",
+    ]
 
-    for metric_id, (label, unit) in metric_display.items():
+    for metric_id in metric_ids:
+        label, unit = _label_for(metric_id)
         result = metrics.get(metric_id)
         if result and result.ok:
             val = result.value
@@ -198,27 +249,19 @@ def build_key_metrics_context(
     withdrawn = _withdrawn_metrics(scores)
     unscorable = _unscorable_metrics(scores)
 
-    key_metrics = [
-        ("roce_5yr_avg", "RoCE 5yr avg", "%"),
-        ("pat_cagr_5yr", "PAT CAGR 5yr", "%"),
-        ("pat_cagr_3yr", "PAT CAGR 3yr", "%"),
-        ("revenue_cagr_5yr", "Revenue CAGR 5yr", "%"),
-        ("operating_margin_5yr", "OPM 5yr", "%"),
-        ("cash_conversion", "Cash Conversion", "%"),
-        ("debt_equity", "Debt/Equity", "x"),
-        ("pe_ttm", "PE TTM", "x"),
-        ("peg_ratio", "PEG", "x"),
-        ("trailing_peg", "Trailing PEG", "x"),
-        ("ev_ebitda", "EV/EBITDA", "x"),
-        ("fcf_yield", "FCF Yield", "%"),
-        ("roce_consistency", "RoCE >15% years", "yrs"),
-        ("reinvestment_rate", "Reinvestment Rate", "%"),
-        ("promoter_holding_trend", "Promoter Holding (latest)", "%"),
-        ("operating_leverage", "Op Leverage", "x"),
-        ("market_cap", "Market Cap", "₹Cr"),
+    # Ids only — see `_registry_display`. The Pass 1 list carries the same
+    # rule, and both had drifted from the registry in different ways.
+    key_metric_ids = [
+        "roce_5yr_avg", "roa_5yr_avg", "roiic", "pat_cagr_5yr", "pat_cagr_3yr",
+        "revenue_cagr_5yr", "book_value_cagr_5yr", "operating_margin_5yr",
+        "cash_conversion", "debt_equity", "pe_ttm", "peg_ratio", "trailing_peg",
+        "price_to_book", "ev_ebitda", "fcf_yield", "roce_consistency",
+        "reinvestment_rate", "promoter_holding_trend", "operating_leverage",
+        "market_cap",
     ]
 
-    for metric_id, label, unit in key_metrics:
+    for metric_id in key_metric_ids:
+        label, unit = _label_for(metric_id)
         result = metrics.get(metric_id)
         if result and result.ok:
             val = result.value
@@ -373,7 +416,9 @@ def build_sector_context(metadata: dict | None) -> str:
     """Sector classification plus the study findings that frame it, for Pass 1."""
     meta = metadata or {}
     sector = meta.get("sector")
-    classification = classify_sector(sector)
+    # Asked with all three breadcrumbs, so the study's bucket is found
+    # wherever it happens to be listed — see `classify_sector`.
+    classification = classify_sector(study_labels(meta))
     findings = study_findings()
 
     label = {

@@ -196,7 +196,7 @@ metrics:
     name: "FCF Yield"
     module: "builtin.profitability"
     function: "compute_fcf_yield"
-    inputs: ["cashflow", "price", "metadata"]
+    inputs: ["cashflow", "price", "metadata", "balance_sheet"]
     scoring: { thresholds: [-2, 0, 1, 2, 4, 6], direction: "higher_is_better", weight: 0.07 }
     display: { format: "{:.1f}%", section: "quality_scorecard", peer_compare: true }
     presentation:

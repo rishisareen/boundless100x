@@ -12,6 +12,9 @@ import pandas as pd
 from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup
 
+from boundless100x.compute_engine.metrics.builtin.profitability import (
+    _get_annual_rows,
+)
 from boundless100x.compute_engine.metrics.base import (
     UNSCORABLE_FLAGS,
     MetricResult,
@@ -1502,10 +1505,14 @@ class ReportGenerator:
             return []
 
         def annual_only(df):
+            # The engine's own annual filter, rather than a second one here.
+            # This used to hardcode "Mar", which both excluded every company
+            # whose year does not end in March and INCLUDED transition stubs:
+            # Caplin Point's nine-month `Mar 20169m` reached the table as a
+            # column headed "169m".
             if df is None or df.empty or "year" not in df.columns:
                 return pd.DataFrame()
-            mask = df["year"].astype(str).str.startswith("Mar", na=False)
-            return df[mask].copy()
+            return _get_annual_rows(df, len(df)).copy()
 
         df_fin = annual_only(financials)
         if df_fin.empty:

@@ -99,7 +99,14 @@ def make_balance_sheet(n: int = 10, interim: bool = False, **overrides) -> pd.Da
         "total_liabilities": [r + 230.0 for r in reserves],
         "fixed_assets": [200.0] * n,
         "cwip": [10.0] * n,
-        "investments": [r * 0.5 for r in reserves],
+        # A flat, small treasury on purpose. Half of a GROWING reserve line
+        # meant this synthetic manufacturer parked half its retained earnings
+        # in financial investments every year — which is not what the fixture
+        # is meant to depict, and which the treasury-aware free-cash-flow and
+        # ROIIC logic correctly reacted to. Constant means no inferred
+        # treasury flow, so the fixture describes a company that reinvests in
+        # its own operations. Tests about treasury set this explicitly.
+        "investments": [40.0] * n,
         "other_assets": [60.0] * n,
         "total_assets": [r + 230.0 for r in reserves],
     })

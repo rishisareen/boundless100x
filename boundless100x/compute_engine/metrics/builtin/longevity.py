@@ -4,9 +4,14 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
-from boundless100x.compute_engine.metrics.builtin._helpers import detect_fcf_outliers
+from boundless100x.compute_engine.metrics.builtin._helpers import (
+    TREASURY_ADJUSTED_FLAG,
+    detect_fcf_outliers,
+    operating_free_cash_flow,
+    treasury_flows,
+)
 from boundless100x.compute_engine.metrics.builtin.profitability import _get_annual_rows
-from boundless100x.compute_engine.sector import classify_sector
+from boundless100x.compute_engine.sector import classify_sector, study_labels
 
 
 def _short_window_flags(observed: int, designed: int) -> list[str]:
@@ -216,7 +221,14 @@ def compute_reinvestment_rate(data: dict, params: dict) -> MetricResult:
     cf = _get_annual_rows(data["cashflow"], 3)
 
     dep = pd.to_numeric(fin["depreciation"], errors="coerce").dropna()
-    cfi = pd.to_numeric(cf["cfi"], errors="coerce").dropna()
+    # |CFI| is a capex proxy only once treasury movement is out of it. Caplin
+    # Point read 6.3x depreciation — "heavy reinvestment" — on an investing
+    # line that was substantially mutual funds.
+    treasury = treasury_flows(_get_annual_rows(data.get("balance_sheet", pd.DataFrame()), 4))
+    cfi_raw = pd.to_numeric(cf["cfi"], errors="coerce")
+    if treasury and "year" in cf.columns:
+        cfi_raw = cfi_raw + cf["year"].astype(str).map(treasury).fillna(0.0)
+    cfi = cfi_raw.dropna()
 
     n = min(len(dep), len(cfi))
     if n < 2:
@@ -253,9 +265,12 @@ def compute_fcf_consistency(data: dict, params: dict) -> MetricResult:
     years = params.get("years", 10)
     cf = _get_annual_rows(data["cashflow"], years)
 
-    cfo = pd.to_numeric(cf["cfo"], errors="coerce")
-    cfi = pd.to_numeric(cf["cfi"], errors="coerce")
-    fcf = (cfo + cfi).dropna()
+    # Counted on cash the business left over, not on the net of every
+    # investing decision — a company that swept its surplus into deposits
+    # otherwise records a year of "negative free cash flow" for saving.
+    _, fcf, treasury = operating_free_cash_flow(
+        cf, _get_annual_rows(data.get("balance_sheet", pd.DataFrame()), years + 1)
+    )
 
     if len(fcf) < 3:
         return MetricResult(error="Insufficient cash flow data")
@@ -270,6 +285,8 @@ def compute_fcf_consistency(data: dict, params: dict) -> MetricResult:
     organic_total = int(organic_mask.sum())
 
     flags = list(outlier_flags) + _short_window_flags(total, years)
+    if treasury.get("adjusted"):
+        flags.append(TREASURY_ADJUSTED_FLAG)
     if positive_count >= 8 and total >= 10:
         flags.append("consistent_fcf_generator")
     elif organic_positive >= 8 and organic_total >= 9:
@@ -316,8 +333,10 @@ def compute_sector_tailwind(data: dict, params: dict) -> MetricResult:
     absent from others, so the sector a company sits in is a longevity signal
     independent of its own numbers.
     """
-    sector = (data.get("metadata") or {}).get("sector")
-    classification = classify_sector(sector)
+    metadata = data.get("metadata") or {}
+    labels = study_labels(metadata)
+    classification = classify_sector(labels)
+    sector = metadata.get("sector")
 
     flags = []
     if classification == "strong_tailwind":
@@ -331,5 +350,8 @@ def compute_sector_tailwind(data: dict, params: dict) -> MetricResult:
     return MetricResult(
         value=classification,
         flags=flags,
-        metadata={"sector": sector or "unavailable"},
+        metadata={
+            "sector": sector or "unavailable",
+            "labels_considered": list(labels),
+        },
     )

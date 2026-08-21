@@ -90,6 +90,17 @@ _NOISE = re.compile(
 # often it changes a thesis. The label travels with the row so a reader can see
 # why a filing was kept.
 _MATERIAL: tuple[tuple[str, re.Pattern], ...] = (
+    # Ordered before `stake_change`, which is what a product approval used to
+    # fall into. A pharma company announces every USFDA clearance as "receipt
+    # of final approval by our subsidiary", and bare `subsidiary` sat in the
+    # stake pattern — so all eight Caplin Steriles approvals reached the model
+    # tagged "[Stake / acquisition]". It noticed and warned the reader, which
+    # is the ensemble working and not a reason to leave it.
+    ("product_approval", re.compile(
+        r"\b(usfda|us fda|anda|dmf|cep|gmp|eu[- ]gmp|who[- ]?gmp|edqm|anvisa"
+        r"|marketing authorisation|marketing authorization|final approval"
+        r"|tentative approval|product approval|drug approval|510\(k\)"
+        r"|regulatory approval|invima|cofepris)\b", re.I)),
     ("listing_or_ipo", re.compile(
         r"\b(ipo|drhp|rhp|red herring|offer for sale|initial public offer"
         r"|observation letter|listing of)\b", re.I)),
@@ -97,9 +108,14 @@ _MATERIAL: tuple[tuple[str, re.Pattern], ...] = (
         r"\b(demerger|de-merger|merger|amalgamation|scheme of arrangement"
         r"|spin[- ]?off|hive[- ]?off|slump sale|composite scheme)\b", re.I)),
     ("stake_change", re.compile(
-        r"\b(divestment|disinvestment|diversification|stake|acquisition"
-        r"|acquire[sd]?|subsidiary|joint venture|strategic partnership"
-        r"|open offer)\b", re.I)),
+        # `subsidiary` on its own is deliberately absent: companies name a
+        # subsidiary in every announcement about one, most of which are not
+        # stake changes at all. It counts only when paired with a word that
+        # means ownership actually moved.
+        r"\b(divestment|disinvestment|diversification|stake sale|stake"
+        r"|acquisition|acquire[sd]?|joint venture|strategic partnership"
+        r"|open offer|incorporation of|wholly[- ]owned subsidiary"
+        r"|subsidiary.{0,30}(acquir|divest|sold|sale|stake))\b", re.I)),
     ("regulatory_action", re.compile(
         r"\b(penalt|show cause|adjudicat|enforcement|prohibit|restrain"
         r"|supervisory action|inspection report|search and seizure"
@@ -148,6 +164,7 @@ def classify_announcement(subject: str, headline: str = "") -> str | None:
 # filings can push a demerger below the cut.
 _CATEGORY_RANK = {
     "restructuring": 0,
+    "product_approval": 1,
     "listing_or_ipo": 1,
     "regulatory_action": 2,
     "audit_or_restatement": 3,
@@ -161,6 +178,7 @@ _CATEGORY_RANK = {
 
 _CATEGORY_LABELS = {
     "restructuring": "Restructuring",
+    "product_approval": "Product / regulatory approval",
     "listing_or_ipo": "Listing / IPO",
     "regulatory_action": "Regulatory action",
     "audit_or_restatement": "Audit / restatement",

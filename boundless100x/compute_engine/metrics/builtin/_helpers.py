@@ -101,3 +101,117 @@ def smoothed_endpoints(values, min_points: int = SMOOTHING_MIN_POINTS) -> tuple[
     if len(values) >= min_points:
         return float(values.iloc[:2].mean()), float(values.iloc[-2:].mean()), True
     return float(values.iloc[0]), float(values.iloc[-1]), False
+
+
+# ── Treasury deployment is not capital expenditure ────────────────────────
+#
+# Free cash flow here is `CFO + CFI`, and that is right for a company whose
+# investing line is plant. It is wrong for a cash-rich one, because CFI also
+# carries money moved into mutual funds, bonds and term deposits — cash that
+# has been *parked*, not spent, and that a buyer of the whole company would get
+# back.
+#
+# CAPLIPOINT is the case. Over five years its financial investments grew ₹848
+# Cr against ₹495 Cr of growth in plant and work-in-progress, so most of its
+# "negative free cash flow" was treasury. The consequences ran through four
+# metrics and one gate: average FCF read ₹10.8 Cr for a company holding ₹2,875
+# Cr of liquid assets, the DCF returned an intrinsic value of ₹43 against a
+# ₹2,561 price (-98.3%, scored zero), the reverse DCF pinned at its +50%
+# ceiling, and the `reverse_dcf_overpriced` veto that fired off it FAILED the
+# entry-price eligibility gate whose own PEG conditions had passed.
+#
+# **The correction is an estimate and must not pretend otherwise.** The
+# balance sheet gives the year-end *stock* of investments, so a rise is
+# inferred to be cash that went in — but a rise can also be a mark-to-market
+# gain, which consumed no cash and should not be added back. It is therefore
+# reported beside the unadjusted figure rather than replacing it, and a metric
+# that uses it says so in a flag.
+#
+# Only *increases* are added back. A fall in investments is cash coming out,
+# and treating that as a deduction would flatter a company liquidating its
+# treasury to cover an operating shortfall — the exact case the reader needs
+# to see.
+
+TREASURY_ADJUSTED_FLAG = "fcf_adjusted_for_treasury"
+
+# Below this share of the reported investing outflow, treasury movement is
+# noise rather than a distortion worth telling the reader about.
+_TREASURY_MATERIAL_SHARE = 0.15
+
+
+def treasury_flows(balance_sheet: pd.DataFrame) -> dict[str, float]:
+    """Year label -> cash inferred to have moved INTO financial investments.
+
+    Empty when the balance sheet carries no `investments` column, which is the
+    honest answer: with no stock to difference, nothing can be inferred and the
+    unadjusted investing line stands.
+    """
+    if balance_sheet is None or getattr(balance_sheet, "empty", True):
+        return {}
+    if not {"investments", "year"} <= set(balance_sheet.columns):
+        return {}
+
+    investments = pd.to_numeric(balance_sheet["investments"], errors="coerce")
+    labels = balance_sheet["year"].astype(str)
+
+    flows: dict[str, float] = {}
+    previous = None
+    for label, value in zip(labels, investments):
+        if pd.isna(value):
+            previous = None
+            continue
+        if previous is not None:
+            flows[label] = max(0.0, float(value) - previous)
+        previous = float(value)
+    return flows
+
+
+def operating_free_cash_flow(
+    cashflow: pd.DataFrame, balance_sheet: pd.DataFrame
+) -> tuple[pd.Series, pd.Series, dict]:
+    """(reported_fcf, operating_fcf, detail) aligned to `cashflow`'s rows.
+
+    `operating_fcf` adds back money that went into financial investments, so it
+    answers "what did the operating business leave over" rather than "what was
+    the net movement across every investing decision". Both are returned
+    because they answer different questions and a reader is entitled to both.
+
+    Aligned on the period LABEL rather than on row position: the two frames are
+    filtered independently and a balance sheet carrying an interim column would
+    otherwise pair each year against its neighbour.
+    """
+    empty = pd.Series(dtype=float)
+    if cashflow is None or getattr(cashflow, "empty", True):
+        return empty, empty, {"adjusted": False, "reason": "no cash flow data"}
+    if not {"cfo", "cfi"} <= set(cashflow.columns):
+        return empty, empty, {"adjusted": False, "reason": "no cfo/cfi columns"}
+
+    cfo = pd.to_numeric(cashflow["cfo"], errors="coerce")
+    cfi = pd.to_numeric(cashflow["cfi"], errors="coerce")
+    reported = (cfo + cfi)
+
+    flows = treasury_flows(balance_sheet)
+    if not flows or "year" not in cashflow.columns:
+        return (
+            reported.dropna(),
+            reported.dropna(),
+            {"adjusted": False, "reason": "no investments column to difference"},
+        )
+
+    added_back = cashflow["year"].astype(str).map(flows).fillna(0.0)
+    operating = (reported + added_back)
+
+    outflow = float(cfi[cfi < 0].sum())
+    total_added = float(added_back.sum())
+    material = bool(outflow) and (total_added / abs(outflow)) >= _TREASURY_MATERIAL_SHARE
+
+    return (
+        reported.dropna(),
+        operating.dropna(),
+        {
+            "adjusted": material,
+            "treasury_added_back": round(total_added, 2),
+            "reported_investing_outflow": round(outflow, 2),
+            "years_adjusted": int((added_back > 0).sum()),
+        },
+    )

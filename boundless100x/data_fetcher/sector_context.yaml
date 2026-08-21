@@ -18,6 +18,10 @@ mtd_consideration_sectors:
   moderate_tailwind:
     - "IT"
     - "Pharma"
+    # Screener's own breadcrumbs, which the study's shorthand cannot match:
+    # whole-phrase matching will not find "Pharma" inside "Pharmaceuticals".
+    - "Pharmaceutical"
+    - "Pharmaceuticals & Biotechnology"
     - "Cables"
     - "Airlines"
   non_consideration:

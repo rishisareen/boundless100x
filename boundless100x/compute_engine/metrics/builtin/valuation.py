@@ -5,7 +5,9 @@ import pandas as pd
 
 from boundless100x.compute_engine.metrics.base import MetricResult
 from boundless100x.compute_engine.metrics.builtin._helpers import (
+    TREASURY_ADJUSTED_FLAG,
     detect_fcf_outliers,
+    operating_free_cash_flow,
     period_end_date,
 )
 from boundless100x.compute_engine.metrics.builtin.growth import (
@@ -385,18 +387,23 @@ def compute_dcf_margin(data: dict, params: dict) -> MetricResult:
     cf = _get_annual_rows(data["cashflow"], 5)
     fin = _get_annual_rows(data["financials"], 6)
 
-    cfo = pd.to_numeric(cf["cfo"], errors="coerce").dropna()
-    cfi = pd.to_numeric(cf["cfi"], errors="coerce").dropna()
-
-    n = min(len(cfo), len(cfi))
-    if n < 3:
+    # Money parked in mutual funds and deposits is not capital expenditure, so
+    # it does not reduce what the business generated. See
+    # `operating_free_cash_flow` — CAPLIPOINT valued at ₹43 against a ₹2,561
+    # price because eight years of treasury deployment were read as spending.
+    _, fcf, treasury = operating_free_cash_flow(
+        cf, _get_annual_rows(data.get("balance_sheet", pd.DataFrame()), 6)
+    )
+    if len(fcf) < 3:
         return MetricResult(error="Insufficient cash flow for DCF")
 
-    fcf_series = (cfo.tail(n).values + cfi.tail(n).values)
+    fcf_series = fcf.tail(5).values
     avg_fcf_raw = float(np.mean(fcf_series))
 
     # Detect FCF outliers (likely M&A years)
     clean_fcf, outlier_flags = detect_fcf_outliers(fcf_series)
+    if treasury.get("adjusted"):
+        outlier_flags = list(outlier_flags) + [TREASURY_ADJUSTED_FLAG]
     avg_fcf = float(np.nanmean(clean_fcf)) if not np.all(np.isnan(clean_fcf)) else avg_fcf_raw
 
     if avg_fcf <= 0:
@@ -476,14 +483,16 @@ def compute_reverse_dcf(data: dict, params: dict) -> MetricResult:
         return MetricResult(error="No market cap for reverse DCF")
 
     cf = _get_annual_rows(data["cashflow"], 5)
-    cfo = pd.to_numeric(cf["cfo"], errors="coerce").dropna()
-    cfi = pd.to_numeric(cf["cfi"], errors="coerce").dropna()
-    n = min(len(cfo), len(cfi))
-    if n < 3:
+    _, fcf, treasury = operating_free_cash_flow(
+        cf, _get_annual_rows(data.get("balance_sheet", pd.DataFrame()), 6)
+    )
+    if len(fcf) < 3:
         return MetricResult(error="Insufficient cash flow for reverse DCF")
 
-    raw_fcf_series = cfo.tail(n).values + cfi.tail(n).values
+    raw_fcf_series = fcf.tail(5).values
     clean_fcf, outlier_flags = detect_fcf_outliers(raw_fcf_series)
+    if treasury.get("adjusted"):
+        outlier_flags = list(outlier_flags) + [TREASURY_ADJUSTED_FLAG]
     avg_fcf = float(np.nanmean(clean_fcf)) if not np.all(np.isnan(clean_fcf)) else float(np.mean(raw_fcf_series))
     if avg_fcf <= 0:
         return MetricResult(

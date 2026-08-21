@@ -142,7 +142,7 @@ metrics:
     name: "DCF Margin of Safety"
     module: "builtin.valuation"
     function: "compute_dcf_margin"
-    inputs: ["financials", "cashflow", "metadata"]
+    inputs: ["financials", "cashflow", "metadata", "balance_sheet"]
     # discount_rate and terminal_growth come from config.yaml's macro block
     params: { projection_years: 10 }
     scoring: { thresholds: [-30, -10, 0, 10, 20, 35], direction: "higher_is_better", weight: 0.15 }
@@ -162,7 +162,7 @@ metrics:
     name: "Reverse DCF Implied Growth"
     module: "builtin.valuation"
     function: "compute_reverse_dcf"
-    inputs: ["financials", "cashflow", "metadata"]
+    inputs: ["financials", "cashflow", "metadata", "balance_sheet"]
     scoring: { mode: "comparison_to_actual", weight: 0.10 }
     display: { format: "{:.1f}% implied", section: "valuation_analysis" }
     presentation:
