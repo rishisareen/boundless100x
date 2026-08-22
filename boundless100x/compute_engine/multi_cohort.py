@@ -69,7 +69,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from boundless100x.compute_engine.backtest import REQUIRED_FILES, WalkForwardBacktest
+from boundless100x.compute_engine.backtest import (
+    REQUIRED_FILES,
+    WalkForwardBacktest,
+    # Defined on the parent so BOTH variants score against the same coverage
+    # denominator; re-exported here because that is where its tests and the
+    # module docstring's discussion of it live.
+    _WithheldEvidence,  # noqa: F401
+)
 from boundless100x.compute_engine.metrics.builtin._helpers import period_end_date
 from boundless100x.compute_engine.metrics.builtin.profitability import (
     _get_annual_rows as _scoreable_rows,
@@ -115,61 +122,6 @@ DEFAULT_MULTIBAGGER_MULTIPLE = 2.0
 DEFAULT_TOP_K = 3
 
 
-class _WithheldEvidence:
-    """Applicability that ADDS backtest-withheld metrics to the real table.
-
-    Shaped like the `SectorApplicability` the scorer consults —
-    `not_applicable_metrics(sector)` and `flag_suppressed_metrics(sector)` —
-    and **composed with it rather than substituted for it**.
-
-    Composition is the whole point. Replacing the production table meant the
-    rewind scored every company as if no sector rule existed: EDELWEISS, a
-    lender, came back with `dcf_margin_of_safety` 0.0 at weight 0.15,
-    `dupont_turnover` 0.0, `cash_conversion` 0.0 and `debt_equity` 0.0 —
-    every one a reading production withdraws for Finance, and every one a
-    punitive zero here. A backtest that scores on a regime production
-    abandoned measures the wrong model, so its correlation says nothing about
-    the one actually shipping.
-
-    Two reasons a metric can be absent, and they merge cleanly because both
-    mean the same thing to the coverage denominator — evidence that was never
-    applicable, rather than evidence wanted and not got:
-
-      * the sector says it measures nothing for a company of this kind
-        (`base`, the production table, keyed on every breadcrumb);
-      * the rewind withheld its inputs (`reasons`, the same ids for every
-        sector, because the cause is the truncation and not the business).
-    """
-
-    def __init__(self, reasons: dict[str, str], base=None):
-        self.reasons = reasons
-        self.base = base
-
-    def _base_call(self, method: str, sector, default):
-        if self.base is None:
-            return default
-        try:
-            return getattr(self.base, method)(sector)
-        except Exception:  # pragma: no cover - a malformed table must not
-            return default  # cost the backtest its run
-
-    def not_applicable_metrics(self, sector) -> dict[str, str]:
-        merged = dict(self._base_call("not_applicable_metrics", sector, {}))
-        merged.update(self.reasons)
-        return merged
-
-    def flag_suppressed_metrics(self, sector) -> set[str]:
-        """Metrics whose flags must not reach a reader either.
-
-        The scorer calls this on every `score()`. Omitting it left the
-        backtest depending on a defensive `except Exception` in
-        `SQGLPScorer._flag_suppressed` that is marked `pragma: no cover` —
-        so narrowing that catch, an ordinary tidy-up, would have broken every
-        run. Withheld ids join the base's set: a metric that errored under
-        truncation has nothing worth saying about the company either.
-        """
-        suppressed = set(self._base_call("flag_suppressed_metrics", sector, set()))
-        return suppressed | set(self.reasons)
 
 
 class MultiCohortBacktest(WalkForwardBacktest):
@@ -401,57 +353,6 @@ class MultiCohortBacktest(WalkForwardBacktest):
         )
         return candidates, censored, failed, skip_reason
 
-    # ── coverage denominator ─────────────────────────────────────────────
-
-    @staticmethod
-    def _withheld_metrics(collected: list[dict]) -> dict[str, str]:
-        """Metrics that failed at EVERY collected observation, with reasons.
-
-        The empirical definition of "withheld by the rewind": no company in
-        the corpus could score the metric at any cutoff this run produced,
-        so its absence is the truncation's doing, not any company's missing
-        history — exactly the scorer's criterion for leaving the coverage
-        denominator. A metric failing at some cutoffs but succeeding at
-        others stays counted; that unevenness is real evidence variance.
-        """
-        if not collected:
-            return {}
-        failing_everywhere: set[str] | None = None
-        for entry in collected:
-            failed_here = {
-                metric_id for metric_id, result in entry["results"].items()
-                if not result.ok
-            }
-            failing_everywhere = (
-                failed_here if failing_everywhere is None
-                else failing_everywhere & failed_here
-            )
-        return {
-            metric_id: "withheld at rewound dates by backtest leakage policy"
-            for metric_id in sorted(failing_everywhere or set())
-        }
-
-    def _backtest_scorer(self, withheld: dict[str, str]) -> SQGLPScorer:
-        """A scorer carrying the production config minus the withheld weights.
-
-        Constructed fresh rather than mutating the caller's scorer — the
-        service's scorer is production state, and a backtest must never
-        reach back and change what live analyses mean. Every constructor
-        argument is copied so the two cannot drift silently.
-        """
-        return SQGLPScorer(
-            self.scorer.metrics_config,
-            self.scorer.element_weights,
-            history_waiver_mcap=self.scorer.history_waiver_mcap,
-            low_coverage_threshold=self.scorer.low_coverage_threshold,
-            # Composed with the production table, never substituted for it —
-            # see `_WithheldEvidence`. `getattr` because a scorer built without
-            # one (tests, a bare construction) is legitimate and yields the
-            # withheld set alone.
-            applicability=_WithheldEvidence(
-                withheld, getattr(self.scorer, "applicability", None)
-            ),
-        )
 
     # ── row assembly ─────────────────────────────────────────────────────
 
@@ -460,48 +361,23 @@ class MultiCohortBacktest(WalkForwardBacktest):
                      record_exclusions: bool = True) -> dict:
         """Score one collected cutoff and attach its verdict, if gated.
 
-        `record_exclusions` is False for censored entries. `excluded_metrics`
-        describes what shaped the published statistics, and a censored cutoff
-        contributes to none of them — counting its failures inflated
-        `tickers_affected` with companies whose metric was fine everywhere it
-        actually counted.
-        """
-        if record_exclusions:
-            for metric_id, result in entry["results"].items():
-                if not result.ok:
-                    exclusions.setdefault(metric_id, set()).add(entry["ticker"])
+        The scoring itself — sector labels, the applicability table, the
+        gates' exclusions — is the parent's `_scored_fields`, so a rewound
+        score means the same thing in both variants. This adds only what a
+        cohort observation carries on top.
 
-        # Every breadcrumb, exactly as production asks — `applicability_labels`
-        # is the single statement of which labels a lookup is made against, and
-        # a narrower set here would withdraw a different metric set than the
-        # live scorer does. The `or "backtest"` tail keeps the table consulted
-        # at all for an entry whose metadata carries no sector: score()
-        # short-circuits on a falsy sector, which would silently count the
-        # withheld metrics as missing evidence rather than inapplicable.
-        labels = applicability_labels(entry.get("metadata")) or ("backtest",)
-        scores = scorer.score(entry["results"], labels)
+        `record_exclusions` is False for censored entries: `excluded_metrics`
+        describes what shaped the published statistics, and a censored cutoff
+        contributes to none of them.
+        """
         row = {
             "ticker": entry["ticker"],
             "cutoff_date": entry["cutoff_date"],
-            "composite_then": scores.get("composite"),
-            "coverage_composite": scores.get("coverage", {}).get("composite"),
-            "elements_then": scores.get("elements", {}),
             "years_scored": entry["years_scored"],
         }
-        if self.gate_evaluator:
-            # The same exclusions the scorer applied. Gates read metric
-            # results rather than scores, so without this a gate hinges on a
-            # reading the rest of the run has already called meaningless —
-            # the identical argument `service.analyze()` passes in production.
-            verdict = self.gate_evaluator.evaluate(
-                entry["results"],
-                not_applicable=set(scores.get("not_applicable") or {}),
-            )
-            row["eligibility_then"] = {
-                "verdict": verdict["verdict"],
-                "gates_evaluated": sorted(self.gate_evaluator.gates),
-                "note": "size gate excluded — market cap is not reconstructable",
-            }
+        row.update(
+            self._scored_fields(entry, scorer, exclusions, record_exclusions)
+        )
         for key in ("status", "censor_reason", "realized_cagr_pct",
                     "fwd_multiple", "forward_span"):
             if key in entry:

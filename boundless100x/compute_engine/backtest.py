@@ -31,12 +31,17 @@ import numpy as np
 import pandas as pd
 
 from boundless100x.compute_engine.metrics.builtin._helpers import period_end_date
+from boundless100x.compute_engine.metrics.builtin.profitability import (
+    _get_annual_rows as _scoreable_rows,
+)
 from boundless100x.compute_engine.point_in_time import (
     ANNUAL_FRAMES,
     ANNUAL_REPORTING_LAG_MONTHS as REPORTING_LAG_MONTHS,
     _annual_rows,
     truncate_to_date,
 )
+from boundless100x.compute_engine.scorer import SQGLPScorer
+from boundless100x.compute_engine.sector import applicability_labels
 from boundless100x.data_fetcher.corpus_snapshot import TICKER_MARKER
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,63 @@ REQUIRED_FILES = ("financials.csv", "price_volume.csv")
 
 MIN_TOTAL_YEARS = 8
 MIN_FORWARD_DAYS = 365
+
+
+class _WithheldEvidence:
+    """Applicability that ADDS backtest-withheld metrics to the real table.
+
+    Shaped like the `SectorApplicability` the scorer consults —
+    `not_applicable_metrics(sector)` and `flag_suppressed_metrics(sector)` —
+    and **composed with it rather than substituted for it**.
+
+    Composition is the whole point. Replacing the production table meant the
+    rewind scored every company as if no sector rule existed: EDELWEISS, a
+    lender, came back with `dcf_margin_of_safety` 0.0 at weight 0.15,
+    `dupont_turnover` 0.0, `cash_conversion` 0.0 and `debt_equity` 0.0 —
+    every one a reading production withdraws for Finance, and every one a
+    punitive zero here. A backtest that scores on a regime production
+    abandoned measures the wrong model, so its correlation says nothing about
+    the one actually shipping.
+
+    Two reasons a metric can be absent, and they merge cleanly because both
+    mean the same thing to the coverage denominator — evidence that was never
+    applicable, rather than evidence wanted and not got:
+
+      * the sector says it measures nothing for a company of this kind
+        (`base`, the production table, keyed on every breadcrumb);
+      * the rewind withheld its inputs (`reasons`, the same ids for every
+        sector, because the cause is the truncation and not the business).
+    """
+
+    def __init__(self, reasons: dict[str, str], base=None):
+        self.reasons = reasons
+        self.base = base
+
+    def _base_call(self, method: str, sector, default):
+        if self.base is None:
+            return default
+        try:
+            return getattr(self.base, method)(sector)
+        except Exception:  # pragma: no cover - a malformed table must not
+            return default  # cost the backtest its run
+
+    def not_applicable_metrics(self, sector) -> dict[str, str]:
+        merged = dict(self._base_call("not_applicable_metrics", sector, {}))
+        merged.update(self.reasons)
+        return merged
+
+    def flag_suppressed_metrics(self, sector) -> set[str]:
+        """Metrics whose flags must not reach a reader either.
+
+        The scorer calls this on every `score()`. Omitting it left the
+        backtest depending on a defensive `except Exception` in
+        `SQGLPScorer._flag_suppressed` that is marked `pragma: no cover` —
+        so narrowing that catch, an ordinary tidy-up, would have broken every
+        run. Withheld ids join the base's set: a metric that errored under
+        truncation has nothing worth saying about the company either.
+        """
+        suppressed = set(self._base_call("flag_suppressed_metrics", sector, set()))
+        return suppressed | set(self.reasons)
 
 
 class WalkForwardBacktest:
@@ -225,11 +287,124 @@ class WalkForwardBacktest:
             "price_series": column,
         }
 
+    # ── coverage denominator ─────────────────────────────────────────────
+
+    @staticmethod
+    def _withheld_metrics(collected: list[dict]) -> dict[str, str]:
+        """Metrics that failed at EVERY collected observation, with reasons.
+
+        The empirical definition of "withheld by the rewind": no company in
+        the corpus could score the metric at any cutoff this run produced,
+        so its absence is the truncation's doing, not any company's missing
+        history — exactly the scorer's criterion for leaving the coverage
+        denominator. A metric failing at some cutoffs but succeeding at
+        others stays counted; that unevenness is real evidence variance.
+        """
+        if not collected:
+            return {}
+        failing_everywhere: set[str] | None = None
+        for entry in collected:
+            failed_here = {
+                metric_id for metric_id, result in entry["results"].items()
+                if not result.ok
+            }
+            failing_everywhere = (
+                failed_here if failing_everywhere is None
+                else failing_everywhere & failed_here
+            )
+        return {
+            metric_id: "withheld at rewound dates by backtest leakage policy"
+            for metric_id in sorted(failing_everywhere or set())
+        }
+
+    def _backtest_scorer(self, withheld: dict[str, str]) -> SQGLPScorer:
+        """A scorer carrying the production config minus the withheld weights.
+
+        Constructed fresh rather than mutating the caller's scorer — the
+        service's scorer is production state, and a backtest must never
+        reach back and change what live analyses mean. Every constructor
+        argument is copied so the two cannot drift silently.
+        """
+        return SQGLPScorer(
+            self.scorer.metrics_config,
+            self.scorer.element_weights,
+            history_waiver_mcap=self.scorer.history_waiver_mcap,
+            low_coverage_threshold=self.scorer.low_coverage_threshold,
+            # Composed with the production table, never substituted for it —
+            # see `_WithheldEvidence`. `getattr` because a scorer built without
+            # one (tests, a bare construction) is legitimate and yields the
+            # withheld set alone.
+            applicability=_WithheldEvidence(
+                withheld, getattr(self.scorer, "applicability", None)
+            ),
+        )
+
+    def _scored_fields(self, entry: dict, scorer: SQGLPScorer,
+                       exclusions: dict[str, set],
+                       record_exclusions: bool = True) -> dict:
+        """Score one collected observation: composite, coverage, verdict.
+
+        Shared by both variants so a rewound score means the same thing in
+        each. Two things it gets right that scoring inline did not:
+
+          * **Every sector breadcrumb reaches the table.** `scorer.score()`
+            short-circuits on a falsy sector and consults no applicability
+            table at all, so scoring with none silently dropped every rule
+            production applies — EDELWEISS came back with
+            `dcf_margin_of_safety` 0.0 at weight 0.15, `dupont_turnover` 0.0
+            and `debt_equity` 0.0, the lender-as-failing-manufacturer defect
+            production had already removed. A diagnostic scoring on a regime
+            production abandoned measures the wrong model.
+          * **The gates receive the same exclusions**, exactly as
+            `service.analyze()` passes them, because gates read metric
+            results rather than scores and would otherwise hinge on a
+            reading the rest of the run has called meaningless.
+
+        `record_exclusions` is False for observations that reach no published
+        statistic (the multi-cohort censored bucket).
+        """
+        if record_exclusions:
+            for metric_id, result in entry["results"].items():
+                if not result.ok:
+                    exclusions.setdefault(metric_id, set()).add(entry["ticker"])
+
+        # The `or ("backtest",)` tail keeps the table consulted at all for an
+        # entry whose metadata carries no sector: a falsy sector would count
+        # the withheld metrics as missing evidence rather than inapplicable.
+        labels = applicability_labels(entry.get("metadata")) or ("backtest",)
+        scores = scorer.score(entry["results"], labels)
+
+        fields = {
+            "composite_then": scores.get("composite"),
+            "coverage_composite": scores.get("coverage", {}).get("composite"),
+            "elements_then": scores.get("elements", {}),
+        }
+        if self.gate_evaluator:
+            verdict = self.gate_evaluator.evaluate(
+                entry["results"],
+                not_applicable=set(scores.get("not_applicable") or {}),
+            )
+            fields["eligibility_then"] = {
+                "verdict": verdict["verdict"],
+                "gates_evaluated": sorted(self.gate_evaluator.gates),
+                "note": "size gate excluded — market cap is not reconstructable",
+            }
+        return fields
+
     # ── orchestration ────────────────────────────────────────────────────
 
     def run(self) -> dict:
-        rows, skipped = [], []
-        exclusions: dict[str, set] = {}
+        """Collect every company's rewound metrics, then score them together.
+
+        Two passes, because the coverage denominator cannot be known from one
+        company alone: a metric the rewind withholds is only identifiable as
+        withheld once nothing in the corpus could score it at any date. See
+        `_withheld_metrics`. Scored inline against the production denominator,
+        every company here fell below the thin-evidence bar — measured, 0.40
+        to 0.72 against a 0.85 threshold — and `_correlations` reported n=0,
+        so this diagnostic published no correlation at all.
+        """
+        collected, skipped = [], []
 
         for ticker_dir in self.discover_candidates():
             ticker = ticker_dir.name
@@ -254,35 +429,34 @@ class WalkForwardBacktest:
                 skipped.append({"ticker": ticker, "reason": span["reason"]})
                 continue
 
-            results = self.engine.run_all(truncated)
-            scores = self.scorer.score(results)
-
-            for metric_id, result in results.items():
-                if not result.ok:
-                    exclusions.setdefault(metric_id, set()).add(ticker)
-
-            row = {
+            collected.append({
                 "ticker": ticker,
-                "coverage_composite": scores.get("coverage", {}).get("composite"),
+                "results": self.engine.run_all(truncated),
+                "metadata": truncated.get("metadata", {}),
                 "truncation_date": str(truncation_date.date()),
-                "years_scored": len(truncated["financials"]),
+                # What the METRICS see, not what survived truncation — the two
+                # differ for any company that changed financial year end.
+                "years_scored": len(_scoreable_rows(
+                    truncated["financials"], len(truncated["financials"])
+                )),
                 "forward_span": span,
-                "composite_then": scores.get("composite"),
-                "elements_then": scores.get("elements", {}),
                 "realized_cagr_pct": round(realized, 2),
-            }
-            if self.gate_evaluator:
-                verdict = self.gate_evaluator.evaluate(results)
-                row["eligibility_then"] = {
-                    "verdict": verdict["verdict"],
-                    "gates_evaluated": sorted(self.gate_evaluator.gates),
-                    "note": "size gate excluded — market cap is not reconstructable",
-                }
+            })
+
+        withheld = self._withheld_metrics(collected)
+        scorer = self._backtest_scorer(withheld)
+        exclusions: dict[str, set] = {}
+
+        rows = []
+        for entry in collected:
+            row = {k: v for k, v in entry.items() if k not in ("results", "metadata")}
+            row.update(self._scored_fields(entry, scorer, exclusions))
             rows.append(row)
 
         return {
             "generated_for": str(self.raw_data_dir),
             "companies": rows,
+            "withheld_metrics": sorted(withheld),
             "correlations": self._correlations(rows),
             "eligibility_cohorts": self._eligibility_cohorts(rows),
             "excluded_metrics": self._describe_exclusions(exclusions),
