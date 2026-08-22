@@ -313,16 +313,28 @@ def _rebuild_metadata(
 ) -> dict:
     """Rebuild only what is genuinely knowable at the cutoff.
 
-    `name`, `sector` and `Face Value` are carried over as static-enough
-    metadata (Face Value literally is static — see the module docstring).
-    `Current Price` is the truncated price series' own last close, unrelated
-    to KTD0's guarded fields.
+    `name`, the three sector breadcrumbs and `Face Value` are carried over as
+    static-enough metadata (Face Value literally is static — see the module
+    docstring). `Current Price` is the truncated price series' own last close,
+    unrelated to KTD0's guarded fields.
+
+    **All three breadcrumbs, not just `sector`.** They are classification
+    labels rather than financial data, so they carry the same static-enough
+    justification `sector` already had — and two consumers need the narrower
+    ones to behave as they do in production: `SectorApplicability` is keyed on
+    `sector_industry` as well as `sector` (an "Investment Company" rule is
+    unreachable without it), and `quality_growth_quadrant` reads
+    `sector_industry` to tell a holding company's blended ratios from an
+    operating business's. Carrying only the middle label silently gave the
+    rewind a different scoring regime than the one it is meant to be testing.
     """
     past_price = truncated.get("price")
     close = _last_numeric(past_price, "close")
     meta = {
         "name": raw.get("name"),
         "sector": raw.get("sector"),
+        "sector_industry": raw.get("sector_industry"),
+        "sector_broad": raw.get("sector_broad"),
         "Face Value": raw.get("Face Value"),
         "Current Price": close,
     }

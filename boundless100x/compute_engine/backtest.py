@@ -97,6 +97,27 @@ class WalkForwardBacktest:
 
     # ── per-ticker evaluation ────────────────────────────────────────────
 
+    @staticmethod
+    def _return_column(price: pd.DataFrame) -> tuple[str | None, str]:
+        """The price column realized returns may be measured on, or (None, why).
+
+        One statement of the adjusted-series policy for every backtest
+        variant: prefer `adj_close`, fall back to raw `close`, and refuse a
+        series whose `adj_close` is an unadjusted-close alias (jugaad-data
+        source) — measuring a realized return against an unadjusted close
+        would read a 1:5 split as an 80% loss. Lifted out of
+        `_realized_return` so the multi-cohort labels (`multi_cohort.py`)
+        measure their fixed-horizon returns on the same series by
+        construction rather than by copied convention.
+        """
+        if "adj_close" in price.columns and "adj_close_is_estimated" in price.columns:
+            if bool(price["adj_close_is_estimated"].iloc[-1]):
+                return None, (
+                    "adj_close is an unadjusted-close fallback "
+                    "(jugaad-data source) — cannot validate a realized return"
+                )
+        return ("adj_close" if "adj_close" in price.columns else "close"), ""
+
     def _load(self, ticker_dir: Path) -> dict:
         data = {}
         for name in ANNUAL_FRAMES:
@@ -178,14 +199,9 @@ class WalkForwardBacktest:
         corpus refetch gave all 22 an adjusted series and five of them promptly
         produced NaN realized returns, which is how this surfaced.
         """
-        if "adj_close" in price.columns and "adj_close_is_estimated" in price.columns:
-            if bool(price["adj_close_is_estimated"].iloc[-1]):
-                return None, {
-                    "reason": "adj_close is an unadjusted-close fallback "
-                    "(jugaad-data source) — cannot validate a realized return"
-                }
-
-        column = "adj_close" if "adj_close" in price.columns else "close"
+        column, column_reason = WalkForwardBacktest._return_column(price)
+        if column is None:
+            return None, {"reason": column_reason}
         priced = price[pd.to_numeric(price[column], errors="coerce").notna()]
 
         at_or_before = priced[priced["date"] <= truncation_date]
@@ -284,15 +300,24 @@ class WalkForwardBacktest:
             return None
         return round(float(np.corrcoef(rx, ry)[0, 1]), 3)
 
-    def _correlations(self, rows: list[dict]) -> dict:
-        # A composite whose coverage falls below the same bar production uses
-        # to flag thin evidence (self.min_coverage) is not rank-comparable
-        # with a fully evidenced one.
-        usable = [
+    def _usable_rows(self, rows: list[dict]) -> list[dict]:
+        """Rows comparable with a fully-scored one, whichever statistic reads them.
+
+        A composite whose coverage falls below the same bar production uses
+        to flag thin evidence (self.min_coverage, sourced from the scorer)
+        is not comparable on equal footing — in a correlation, a quintile
+        bucket, or a precision@K pick alike. One predicate here so the
+        multi-cohort report (`multi_cohort.py`) filters identically by
+        construction instead of by copied convention.
+        """
+        return [
             r for r in rows
             if r["composite_then"] is not None
             and (r.get("coverage_composite") or 0) >= self.min_coverage
         ]
+
+    def _correlations(self, rows: list[dict]) -> dict:
+        usable = self._usable_rows(rows)
         returns = [r["realized_cagr_pct"] for r in usable]
 
         correlations = {

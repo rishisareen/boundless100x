@@ -264,6 +264,24 @@ def backtest(
         help="Where to write the report",
     ),
     min_years: int = typer.Option(8, help="Minimum years of financials to qualify"),
+    multi_cohort: bool = typer.Option(
+        False, "--multi-cohort",
+        help="Score at many annual cutoffs per company with fixed-horizon "
+        "labels, quintiles, tail lift and precision@K",
+    ),
+    min_history: int = typer.Option(
+        5, "--min-history",
+        help="Years knowable at a cutoff before it scores (--multi-cohort)",
+    ),
+    horizon_years: int = typer.Option(
+        3, "--horizon-years",
+        help="Forward label length in years (--multi-cohort)",
+    ),
+    stride_years: int = typer.Option(
+        1, "--stride-years",
+        help="Years between consecutive cutoffs; raise to trade observations "
+        "for window independence (--multi-cohort)",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ):
     """Score companies on the first half of their history, check the second half."""
@@ -274,6 +292,33 @@ def backtest(
     from boundless100x.compute_engine.backtest import WalkForwardBacktest
 
     svc = _service()
+
+    if multi_cohort:
+        from boundless100x.compute_engine.multi_cohort import MultiCohortBacktest
+
+        console.print("\n[bold blue]Multi-cohort walk-forward backtest[/bold blue]")
+        try:
+            backtest_run = MultiCohortBacktest(
+                svc.suite.raw_data_dir, svc.engine, svc.scorer, svc.eligibility,
+                min_history_years=min_history,
+                horizon_years=horizon_years,
+                stride_years=stride_years,
+            )
+        except ValueError as exc:
+            # The constructor refuses a sub-one window rather than clamping
+            # it — see MultiCohortBacktest.__init__. A bad flag deserves the
+            # message that names it, not a traceback.
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        report = backtest_run.run()
+        _print_multi_cohort_report(report)
+        out = Path(output_dir) / date.today().strftime("%Y%m%d")
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "backtest_multi_cohort.json").write_text(
+            json.dumps(report, indent=2, default=str)
+        )
+        console.print(f"[green]Report written to {out / 'backtest_multi_cohort.json'}[/green]")
+        return
 
     console.print("\n[bold blue]Walk-forward backtest[/bold blue]")
     report = WalkForwardBacktest(
@@ -338,6 +383,92 @@ def backtest(
     out.mkdir(parents=True, exist_ok=True)
     (out / "backtest.json").write_text(json.dumps(report, indent=2, default=str))
     console.print(f"[green]Report written to {out / 'backtest.json'}[/green]")
+
+
+def _print_multi_cohort_report(report: dict) -> None:
+    """Render the multi-cohort report: pooled IC, buckets, picks, caveats."""
+    obs = report["observations"]
+    config = report["config"]
+    if not obs:
+        console.print("[yellow]No observation qualified.[/yellow]")
+    else:
+        corr = report["correlations"]
+        console.print(
+            f"\nSpearman composite vs fixed-{config['horizon_years']}y CAGR: "
+            f"[bold]{corr['composite_vs_return']}[/bold] over n={corr['n']} "
+            f"({report['limitations']['observations']} observations, "
+            f"{len(report['companies'])} companies)"
+        )
+        for element, value in corr.get("elements_vs_return", {}).items():
+            console.print(f"   {element:20} {value}")
+
+        quintiles = report.get("quintiles") or []
+        if quintiles:
+            table = Table(title="Forward return by composite bucket")
+            table.add_column("Bucket", justify="right")
+            table.add_column("n", justify="right")
+            table.add_column("Composite", justify="right")
+            table.add_column("Mean CAGR", justify="right")
+            table.add_column("Median CAGR", justify="right")
+            table.add_column("Mean multiple", justify="right")
+            for q in quintiles:
+                lo, hi = q["composite_range"]
+                cagr = q["mean_cagr_pct"]
+                colour = "green" if cagr > 15 else "yellow" if cagr > 0 else "red"
+                table.add_row(
+                    str(q["bucket"]), str(q["n"]), f"{lo:.1f}-{hi:.1f}",
+                    f"[{colour}]{cagr:+.1f}%[/{colour}]",
+                    f"{q['median_cagr_pct']:+.1f}%", f"{q['mean_multiple']:.2f}x",
+                )
+            console.print(table)
+
+        tail = report.get("tail_lift")
+        if tail:
+            if tail.get("lift") is not None:
+                console.print(
+                    f"\nTail lift ({tail['multibagger_multiple']}x within horizon): "
+                    f"{tail['winners']} winners, {tail['top_fifth_share']:.0%} in "
+                    f"the top fifth vs a {tail['base_rate']:.0%} base rate - "
+                    f"[bold]lift {tail['lift']}[/bold]"
+                )
+            else:
+                console.print(
+                    f"\nTail lift: no observation reached "
+                    f"{tail['multibagger_multiple']}x within the horizon."
+                )
+
+        picks = report["precision_at_k"]
+        summary = picks["summary"]
+        console.print(
+            f"\n[bold blue]Top-{summary['k']} picks by score, per cohort date"
+            f"[/bold blue] ({summary['dates_evaluated']} dates evaluated)"
+        )
+        for entry in picks["dates"]:
+            console.print(
+                f"   {entry['cutoff_date']}  n={entry['n']:<3} "
+                f"picked {', '.join(entry['picked'])}: "
+                f"{entry['pick_mean_multiple']:.2f}x vs universe "
+                f"{entry['universe_mean_multiple']:.2f}x"
+            )
+        if "mean_pick_to_universe_ratio" in summary:
+            console.print(
+                f"   mean pick-to-universe ratio: "
+                f"[bold]{summary['mean_pick_to_universe_ratio']}[/bold]"
+            )
+
+    lim = report["limitations"]
+    extras = []
+    if lim["censored_observations"]:
+        extras.append(f"{lim['censored_observations']} censored")
+    if lim["failed_cutoffs"]:
+        extras.append(f"{lim['failed_cutoffs']} failed cutoffs")
+    if lim["skipped_companies"]:
+        extras.append(f"{lim['skipped_companies']} skipped")
+    if extras:
+        console.print(f"\n[dim]Not scored: {' | '.join(extras)}[/dim]")
+    for entry in report["skipped"][:10]:
+        console.print(f"   [dim]{entry['ticker']}: {entry['reason']}[/dim]")
+    console.print(f"\n[yellow]{lim['verdict']}[/yellow]")
 
 
 def _coerce_cli_value(raw: str):
